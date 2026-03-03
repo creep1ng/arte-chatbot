@@ -124,6 +124,9 @@ jobs:
     needs: test-health
     if: always()
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Stop and remove containers
         run: docker compose down --volumes
 
