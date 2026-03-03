@@ -33,12 +33,12 @@ jobs:
 
       - name: Run Ruff linter
         run: |
-          ruff check backend/ --output-format=github
+          ruff check backend/
         continue-on-error: true
 
       - name: Run Ruff format check
         run: |
-          ruff format --check backend/ --output-format=github
+          ruff format --check backend/
         continue-on-error: true
 
       - name: Check Python syntax

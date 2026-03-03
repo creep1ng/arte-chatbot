@@ -1,6 +1,6 @@
 # ARTE Chatbot
 
-[![CI](https://github.com/arte-chatbot/arte-chatbot/actions/workflows/ci.yml/badge.svg)](https://github.com/arte-chatbot/arte-chatbot/actions/workflows/ci.yml)
+[![CI](https://github.com/creep1ng/arte-chatbot/actions/workflows/ci.yml/badge.svg)](https://github.com/creep1ng/arte-chatbot/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
@@ -44,7 +44,7 @@ arte-chatbot/
 1. **Clone the repository:**
 
 ```bash
-git clone https://github.com/arte-chatbot/arte-chatbot.git
+git clone https://github.com/creep1ng/arte-chatbot.git
 cd arte-chatbot
 ```
 
@@ -123,7 +123,7 @@ The project uses **GitHub Actions** for continuous integration. The CI pipeline 
 
 ### Pipeline Stages
 
-1. **Lint** - Code quality checks using Ruff and Flake8
+1. **Lint** - Code quality checks using Ruff
 2. **Build** - Docker image build
 3. **Test** - Health endpoint verification
 4. **Cleanup** - Container cleanup
@@ -133,7 +133,6 @@ The project uses **GitHub Actions** for continuous integration. The CI pipeline 
 ```bash
 # Run linting
 ruff check backend/
-flake8 backend/
 
 # Build Docker image
 docker compose build
