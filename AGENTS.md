@@ -51,9 +51,27 @@ graph TD
 **Data Flow**: Las consultas entran al backend (FastAPI), que preserva el contexto de sesión. La consulta se pasa al módulo RAG, que busca documentos similares en la base de datos vectorial (ChromaDB/Qdrant), ensambla un prompt con el contexto recuperado y lo envía al LLM (OpenAI/Anthropic) para generar una respuesta o activar el flag de escalamiento.
 
 ## Testing Strategy
+- **Framework de Testing**: Se utiliza **pytest** como framework principal para tests unitarios y de integración. Los tests se organizan en carpetas `tests/` dentro de cada módulo (`backend/tests/`, `rag/tests/`).
+- **Desarrollo guiado por tests**: Toda nueva feature debe incluir sus correspondientes tests. Se espera que:
+  - Cada feature nueva tenga tests unitarios que cubran la lógica de negocio.
+  - Cuando la feature interactúe con componentes externos (APIs, bases de datos), se incluyan tests de integración.
+  - Los tests deben ejecutarse exitosamente antes de crear un Pull Request.
 - **Pruebas de Evaluación (Harness)**: El módulo `/evaluation` contiene scripts que envían queries de prueba al endpoint `/chat` para medir `latency_ms`, `session_id`, exactitud de la respuesta, tasa de escalamiento y fuentes citadas (`source_documents`).
-- **CI/CD**: GitHub Actions ejecuta linting y pruebas básicas de salud (endpoint `/health`) en cada Pull Request.
+- **CI/CD**: GitHub Actions ejecuta linting, tests con pytest y pruebas básicas de salud (endpoint `/health`) en cada Pull Request.
 - **Ejecución Local**: Para evaluar cambios en el RAG, se deben correr localmente los scripts de evaluación antes de hacer push.
+
+### Comandos de Testing
+
+```bash
+# Ejecutar todos los tests
+pytest
+
+# Ejecutar tests con coverage
+pytest --cov=backend --cov=rag
+
+# Ejecutar tests dentro del contenedor
+docker compose exec backend pytest
+```
 
 ## Security & Compliance
 - **Manejo de Secretos**: Ninguna llave de API (OpenAI, Anthropic, etc.) debe ser subida al repositorio. Utilizar un archivo `.env` local (ya en `.gitignore`).

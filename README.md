@@ -143,7 +143,51 @@ docker compose up -d backend
 curl http://localhost:8000/health
 ```
 
-## 🤝 Contributing
+## 🧪 Testing
+
+This project uses **pytest** for testing. Tests are organized in `tests/` directories within each module.
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run tests with verbose output
+pytest -v
+
+# Run tests with coverage
+pytest --cov=backend --cov=rag
+
+# Run tests for a specific module
+pytest backend/tests/
+```
+
+### Test Structure
+
+```
+backend/tests/
+├── __init__.py
+├── test_api.py
+└── test_models.py
+
+rag/tests/
+├── __init__.py
+├── test_retriever.py
+└── test_generator.py
+```
+
+### Running Tests with Docker
+
+```bash
+# Run tests inside the backend container
+docker compose exec backend pytest
+
+# Run tests with coverage
+docker compose exec backend pytest --cov=backend --cov-report=term-missing
+```
+
+## � Contributing
 
 Contributions are welcome! Please follow these steps:
 
