@@ -14,11 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Install UV from ghcr.io/astral-sh/uv:0.10.7
+COPY --from=ghcr.io/astral-sh/uv:0.10.7 /uv /uvx /bin/
+
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies using uv
+RUN uv pip install --system --no-cache -r requirements.txt
 
 # Copy application code
 COPY . .
