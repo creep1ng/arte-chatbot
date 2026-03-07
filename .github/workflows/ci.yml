@@ -118,10 +118,60 @@ jobs:
         if: failure()
         run: docker compose logs backend
 
+  evaluation:
+    name: Run Evaluation Harness
+    runs-on: ubuntu-latest
+    needs: test-health
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start containers
+        run: docker compose up -d backend
+
+      - name: Wait for service to be ready
+        run: |
+          echo "Waiting for service to start..."
+          for i in {1..30}; do
+            if curl -f http://localhost:8000/health 2>/dev/null; then
+              echo "Service is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: Service not ready yet..."
+            sleep 2
+          done
+          echo "Service failed to start in time"
+          docker compose logs backend
+          exit 1
+
+      - name: Install Python and dependencies
+        run: |
+          apt-get update && apt-get install -y python3 python3-pip
+          pip install httpx
+
+      - name: Run evaluation harness
+        run: |
+          python3 -m evaluation.harness.run
+
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-results
+          path: evaluation/harness/output/
+          retention-days: 30
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs backend
+
   cleanup:
     name: Cleanup Containers
     runs-on: ubuntu-latest
-    needs: test-health
+    needs: evaluation
     if: always()
     steps:
       - name: Checkout code
