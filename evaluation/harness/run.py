@@ -7,6 +7,7 @@ against the /chat endpoint and record the results.
 
 import csv
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -14,11 +15,11 @@ from typing import Any
 
 import httpx
 
-# Configuration
-API_BASE_URL = "http://localhost:8000"
+# Configuration with environment variable support
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
-DATASET_PATH = Path(__file__).parent / "dataset.json"
-OUTPUT_DIR = Path(__file__).parent / "output"
+DATASET_PATH = os.getenv("DATASET_PATH", Path(__file__).parent / "dataset.json")
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", Path(__file__).parent / "output")
 
 
 def load_dataset() -> list[dict[str, Any]]:
