@@ -17,14 +17,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install UV from ghcr.io/astral-sh/uv:0.10.7
 COPY --from=ghcr.io/astral-sh/uv:0.10.7 /uv /uvx /bin/
 
+# Copy project files for dependency resolution
+COPY pyproject.toml uv.lock ./
+
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY backend/requirements.txt .
 
 # Install Python dependencies using uv
 RUN uv pip install --system --no-cache -r requirements.txt
+RUN uv pip install --system --no-cache --group dev --group lint --group typecheck
 
 # Copy application code
-COPY . .
+COPY backend/ ./backend/
+COPY rag/ ./rag/
 
 # Expose the application port
 EXPOSE 8000
@@ -34,4 +39,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

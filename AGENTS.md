@@ -74,12 +74,17 @@ docker compose exec backend pytest
 ```
 
 ## Security & Compliance
-- **Manejo de Secretos**: Ninguna llave de API (OpenAI, Anthropic, etc.) debe ser subida al repositorio. Utilizar un archivo `.env` local (ya en `.gitignore`).
+- **Manejo de Secretos**: Ninguna llave de API (OpenAI, Anthropic, etc.) debe ser subido al repositorio. Utilizar un archivo `.env` local (ya en `.gitignore`).
 - **Guardrails del Agente**:
   - **Uso de MCP (Model Context Protocol)**: El agente DEBE usar el **GitHub MCP** para consultar el contenido y los criterios de aceptación de los issues y PRs asignados antes de generar código. El link al repositorio es https://github.com/creep1ng/arte-chatbot/ y el link al proyecto es https://github.com/users/creep1ng/projects/6.
-  - **Ingesta de documentación de librerías**: El agente debe asumir que la documentación de librerías se puede consultar vía Context7 MCP, si está configurado.
+  - **Ingesta de documentación de librerías**: El agente debe asumir que la documentación de librerías se puede consultar vía Context7 MCP, si está configurada.
   - Nunca crear dependencias circulares entre `/backend` y `/rag`.
   - Las decisiones arquitectónicas de peso deben documentarse primero en `/docs/adr/`.
+  - **Ciclo de Vida de los Issues**: El job to be done debe seguir este flujo:
+    1. Fetch del issue (consultar contenido y criterios de aceptación via GitHub MCP)
+    2. Diseño del plan de implementación (resumir y pedir confirmación al usuario)
+    3. Implementación → Tests → Docs (commits atómicos por cada elemento de la todo-list; si hay 6 elementos, hacer 6 commits, solo cuando involucren cambios en el working area de git)
+    4. Push → PR
 
 ## Extensibility Hooks
 - **Interfaces RAG**: El código en `rag/` debe definir clases abstractas (ej. `BaseRetriever`, `BaseGenerator`) para facilitar el intercambio del motor de base de datos o el modelo fundacional sin alterar el backend.
