@@ -84,7 +84,7 @@ docker compose exec backend pytest
     1. Fetch del issue (consultar contenido y criterios de aceptación via GitHub MCP)
     2. Diseño del plan de implementación (resumir y pedir confirmación al usuario)
     3. Implementación → Tests → Docs (commits atómicos por cada elemento de la todo-list; si hay 6 elementos, hacer 6 commits, solo cuando involucren cambios en el working area de git)
-    4. Push → PR
+    4. Push → PR. Para la PR usa la plantilla dada en `.github/PULL_REQUEST_TEMPLATE.md`
 
 ## Extensibility Hooks
 - **Interfaces RAG**: El código en `rag/` debe definir clases abstractas (ej. `BaseRetriever`, `BaseGenerator`) para facilitar el intercambio del motor de base de datos o el modelo fundacional sin alterar el backend.
