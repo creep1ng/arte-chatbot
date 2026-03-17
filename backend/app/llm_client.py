@@ -41,6 +41,7 @@ class LLMClient:
         self.model = model
         self.default_system_prompt = ARTE_SYSTEM_PROMPT
 
+    # TODO: Add conversation history support for multi-turn context (session_id currently unused for memory)
     def get_llm_response(
         self, message: str, session_id: str, system_prompt: str | None = None
     ) -> str:

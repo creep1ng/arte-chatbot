@@ -1,16 +1,19 @@
 # arte-chatbot
 
-## CI Integration Test API Key Configuration
+## CI Integration Test Configuration
 
-- Secret Name: `LLM_API_KEY`
-- Add the API key for the LLM provider to GitHub Actions Secrets as `LLM_API_KEY`.
-- The CI pipeline loads this secret for integration test execution.
+Required secrets:
+- `OPENAI_API_KEY` — API key for the OpenAI LLM provider
+- `CHAT_API_KEY` — API key for authenticating with the /chat endpoint
+
+Add these secrets to GitHub Actions Secrets.
 
 Example usage in workflow:
 
 ```yaml
 env:
-  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
 ```
 
-Ensure the secret is set in your repository settings under GitHub > Settings > Secrets and variables > Actions.
+Ensure the secrets are set in your repository settings under GitHub > Settings > Secrets and variables > Actions.
