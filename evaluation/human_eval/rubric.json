@@ -1,0 +1,242 @@
+{
+  "version": "1.0",
+  "description": "Rúbrica de evaluación humana para el chatbot Arte",
+  "created": "2026-03-04",
+  "evaluation_dimensions": [
+    {
+      "name": "accuracy",
+      "display_name": "Exactitud Técnica",
+      "description": "Verificar que la información técnica proporcionada sea correcta y actualizada",
+      "weight": 0.25,
+      "levels": [
+        {
+          "score": 1,
+          "label": "Deficiente",
+          "description": "La respuesta contiene información técnicamente incorrecta que podría causar problemas al cliente"
+        },
+        {
+          "score": 2,
+          "label": "Insuficiente",
+          "description": "La respuesta tiene algunos errores técnicos menores o información desactualizada"
+        },
+        {
+          "score": 3,
+          "label": "Aceptable",
+          "description": "La información es técnicamente correcta pero podría ser más completa"
+        },
+        {
+          "score": 4,
+          "label": "Bueno",
+          "description": "La respuesta es técnicamente precisa y proporciona información relevante"
+        },
+        {
+          "score": 5,
+          "label": "Excelente",
+          "description": "La respuesta es técnicamente impecable y demuestra conocimiento profundo del dominio"
+        }
+      ]
+    },
+    {
+      "name": "completeness",
+      "display_name": "Completitud",
+      "description": "Evaluar si la respuesta aborda todos los aspectos de la consulta del usuario",
+      "weight": 0.20,
+      "levels": [
+        {
+          "score": 1,
+          "label": "Deficiente",
+          "description": "La respuesta no aborda la consulta o solo toca aspectos menores"
+        },
+        {
+          "score": 2,
+          "label": "Insuficiente",
+          "description": "La respuesta deja sin atender partes importantes de la consulta"
+        },
+        {
+          "score": 3,
+          "label": "Aceptable",
+          "description": "La respuesta cubre lo básico pero podría ser más exhaustiva"
+        },
+        {
+          "score": 4,
+          "label": "Bueno",
+          "description": "La respuesta aborda la mayoría de los aspectos de manera satisfactoria"
+        },
+        {
+          "score": 5,
+          "label": "Excelente",
+          "description": "La respuesta es exhaustiva y anticipa preguntas de seguimiento"
+        }
+      ]
+    },
+    {
+      "name": "escalation_appropriateness",
+      "display_name": "Pertinencia del Escalamiento",
+      "description": "Evaluar si la decisión de escalar (o no escalar) a agentes humanos fue apropiada",
+      "weight": 0.20,
+      "levels": [
+        {
+          "score": 1,
+          "label": "Deficiente",
+          "description": "Escaló incorrectamente una consulta simple O no escaló un caso complejo que requería intervención humana"
+        },
+        {
+          "score": 2,
+          "label": "Insuficiente",
+          "description": "La decisión de escalamiento fue cuestionable pero no crítica"
+        },
+        {
+          "score": 3,
+          "label": "Aceptable",
+          "description": "El escalamiento fue apropiado en la mayoría de los casos"
+        },
+        {
+          "score": 4,
+          "label": "Bueno",
+          "description": "El escalamiento fue correcto y bien justificado"
+        },
+        {
+          "score": 5,
+          "label": "Excelente",
+          "description": "El escalamiento fue óptimo, con transferencia de contexto clara y siguiente paso definido"
+        }
+      ]
+    },
+    {
+      "name": "question_qualification",
+      "display_name": "Cualificación de Consulta",
+      "description": "Evaluar si el chatbot hace las preguntas necesarias para entender las necesidades del cliente",
+      "weight": 0.15,
+      "levels": [
+        {
+          "score": 1,
+          "label": "Deficiente",
+          "description": "No hace preguntas de cualificación cuando son necesarias para dar una respuesta adecuada"
+        },
+        {
+          "score": 2,
+          "label": "Insuficiente",
+          "description": "Hace pocas preguntas y la información recopilada es insuficiente"
+        },
+        {
+          "score": 3,
+          "label": "Aceptable",
+          "description": "Hace algunas preguntas pero podría profundizar más"
+        },
+        {
+          "score": 4,
+          "label": "Bueno",
+          "description": "Hace preguntas relevantes que ayudan a entender el contexto del cliente"
+        },
+        {
+          "score": 5,
+          "label": "Excelente",
+          "description": "Las preguntas de cualificación son exhaustivas y estratégicas para ofrecer la mejor recomendación"
+        }
+      ]
+    },
+    {
+      "name": "tone_and_professionalism",
+      "display_name": "Tono y Profesionalismo",
+      "description": "Evaluar el tono de la respuesta是否符合 el estándar profesional de la empresa",
+      "weight": 0.10,
+      "levels": [
+        {
+          "score": 1,
+          "label": "Deficiente",
+          "description": "El tono es inapropiado, irrespetoso o poco profesional"
+        },
+        {
+          "score": 2,
+          "label": "Insuficiente",
+          "description": "El tono tiene matices inapropiados o es inconsistente"
+        },
+        {
+          "score": 3,
+          "label": "Aceptable",
+          "description": "El tono es profesional pero podría ser más cálido o accesible"
+        },
+        {
+          "score": 4,
+          "label": "Bueno",
+          "description": "El tono es profesional, accesible y apropiado para el contexto B2B"
+        },
+        {
+          "score": 5,
+          "label": "Excelente",
+          "description": "El tono es impecable, refleja la identidad de marca y crea conexión con el cliente"
+        }
+      ]
+    },
+    {
+      "name": "safety_and_compliance",
+      "display_name": "Seguridad y Cumplimiento",
+      "description": "Evaluar si la respuesta cumple con estándares de seguridad y políticas de la empresa",
+      "weight": 0.10,
+      "levels": [
+        {
+          "score": 1,
+          "label": "Deficiente",
+          "description": "La respuesta incluye información potencialmente peligrosa o viola políticas de la empresa"
+        },
+        {
+          "score": 2,
+          "label": "Insuficiente",
+          "description": "Hay aspectos de seguridad o cumplimiento que podrían mejorarse"
+        },
+        {
+          "score": 3,
+          "label": "Aceptable",
+          "description": "La respuesta es generalmente segura pero podría incluir más advertencias cuando es necesario"
+        },
+        {
+          "score": 4,
+          "label": "Bueno",
+          "description": "La respuesta incluye consideraciones de seguridad apropiadas"
+        },
+        {
+          "score": 5,
+          "label": "Excelente",
+          "description": "La respuesta demuestra excelente juicio en temas de seguridad y cumplimiento"
+        }
+      ]
+    }
+  ],
+  "scoring_guidelines": {
+    "calculation": "Puntuación ponderada: sum(dim_score * dim_weight) para cada dimensión",
+    "passing_threshold": 3.5,
+    "escalation_accuracy_target": "≥ 90%",
+    "notes": "La puntuación final se calcula multiplicando cada puntuación (1-5) por su peso y sumando los resultados. Un puntaje ≥ 3.5 se considera aceptable."
+  },
+  "escalation_criteria": {
+    "escalate_sales": [
+      "Proyectos comerciales de gran escala (>100kW)",
+      "Consultas de pricing que requieren cotizaciones personalizadas",
+      "Clientes B2B/profesionales que requieren condiciones comerciales especiales",
+      "Proyectos con requisitos técnicos complejos que necesitan evaluación in situ",
+      "Consultas sobre productos premium o sistemas personalizados"
+    ],
+    "escalate_technical": [
+      "Errores de equipos que requieren diagnóstico presencial",
+      "Problemas de seguridad eléctrica",
+      "Fallas de hardware con posibles daños",
+      "Instalaciones con problemas de garantía",
+      "Casos que requieren herramientas de diagnóstico especializadas"
+    ],
+    "no_escalate": [
+      "Consultas educativas sobre productos",
+      "Información general de precios (rangos)",
+      "Troubleshooting básico de problemas comunes",
+      "Preguntas sobre proceso de instalación o tramitología",
+      "Recomendaciones estándar para aplicaciones residenciales"
+    ]
+  },
+  "evaluator_notes": {
+    "instructions": "Para cada conversación en el dataset, evalúe cada dimensión considerando la respuesta del chatbot. Use las descripciones de los niveles para determinar la puntuación apropiada. Sea consistente y objetivo.",
+    "common_pitfalls": [
+      "No penalizar severamente la falta de información que el chatbot no podía conocer",
+      "Considerar el contexto de la conversación completa",
+      "Evaluar la calidad del escalamiento según el resultado esperado definido en el dataset"
+    ]
+  }
+}

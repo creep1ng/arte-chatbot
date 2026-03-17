@@ -1,0 +1,32 @@
+[
+  {
+    "id": "q001",
+    "query": "¿Cuáles son las características técnicas del panel solar JA Solar JAM72S30-545/MR?",
+    "expected_intent": "technical_specs",
+    "should_escalate": false
+  },
+  {
+    "id": "q002",
+    "query": "¿Qué inversor me recomiendan para una instalación residencial de 5kW?",
+    "expected_intent": "product_recommendation",
+    "should_escalate": false
+  },
+  {
+    "id": "q003",
+    "query": "Tengo un problema con mi sistema fotovoltaico, no está generando la potencia esperada",
+    "expected_intent": "technical_support",
+    "should_escalate": false
+  },
+  {
+    "id": "q004",
+    "query": "¿Cuál es el precio de instalación de un sistema de 10kW para una empresa?",
+    "expected_intent": "pricing",
+    "should_escalate": true
+  },
+  {
+    "id": "q005",
+    "query": "¿Qué garantía tienen los paneles solares que venden?",
+    "expected_intent": "warranty_info",
+    "should_escalate": false
+  }
+]
