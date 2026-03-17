@@ -14,12 +14,16 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if present
+load_dotenv()
 
 # Configuration with environment variable support
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
-DATASET_PATH = os.getenv("DATASET_PATH", Path(__file__).parent / "dataset.json")
-OUTPUT_DIR = os.getenv("OUTPUT_DIR", Path(__file__).parent / "output")
+DATASET_PATH = Path(os.getenv("DATASET_PATH", Path(__file__).parent / "dataset.json"))
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", Path(__file__).parent / "output"))
 
 
 def load_dataset() -> list[dict[str, Any]]:
