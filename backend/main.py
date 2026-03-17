@@ -3,7 +3,6 @@ ARTE Chatbot Backend
 FastAPI server with /health and /chat endpoints.
 """
 
-from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI
@@ -12,7 +11,6 @@ from pydantic import BaseModel
 
 from rag import (
     DEFAULT_ESCALATION_MESSAGE,
-    EscalationDetector,
     default_detector,
 )
 
