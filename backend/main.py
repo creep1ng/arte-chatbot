@@ -1,89 +1,43 @@
-"""
-ARTE Chatbot Backend
-Simple FastAPI server with /health endpoint for CI testing.
-"""
+from dotenv import load_dotenv
 
-import uuid
-from datetime import datetime
-from typing import Any
+load_dotenv(override=False)
 
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, Field
+from typing import Optional
+import uuid
 
-app = FastAPI(title="ARTE Chatbot Backend")
+from backend.app.llm_client import LLMClient, LLMServiceError, ARTE_SYSTEM_PROMPT
+from backend.app.auth import verify_api_key
+
+app = FastAPI()
+llm_client = LLMClient()
 
 
 class ChatRequest(BaseModel):
-    """Request model for /chat endpoint."""
-    message: str = Field(..., description="User message")
-    session_id: str | None = Field(default=None, description="Session identifier")
+    message: str = Field(..., min_length=1)
+    session_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
-    """Response model for /chat endpoint."""
     response: str
     session_id: str
-    latency_ms: float
-    source_documents: list[dict[str, Any]] | None = None
-    escalated: bool = False
-    timestamp: str
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint for CI/CD pipeline."""
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "healthy",
-            "service": "arte-chatbot-backend",
-            "version": "1.0.0",
-        },
-    )
-
-
-@app.get("/")
-async def root():
-    """Root endpoint."""
-    return {"message": "ARTE Chatbot Backend API", "docs": "/docs"}
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
-    """
-    Chat endpoint - skeleton implementation for RAG pipeline.
-    
-    This is a basic implementation that returns a placeholder response.
-    The full RAG implementation will be added in future iterations.
-    """
-    import time
-    start_time = time.perf_counter()
-    
-    # Generate session_id if not provided
+def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     session_id = request.session_id or str(uuid.uuid4())
-    
-    # Skeleton response - in production, this would call the RAG pipeline
-    response_text = (
-        f"Gracias por tu consulta sobre energía solar. "
-        f"Esta es una respuesta automática en modo skeleton. "
-        f"Tu mensaje fue: '{request.message[:50]}...' "
-        f"El sistema RAG procesará tu consulta pronto."
-    )
-    
-    latency_ms = (time.perf_counter() - start_time) * 1000
-    
+
+    try:
+        llm_response = llm_client.get_llm_response(
+            message=request.message,
+            session_id=session_id,
+            system_prompt=ARTE_SYSTEM_PROMPT,
+        )
+    except LLMServiceError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
     return ChatResponse(
-        response=response_text,
+        response=llm_response,
         session_id=session_id,
-        latency_ms=latency_ms,
-        source_documents=[],
-        escalated=False,
-        timestamp=datetime.utcnow().isoformat() + "Z",
     )
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
