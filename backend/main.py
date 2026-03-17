@@ -2,12 +2,13 @@ from dotenv import load_dotenv
 
 load_dotenv(override=False)
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional
 import uuid
 
 from backend.app.llm_client import LLMClient, LLMServiceError, ARTE_SYSTEM_PROMPT
+from backend.app.auth import verify_api_key
 
 app = FastAPI()
 llm_client = LLMClient()
@@ -24,7 +25,7 @@ class ChatResponse(BaseModel):
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat_endpoint(request: ChatRequest):
+def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     session_id = request.session_id or str(uuid.uuid4())
 
     try:
