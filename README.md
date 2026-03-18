@@ -67,25 +67,33 @@ git clone https://github.com/creep1ng/arte-chatbot.git
 cd arte-chatbot
 ```
 
-2. **Build and start the containers:**
+2. **Set up environment variables:**
+
+Copy the example environment file and fill in your API keys:
+
+```bash
+cp .env.example .env
+```
+
+3. **Build and start the containers:**
 
 ```bash
 docker compose up -d
 ```
 
-3. **Verify the service is running:**
+4. **Verify the service is running:**
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-4. **View logs:**
+5. **View logs:**
 
 ```bash
 docker compose logs -f backend
 ```
 
-5. **Stop the services:**
+6. **Stop the services:**
 
 ```bash
 docker compose down
@@ -101,19 +109,28 @@ python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-2. **Install dependencies:**
+2. **Set up environment variables:**
+
+Copy the example environment file and fill in your API keys:
+
+```bash
+cp ../.env.example .env
+echo CHAT_API_KEY=$(openssl rand -base64 32) >> .env
+```
+
+3. **Install dependencies:**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-3. **Run the application:**
+4. **Run the application:**
 
 ```bash
 uvicorn main:app --reload
 ```
 
-4. **Access the API:**
+5. **Access the API:**
 
 The API will be available at `http://localhost:8000`
 
