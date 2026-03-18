@@ -164,14 +164,19 @@ jobs:
           docker compose logs backend
           exit 1
 
-      - name: Install Python and dependencies
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y python3 python3-pip
-          uv pip install --system -r evaluation/harness/requirements.txt
+          uv venv
+          uv pip install -r evaluation/harness/requirements.txt
 
       - name: Run evaluation harness
         run: |
-          python3 -m evaluation.harness.run
+          uv run python -m evaluation.harness.run
 
       - name: Upload evaluation results
         uses: actions/upload-artifact@v4
