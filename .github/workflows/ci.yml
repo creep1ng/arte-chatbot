@@ -199,6 +199,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Create dummy .env file
+        run: touch .env
+
       - name: Stop and remove containers
         run: docker compose down --volumes
 
