@@ -1,17 +1,23 @@
-# Project Overview
-Arte Chatbot es un sistema de respuesta automática (RAG) diseñado para automatizar la atención al cliente de primer nivel en Arte Soluciones Energéticas, una empresa B2B de energía solar. El proyecto se desarrolla siguiendo la metodología Walking Skeleton y está diseñado para ingerir fichas técnicas de productos (paneles, inversores, etc.) para responder consultas especializadas, detectar intenciones y escalar conversaciones complejas a agentes humanos, liberando al equipo de ventas de tareas repetitivas.
+# AGENTS.md — Arte Chatbot Agent Instructions
+
+## Project Overview
+
+Arte Chatbot es un sistema de respuesta automática diseñado para automatizar la atención al cliente de primer nivel en Arte Soluciones Energéticas, una empresa B2B de energía solar. El proyecto utiliza **File Inputs** (subida directa de PDFs al LLM) en lugar de RAG tradicional con base de datos vectorial. El sistema está diseñado para consultar fichas técnicas de productos (paneles, inversores, etc.) mediante Tool Calling, responder consultas especializadas, detectar intenciones y escalar conversaciones complejas a agentes humanos.
+
+Consultar [ADR-002](docs/adr/002.md) y [ADR-003](docs/adr/003.md) para detalles completos de la arquitectura de datos.
 
 ## Repository Structure
+
 - `backend/` – API REST desarrollada con FastAPI que expone el endpoint principal del chatbot y gestiona las sesiones.
-- `rag/` – Módulo central que encapsula la lógica de Retrieval-Augmented Generation (embeddings, vector store, prompts y llamadas al LLM).
-- `evaluation/` – Scripts y harnesses automatizados para medir latencia, precisión técnica y tasas de alucinación/escalamiento.
+- `rag/` – Módulo que encapsula la lógica de retrieval via File Inputs (no usa embeddings ni vector store).
+- `evaluation/` – Scripts y harnesses automatizados para medir latencia, precisión técnica y tasas de escalamiento.
 - `docs/` – Documentación técnica en Markdown, incluyendo Architecture Decision Records (ADR).
-- `docker-compose.yml` – Orquestador principal que levanta los servicios requeridos (API, Vector DB, etc.) en entornos locales.
+- `docker-compose.yml` – Orquestador principal que levanta los servicios requeridos (API) en entornos locales.
 
 ## Build & Development Commands
 
 ```bash
-# Levantar el entorno de desarrollo completo (Backend + DBs)
+# Levantar el entorno de desarrollo completo
 docker compose up -d
 
 # Reconstruir imágenes tras cambios en dependencias
@@ -20,45 +26,82 @@ docker compose up -d --build
 # Ver logs del backend en tiempo real
 docker compose logs -f backend
 
-# Ejecutar tests de salud
-curl http://localhost:8000/health
-
-# Entrar al contenedor del backend (para debug o correr scripts manualmente)
+# Entrar al contenedor del backend
 docker compose exec -it backend bash
+
+# Tests de salud
+curl http://localhost:8000/health
 ```
 
 ## Code Style & Conventions
-- **Arquitectura de Software**: Se deben aplicar los principios **SOLID** en todo momento. Cada módulo (`rag/`, `backend/`) debe tener responsabilidades únicas, depender de abstracciones mediante interfaces/protocolos de Python, y estar cerrado a modificación pero abierto a extensión (especialmente útil para cambiar proveedores de LLM o VectorDBs).
-- **Gestor de Dependencias**: Se utiliza **`uv`** (no pip, poetry o conda) para una gestión rápida y predecible de dependencias.
-- **Tipado**: Python con Type Hints obligatorios (`typing`) en todas las funciones y métodos.
-- **Commits**: Seguir convenciones semánticas (`feat:`, `fix:`, `chore:`, `docs:`), idealmente referenciando el número de issue o tarea técnica (e.g., `feat: [US-01] agregar endpoint /chat`).
+
+### General
+- **Arquitectura de Software**: Aplicar principios **SOLID**. Cada módulo debe tener responsabilidades únicas, depender de abstracciones mediante interfaces/protocolos de Python, y estar cerrado a modificación pero abierto a extensión.
+- **Gestor de Dependencias**: Usar **`uv`** (no pip, poetry o conda).
+- **Tipado**: Type Hints obligatorios en todas las funciones y métodos.
+- **Commits**: Convenciones semánticas (`feat:`, `fix:`, `chore:`, `docs:`), referenciando número de issue (e.g., `feat: [US-01] agregar endpoint /chat`).
+
+### Python
+- **Imports**: Organizar en tres bloques separados por líneas en blanco: (1) stdlib, (2)第三方, (3) local/app imports. Dentro de cada bloque, orden alfabético.
+- **Formatting**: 88 caracteres por línea (Black default). Indentación con 4 espacios.
+- **Naming**:
+  - `snake_case` para funciones, métodos, variables y argumentos
+  - `PascalCase` para clases y tipos
+  - `SCREAMING_SNAKE_CASE` para constantes
+  - Prefijos `is_`, `has_`, `can_` para booleanos
+- **Types**: Usar `typing` para tipos complejos (`Optional[str]`, `List[int]`, `Dict[str, Any]`). Para alias simples, definir en mayúsculas.
+- **Docstrings**: Usar Google style con tipo de parámetros y valores de retorno.
+- **Error Handling**: Nunca usar `except:` sin especificar excepciones. Preferir excepciones custom cuando el error tiene semántica de negocio.
+- **Async**: Preferir `async/await` para operaciones I/O-bound (HTTP, S3, etc.).
+
+### FastAPI Specific
+- Usar `Annotated` con `Depends()` para dependency injection
+- Validar DTOs con Pydantic v2
+- Usar `async` para todos los endpoints salvo que haya razón justificada
 
 ## Architecture Notes
-El sistema sigue una arquitectura de microservicios contenerizada e iterativa:
+
+### Data Infrastructure (S3)
+
+Todas las fichas técnicas se almacenan en **Amazon S3**. Esta decisión garantiza acceso estandarizado, alta disponibilidad y consistente entre todos los entornos.
+
+**Estructura del bucket:**
+```
+arte-chatbot-data/
+├── raw/
+│   ├── paneles/
+│   ├── inversores/
+│   ├── controladores/
+│   └── baterias/
+└── index/
+    └── catalog_index.json
+```
+
+**Variables de entorno requeridas:**
+- `AWS_ACCESS_KEY_ID` — Identificador de clave de acceso AWS
+- `AWS_SECRET_ACCESS_KEY` — Clave de acceso secreta AWS
+- `AWS_BUCKET_NAME` — Nombre del bucket (`arte-chatbot-data`)
+
+### Flujo de Datos con File Inputs
 
 ```mermaid
 graph TD
     Client[WhatsApp/User] -->|POST /chat| API[FastAPI Backend]
-    API -->|Manage| Session[Session Context]
-    API -->|Query| RAG[RAG Pipeline]
-    
-    RAG -->|1. Encode| Embed[Embedding Model]
-    RAG -->|2. Search| VDB[(Vector DB)]
-    RAG -->|3. Generate| LLM[LLM API]
-    
-    VDB -.->|Ingested via scripts| Docs[Technical PDFs]
+    API -->|1. Consulta índice| S3[/index/catalog_index.json]
+    API -->|2. Descarga PDF| S3[/raw/paneles/modelo_x.pdf]
+    API -->|3. File Input + Tool Calling| LLM[OpenAI/Anthropic LLM]
+    LLM -->|4. Respuesta| API
+    API -->|5. Respuesta| Client
 ```
-**Data Flow**: Las consultas entran al backend (FastAPI), que preserva el contexto de sesión. La consulta se pasa al módulo RAG, que busca documentos similares en la base de datos vectorial (ChromaDB/Qdrant), ensambla un prompt con el contexto recuperado y lo envía al LLM (OpenAI/Anthropic) para generar una respuesta o activar el flag de escalamiento.
+
+**Data Flow**: Las consultas entran al backend (FastAPI), que preserva el contexto de sesión. El chatbot utiliza Tool Calling para invocar `leer_ficha_tecnica(ruta)`, que descarga el PDF desde S3 y lo adjunta como File Input al LLM. El LLM responde utilizando el contenido completo del documento.
 
 ## Testing Strategy
-- **Framework de Testing**: Se utiliza **pytest** como framework principal para tests unitarios y de integración. Los tests se organizan en carpetas `tests/` dentro de cada módulo (`backend/tests/`, `rag/tests/`).
-- **Desarrollo guiado por tests**: Toda nueva feature debe incluir sus correspondientes tests. Se espera que:
-  - Cada feature nueva tenga tests unitarios que cubran la lógica de negocio.
-  - Cuando la feature interactúe con componentes externos (APIs, bases de datos), se incluyan tests de integración.
-  - Los tests deben ejecutarse exitosamente antes de crear un Pull Request.
-- **Pruebas de Evaluación (Harness)**: El módulo `/evaluation` contiene scripts que envían queries de prueba al endpoint `/chat` para medir `latency_ms`, `session_id`, exactitud de la respuesta, tasa de escalamiento y fuentes citadas (`source_documents`).
-- **CI/CD**: GitHub Actions ejecuta linting, tests con pytest y pruebas básicas de salud (endpoint `/health`) en cada Pull Request.
-- **Ejecución Local**: Para evaluar cambios en el RAG, se deben correr localmente los scripts de evaluación antes de hacer push.
+
+- **Framework**: pytest
+- **Organización**: Tests en carpetas `tests/` dentro de cada módulo (`backend/tests/`, `rag/tests/`).
+- **Cobertura**: Cada feature nueva debe incluir tests unitarios. Features con componentes externos requieren tests de integración.
+- **CI**: GitHub Actions ejecuta linting, tests con pytest y health checks en cada PR.
 
 ### Comandos de Testing
 
@@ -69,28 +112,36 @@ pytest
 # Ejecutar tests con coverage
 pytest --cov=backend --cov=rag
 
+# Ejecutar un archivo de test específico
+pytest backend/tests/test_api.py
+
+# Ejecutar una función de test específica
+pytest backend/tests/test_api.py::test_health_check
+
+# Ejecutar tests que coincidan con un patrón (markers)
+pytest -k "test_health"
+
 # Ejecutar tests dentro del contenedor
 docker compose exec backend pytest
+
+# Ejecutar un solo test dentro del contenedor
+docker compose exec backend pytest backend/tests/test_api.py::test_health_check
 ```
 
 ## Security & Compliance
-- **Manejo de Secretos**: Ninguna llave de API (OpenAI, Anthropic, etc.) debe ser subido al repositorio. Utilizar un archivo `.env` local (ya en `.gitignore`).
-- **Guardrails del Agente**:
-  - **Uso de MCP (Model Context Protocol)**: El agente DEBE usar el **GitHub MCP** para consultar el contenido y los criterios de aceptación de los issues y PRs asignados antes de generar código. El link al repositorio es https://github.com/creep1ng/arte-chatbot/ y el link al proyecto es https://github.com/users/creep1ng/projects/6.
-  - **Ingesta de documentación de librerías**: El agente debe asumir que la documentación de librerías se puede consultar vía Context7 MCP, si está configurada.
-  - Nunca crear dependencias circulares entre `/backend` y `/rag`.
-  - Las decisiones arquitectónicas de peso deben documentarse primero en `/docs/adr/`.
-  - **Ciclo de Vida de los Issues**: El job to be done debe seguir este flujo:
-    1. Fetch del issue (consultar contenido y criterios de aceptación via GitHub MCP)
-    2. Diseño del plan de implementación (resumir y pedir confirmación al usuario)
-    3. Implementación → Tests → Docs (commits atómicos por cada elemento de la todo-list; si hay 6 elementos, hacer 6 commits, solo cuando involucren cambios en el working area de git)
-    4. Push → PR. Para la PR usa la plantilla dada en `.github/PULL_REQUEST_TEMPLATE.md`
+
+- **Manejo de Secretos**: Ninguna llave de API (OpenAI, Anthropic, AWS, etc.) debe ser subida al repositorio. Usar `.env` (ya en `.gitignore`).
+- **Credenciales AWS**: Gestionar exclusivamente via variables de entorno. No hardcodear nunca.
 
 ## Extensibility Hooks
-- **Interfaces RAG**: El código en `rag/` debe definir clases abstractas (ej. `BaseRetriever`, `BaseGenerator`) para facilitar el intercambio del motor de base de datos o el modelo fundacional sin alterar el backend.
-- **Variables de Entorno**: `LLM_PROVIDER`, `VECTOR_DB_HOST`, `LOG_LEVEL`.
-- **Manejo de Contexto**: El sistema de sesiones está diseñado para escalar desde persistencia en memoria (Sprint 1) a bases de datos en disco (ej. PostgreSQL) en sprints posteriores.
+
+- **Interfaces de Retrieval**: El código en `rag/` debe definir clases abstractas para facilitar el intercambio del método de retrieval (ej. `BaseFileLoader`, `BaseDocumentParser`) sin alterar el backend.
+- **Variables de Entorno**: `LLM_PROVIDER`, `AWS_BUCKET_NAME`, `LOG_LEVEL`.
+- **Tool Calling**: El sistema está diseñado para que nuevas herramientas puedan añadirse sin modificar la lógica existente.
 
 ## Further Reading
+
 - [ADR-001: Arquitectura inicial y orquestación de servicios](docs/adr/001.md)
+- [ADR-002: Infraestructura de datos con S3](docs/adr/002.md)
+- [ADR-003: File Inputs como método de retrieval](docs/adr/003.md)
 - [Plantilla de ADR](docs/adr/template.md)
