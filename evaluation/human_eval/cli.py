@@ -4,9 +4,7 @@ Herramienta CLI para evaluación humana del chatbot Arte.
 Permite a los evaluadores calificar las respuestas del chatbot usando el dataset y rúbrica definidos.
 """
 import json
-import sys
 from pathlib import Path
-from typing import Optional
 
 import click
 
@@ -105,11 +103,11 @@ class HumanEvalCLI:
             click.echo(f"  {turn['content']}")
 
         # Respuesta esperada
-        click.echo(f"\n📝 Respuesta esperada:")
+        click.echo("\n📝 Respuesta esperada:")
         click.echo(f"  {conv['expected_response']}")
 
         if conv.get("notes"):
-            click.echo(f"\n📌 Notas del evaluador:")
+            click.echo("\n📌 Notas del evaluador:")
             click.echo(f"  {conv['notes']}")
 
     def evaluate_conversation(self) -> dict:
@@ -132,7 +130,7 @@ class HumanEvalCLI:
                 try:
                     score = int(
                         click.prompt(
-                            f"\nPuntuación (1-5)",
+                            "\nPuntuación (1-5)",
                             type=int,
                             default=3,
                         )
@@ -145,7 +143,7 @@ class HumanEvalCLI:
                     click.echo("⚠️  Por favor ingrese un valor numérico válido")
 
         # Evaluar escalamiento
-        click.echo(f"\n--- Escalamiento ---")
+        click.echo("\n--- Escalamiento ---")
         click.echo(f"Clasificación esperada: {conv['escalation_classification']}")
 
         user_escalation = click.prompt(

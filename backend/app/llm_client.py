@@ -17,7 +17,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-DEFAULT_MODEL = "gpt-3.5-turbo"
+DEFAULT_MODEL = "gpt-5.4-nano"
 
 ARTE_SYSTEM_PROMPT = (
     "Eres un asistente de Arte Soluciones Energéticas. "

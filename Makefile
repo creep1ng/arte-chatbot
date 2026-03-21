@@ -17,7 +17,7 @@ rebuild:
 	docker compose up -d --build
 
 logs:
-	docker compose logs -f backend
+	docker compose logs backend
 
 shell:
 	docker compose exec backend bash
