@@ -50,6 +50,56 @@ arte-chatbot/
 └── README.md
 ```
 
+## 📦 Data Infrastructure
+
+La infraestructura de datos del proyecto utiliza **Amazon S3** para el almacenamiento de fichas técnicas de productos, garantizando acceso estandarizado, de alta disponibilidad y consistente entre todos los entornos (desarrollo local, CI, cloud).
+
+Consultar [ADR-002](docs/adr/002.md) para detalles completos de la decisión.
+
+### Estructura del Bucket S3
+
+```
+arte-chatbot-data/
+├── raw/
+│   ├── paneles/
+│   ├── inversores/
+│   ├── controladores/
+│   └── baterias/
+└── index/
+    └── catalog_index.json
+```
+
+### Variables de Entorno Requeridas
+
+| Variable | Descripción |
+|----------|-------------|
+| `AWS_ACCESS_KEY_ID` | Identificador de clave de acceso AWS |
+| `AWS_SECRET_ACCESS_KEY` | Clave de acceso secreta AWS |
+| `AWS_BUCKET_NAME` | Nombre del bucket S3 (`arte-chatbot-data`) |
+
+### Flujo de Datos
+
+```mermaid
+graph TD
+    Client[Cliente WhatsApp] -->|POST /chat| API[FastAPI Backend]
+    API -->|1. Consulta índice| S3[/index/catalog_index.json]
+    API -->|2. Descarga PDF| S3[/raw/paneles/modelo_x.pdf]
+    API -->|3. File Input| LLM[OpenAI LLM]
+    LLM -->|4. Respuesta| API
+    API -->|5. Respuesta| Client
+```
+
+### Instrucciones para Colaboradores
+
+1. **Obtener credenciales AWS**: Solicitar acceso al administrador del proyecto
+2. **Configurar credenciales locales**: Añadir al archivo `.env` las variables listadas arriba
+3. **Verificar acceso**: Ejecutar `aws s3 ls s3://arte-chatbot-data/raw/paneles/` para confirmar conectividad
+4. **No almacenar credenciales en el repositorio**: Usar `.env` (ya en `.gitignore`)
+
+Para más información sobre File Inputs como método de retrieval, consultar [ADR-003](docs/adr/003.md).
+
+---
+
 ## 🚀 Local Setup
 
 ### Prerequisites
