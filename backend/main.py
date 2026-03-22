@@ -20,13 +20,10 @@ from rag import (
 )
 from backend.app.llm_client import LLMClient, LLMServiceError, ARTE_SYSTEM_PROMPT
 from backend.app.auth import verify_api_key
+from backend.app.session import session_manager
 
 app = FastAPI(title="ARTE Chatbot Backend")
 llm_client = LLMClient()
-
-# Session storage (in-memory for Sprint 1)
-# TODO: Replace with PostgreSQL in future sprints
-_sessions: dict[str, list[dict[str, Any]]] = {}
 
 
 class ChatRequest(BaseModel):
@@ -69,14 +66,17 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     """
     session_id = request.session_id or str(uuid.uuid4())
 
-    # Initialize session if needed
-    if session_id not in _sessions:
-        _sessions[session_id] = []
-
     # Detect escalation
     escalation_result = default_detector.detect(request.message)
 
     if escalation_result.escalate:
+        # Aún guardamos la consulta en la sesión aunque vayamos a escalar
+        session_manager.add_turn(
+            session_id=session_id,
+            question=request.message,
+            answer=DEFAULT_ESCALATION_MESSAGE,
+            source_documents=[]
+        )
         return ChatResponse(
             response=DEFAULT_ESCALATION_MESSAGE,
             escalate=True,
@@ -85,10 +85,22 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         )
 
     try:
+        # Obtener contexto de la sesión para mejorar el prompt
+        context_string = session_manager.get_context_string(session_id)
+        
         llm_response = llm_client.get_llm_response(
             message=request.message,
             session_id=session_id,
             system_prompt=ARTE_SYSTEM_PROMPT,
+            context=context_string
+        )
+        
+        # Guardar el turno en la sesión
+        session_manager.add_turn(
+            session_id=session_id,
+            question=request.message,
+            answer=llm_response,
+            source_documents=[]  # TODO: Obtener esto del RAG cuando esté disponible
         )
     except LLMServiceError as e:
         raise HTTPException(status_code=503, detail=str(e))

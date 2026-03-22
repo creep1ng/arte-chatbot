@@ -99,6 +99,39 @@ class TestChatEndpointUnit:
         data = response.json()
         assert data["session_id"] == "my-session-123"
 
+    @patch("backend.main.llm_client.get_llm_response")
+    @patch("backend.main.session_manager")
+    def test_chat_uses_session_context(self, mock_session_manager, mock_llm):
+        """Test that the chat endpoint uses session context."""
+        # Configurar mocks
+        mock_llm.return_value = "Mocked LLM Response"
+        mock_session_manager.get_context_string.return_value = "Turno 1:\nUsuario: Pregunta anterior\nAsistente: Respuesta anterior"
+        
+        # Hacer la petición
+        response = client.post("/chat", json={
+            "message": "¿Y cuánto cuesta?", 
+            "session_id": "test-session-123"
+        })
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["response"] == "Mocked LLM Response"
+        
+        # Verificar que se llamó al LLM con el contexto
+        mock_llm.assert_called_once()
+        args, kwargs = mock_llm.call_args
+        assert kwargs["message"] == "¿Y cuánto cuesta?"
+        assert kwargs["session_id"] == "test-session-123"
+        assert "Contexto de la conversación:" in kwargs["context"]
+        assert "Pregunta anterior" in kwargs["context"]
+        
+        # Verificar que se guardó el turno en la sesión
+        mock_session_manager.add_turn.assert_called_once()
+        add_args, add_kwargs = mock_session_manager.add_turn.call_args
+        assert add_kwargs["session_id"] == "test-session-123"
+        assert add_kwargs["question"] == "¿Y cuánto cuesta?"
+        assert add_kwargs["answer"] == "Mocked LLM Response"
+
     def test_chat_returns_escalation_message(self) -> None:
         """Test that escalation response includes user message."""
         response = client.post("/chat", json={"message": "Quiero una cotización"})

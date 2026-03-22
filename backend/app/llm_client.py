@@ -41,9 +41,8 @@ class LLMClient:
         self.model = model
         self.default_system_prompt = ARTE_SYSTEM_PROMPT
 
-    # TODO: Add conversation history support for multi-turn context (session_id currently unused for memory)
     def get_llm_response(
-        self, message: str, session_id: str, system_prompt: str | None = None
+        self, message: str, session_id: str, system_prompt: str | None = None, context: str = ""
     ) -> str:
         """Send a message to the LLM and return the assistant's reply.
 
@@ -54,6 +53,12 @@ class LLMClient:
             raise LLMServiceError("Missing OpenAI API key.")
 
         prompt = system_prompt or self.default_system_prompt
+        
+        # Construir el mensaje del usuario con contexto si está disponible
+        user_content = message
+        if context:
+            user_content = f"Contexto de la conversación:\n{context}\n\nPregunta actual: {message}"
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -62,7 +67,7 @@ class LLMClient:
             "model": self.model,
             "messages": [
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": message},
+                {"role": "user", "content": user_content},
             ],
             "user": session_id,
         }
