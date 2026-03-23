@@ -38,7 +38,7 @@ class S3Client:
             aws_secret_access_key: AWS secret access key. Defaults to AWS_SECRET_ACCESS_KEY env var.
             aws_region: AWS region. Defaults to AWS_REGION env var.
         """
-        self.bucket_name = bucket_name or os.getenv("AWS_BUCKET_NAME", "")
+        self.bucket_name = bucket_name if bucket_name is not None else os.getenv("AWS_BUCKET_NAME", "")
         self.aws_access_key_id = aws_access_key_id or os.getenv("AWS_ACCESS_KEY_ID")
         self.aws_secret_access_key = aws_secret_access_key or os.getenv(
             "AWS_SECRET_ACCESS_KEY"

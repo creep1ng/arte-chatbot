@@ -43,7 +43,7 @@ class FileInputsClient:
         return self._client
 
     def upload_pdf(self, pdf_bytes: bytes, filename: str) -> str:
-        """Upload a PDF file to OpenAI Files API with purpose="assistants".
+        """Upload a PDF file to OpenAI Files API with purpose="user_data".
 
         Args:
             pdf_bytes: Raw bytes of the PDF file.
@@ -63,10 +63,10 @@ class FileInputsClient:
             file_obj = io.BytesIO(pdf_bytes)
             file_obj.name = filename
 
-            # Upload the file with purpose="assistants" for use in Chat Completions
+            # Upload the file with purpose="user_data" for use in Chat Completions
             response = self.client.files.create(
                 file=file_obj,
-                purpose="assistants",
+                purpose="user_data",
             )
 
             file_id = response.id

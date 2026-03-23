@@ -68,7 +68,7 @@ class TestFileInputsClientUpload:
 
         # Verify the call arguments
         call_kwargs = mock_client.files.create.call_args.kwargs
-        assert call_kwargs["purpose"] == "assistants"
+        assert call_kwargs["purpose"] == "user_data"
 
     @patch("backend.app.file_inputs.OpenAI")
     def test_upload_pdf_raises_auth_error(self, mock_openai_class: MagicMock) -> None:
@@ -78,7 +78,7 @@ class TestFileInputsClientUpload:
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
         mock_client.files.create.side_effect = AuthenticationError(
-            response=MagicMock(), body={"error": {"message": "Invalid key"}}
+            message="Invalid key", response=MagicMock(), body={}
         )
 
         client = FileInputsClient(api_key="sk-invalid-key")
@@ -96,7 +96,7 @@ class TestFileInputsClientUpload:
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
         mock_client.files.create.side_effect = BadRequestError(
-            response=MagicMock(), body={"error": {"message": "Invalid file format"}}
+            message="Invalid file", response=MagicMock(), body={}
         )
 
         client = FileInputsClient(api_key="sk-test-key")
@@ -114,7 +114,7 @@ class TestFileInputsClientUpload:
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
         mock_client.files.create.side_effect = APIError(
-            request=MagicMock(), body={"error": {"message": "Rate limit"}}
+            message="Rate limit", request=MagicMock(), body={}
         )
 
         client = FileInputsClient(api_key="sk-test-key")
@@ -147,7 +147,7 @@ class TestFileInputsClientDelete:
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
         mock_client.files.delete.side_effect = AuthenticationError(
-            response=MagicMock(), body={"error": {"message": "Invalid key"}}
+            message="Invalid key", response=MagicMock(), body={}
         )
 
         client = FileInputsClient(api_key="sk-invalid-key")
@@ -165,7 +165,7 @@ class TestFileInputsClientDelete:
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
         mock_client.files.delete.side_effect = APIError(
-            request=MagicMock(), body={"error": {"message": "Server error"}}
+            message="Server error", request=MagicMock(), body={}
         )
 
         client = FileInputsClient(api_key="sk-test-key")

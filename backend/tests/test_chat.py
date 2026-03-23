@@ -69,10 +69,20 @@ class TestChatEndpointUnit:
         data = response.json()
         assert data["escalate"] is True
 
-    @patch("backend.main.llm_client.get_llm_response")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_no_escalate_for_normal_message(self, mock_llm) -> None:
         """Test no escalation for normal messages."""
-        mock_llm.return_value = "Mocked LLM Response"
+        # get_llm_response_with_tools returns a dict with choices
+        mock_llm.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Mocked LLM Response"
+                    }
+                }
+            ]
+        }
         response = client.post("/chat", json={"message": "¿Cuánta potencia tiene el panel de 400W?"})
         assert response.status_code == 200
         data = response.json()
@@ -80,20 +90,38 @@ class TestChatEndpointUnit:
         assert data["reason"] is None
         assert data["response"] == "Mocked LLM Response"
 
-    @patch("backend.main.llm_client.get_llm_response")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_session_id(self, mock_llm) -> None:
         """Test that session_id is returned in response."""
-        mock_llm.return_value = "Mocked LLM Response"
+        mock_llm.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Mocked LLM Response"
+                    }
+                }
+            ]
+        }
         response = client.post("/chat", json={"message": "Hola"})
         assert response.status_code == 200
         data = response.json()
         assert "session_id" in data
         assert isinstance(data["session_id"], str)
 
-    @patch("backend.main.llm_client.get_llm_response")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_accepts_custom_session_id(self, mock_llm) -> None:
         """Test that custom session_id can be provided."""
-        mock_llm.return_value = "Mocked LLM Response"
+        mock_llm.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Mocked LLM Response"
+                    }
+                }
+            ]
+        }
         response = client.post("/chat", json={"message": "Hola", "session_id": "my-session-123"})
         assert response.status_code == 200
         data = response.json()

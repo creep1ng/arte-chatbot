@@ -66,7 +66,7 @@ class LLMClient:
         api_url: str = OPENAI_API_URL,
         model: str = DEFAULT_MODEL,
     ) -> None:
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+        self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")
         self.api_url = api_url
         self.model = model
         self.default_system_prompt = ARTE_SYSTEM_PROMPT
@@ -241,9 +241,9 @@ class LLMClient:
                     {"role": "system", "content": prompt},
                     {
                         "role": "user",
-                        "content": message,
-                        "file citations": [
-                            {"type": "file", "file_id": file_id}
+                        "content": [
+                            {"type": "file", "file": {"file_id": file_id}},
+                            {"type": "text", "text": message},
                         ],
                     },
                 ],

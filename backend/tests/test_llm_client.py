@@ -12,6 +12,7 @@ from backend.app.llm_client import (
     ARTE_SYSTEM_PROMPT,
     DATASHEET_SYSTEM_PROMPT,
 )
+from backend.app import llm_client as llm_client_module
 
 
 class TestLLMClientInitialization:
@@ -201,11 +202,17 @@ class TestLLMClientWithFile:
         assert "messages" in call_kwargs
         messages = call_kwargs["messages"]
 
-        # Check user message contains file citations
+        # Check user message contains file in content array format
         user_message = messages[1]
         assert user_message["role"] == "user"
-        assert "file citations" in user_message
-        assert user_message["file citations"][0]["file_id"] == "file-abc123"
+        assert isinstance(user_message["content"], list)
+        # Verify file item
+        file_item = user_message["content"][0]
+        assert file_item["type"] == "file"
+        assert file_item["file"]["file_id"] == "file-abc123"
+        # Verify text item
+        text_item = user_message["content"][1]
+        assert text_item["type"] == "text"
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_file_uses_datasheet_prompt(self, mock_openai_class: MagicMock) -> None:
@@ -255,18 +262,18 @@ class TestSystemPrompts:
 
     def test_datasheet_system_prompt_exists(self) -> None:
         """Test DATASHEET_SYSTEM_PROMPT constant exists and is not empty."""
-        assert hasattr(llm_client, "DATASHEET_SYSTEM_PROMPT")
+        assert hasattr(llm_client_module, "DATASHEET_SYSTEM_PROMPT")
         assert DATASHEET_SYSTEM_PROMPT is not None
         assert len(DATASHEET_SYSTEM_PROMPT) > 0
 
     def test_datasheet_system_prompt_content(self) -> None:
         """Test DATASHEET_SYSTEM_PROMPT contains relevant content."""
         assert "ficha técnica" in DATASHEET_SYSTEM_PROMPT.lower()
-        assert "respuesta" in DATASHEET_SYSTEM_PROMPT.lower()
+        assert "responde" in DATASHEET_SYSTEM_PROMPT.lower()
 
     def test_arte_system_prompt_exists(self) -> None:
         """Test ARTE_SYSTEM_PROMPT constant exists."""
-        assert hasattr(llm_client, "ARTE_SYSTEM_PROMPT")
+        assert hasattr(llm_client_module, "ARTE_SYSTEM_PROMPT")
         assert ARTE_SYSTEM_PROMPT is not None
         assert len(ARTE_SYSTEM_PROMPT) > 0
 
