@@ -1,14 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/creep1ng/arte-chatbot/schemas/catalog_index.schema.json",
-  "title": "Arte Chatbot - Cat\u00e1logo de Fichas T\u00e9cnicas",
-  "description": "Schema para el archivo catalog_index.json que contiene los metadatos de las fichas t\u00e9cnicas de productos almacenados en S3. Definido en ADR-004.",
+  "title": "Arte Chatbot - Catálogo de Fichas Técnicas",
+  "description": "Schema para el archivo catalog_index.json que contiene los metadatos de las fichas técnicas de productos almacenados en S3. Definido en ADR-004.",
   "type": "object",
-  "required": [
-    "version",
-    "generado_en",
-    "productos"
-  ],
+  "required": ["version", "generado_en", "productos"],
   "additionalProperties": false,
   "properties": {
     "version": {
@@ -26,34 +22,32 @@
       "type": "array",
       "items": {
         "oneOf": [
-          {
-            "$ref": "#/$defs/panel"
-          },
-          {
-            "$ref": "#/$defs/inversor"
-          },
-          {
-            "$ref": "#/$defs/controlador"
-          },
-          {
-            "$ref": "#/$defs/bateria"
-          }
+          { "$ref": "#/$defs/panel" },
+          { "$ref": "#/$defs/inversor" },
+          { "$ref": "#/$defs/controlador" },
+          { "$ref": "#/$defs/bateria" }
         ]
       },
       "minItems": 1
     }
   },
   "$defs": {
+    "variante_base": {
+      "type": "object",
+      "required": ["modelo"],
+      "properties": {
+        "modelo": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "description": "Nombre del modelo específico de la variante"
+        }
+      },
+      "description": "Estructura base de una variante. Cada categoría extiende esta definición con sus parámetros diferenciales."
+    },
     "base_producto": {
       "type": "object",
-      "required": [
-        "id",
-        "nombre_comercial",
-        "categoria",
-        "fabricante",
-        "ruta_s3",
-        "variantes"
-      ],
+      "required": ["id", "nombre_comercial", "categoria", "fabricante", "ruta_s3", "variantes"],
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -65,7 +59,12 @@
         "nombre_comercial": {
           "type": "string",
           "minLength": 3,
-          "maxLength": 200
+          "maxLength": 200,
+          "description": "Nombre de la serie o línea de productos"
+        },
+        "categoria": {
+          "type": "string",
+          "description": "Categoría del producto, restringida por cada tipo específico"
         },
         "fabricante": {
           "type": "string",
@@ -91,40 +90,26 @@
           "type": "string",
           "format": "uri"
         },
+        "parametros_comunes": {
+          "type": "object",
+          "description": "Parámetros técnicos compartidos por todas las variantes de la serie. Cada categoría define su estructura específica."
+        },
         "variantes": {
           "type": "array",
           "minItems": 1,
           "items": {
-            "type": "object",
-            "required": [
-              "modelo",
-              "parametros_clave"
-            ],
-            "properties": {
-              "modelo": {
-                "type": "string",
-                "minLength": 2,
-                "maxLength": 150
-              },
-              "parametros_clave": {
-                "type": "object"
-              }
-            }
-          }
+            "$ref": "#/$defs/variante_base"
+          },
+          "description": "Lista de variantes del producto. Cada variante solo especifica los parámetros que difieren de parametros_comunes."
         }
       }
     },
     "panel": {
       "allOf": [
-        {
-          "$ref": "#/$defs/base_producto"
-        },
+        { "$ref": "#/$defs/base_producto" },
         {
           "type": "object",
-          "required": [
-            "categoria",
-            "variantes"
-          ],
+          "required": ["categoria", "variantes"],
           "properties": {
             "categoria": {
               "type": "string",
@@ -134,34 +119,53 @@
               "type": "string",
               "pattern": "^raw/paneles/.+\\.pdf$"
             },
+            "parametros_comunes": {
+              "$ref": "#/$defs/parametros_comunes_panel"
+            },
             "variantes": {
               "type": "array",
               "items": {
-                "type": "object",
-                "properties": {
-                  "parametros_clave": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "tipo_celda",
-                      "potencia_w"
-                    ],
-                    "properties": {
-                      "tipo_celda": {
-                        "type": "string",
-                        "enum": [
-                          "monocristalino",
-                          "policristalino"
-                        ],
-                        "description": "Tipo de celda solar"
-                      },
-                      "potencia_w": {
-                        "type": "number",
-                        "minimum": 0,
-                        "description": "Potencia nominal en Watts"
-                      }
-                    }
-                  }
+                "$ref": "#/$defs/variante_panel"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "parametros_comunes_panel": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Parámetros compartidos por todas las variantes de un panel solar",
+      "required": ["tipo_celda"],
+      "properties": {
+        "tipo_celda": {
+          "type": "string",
+          "enum": ["monocristalino", "policristalino"],
+          "description": "Tipo de celda solar"
+        }
+      }
+    },
+    "variante_panel": {
+      "allOf": [
+        { "$ref": "#/$defs/variante_base" },
+        {
+          "type": "object",
+          "required": ["parametros_clave"],
+          "properties": {
+            "parametros_clave": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["potencia_w"],
+              "properties": {
+                "tipo_celda": {
+                  "type": "string",
+                  "enum": ["monocristalino", "policristalino"],
+                  "description": "Tipo de celda solar (override del valor en parametros_comunes)"
+                },
+                "potencia_w": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Potencia nominal en Watts"
                 }
               }
             }
@@ -171,15 +175,10 @@
     },
     "inversor": {
       "allOf": [
-        {
-          "$ref": "#/$defs/base_producto"
-        },
+        { "$ref": "#/$defs/base_producto" },
         {
           "type": "object",
-          "required": [
-            "categoria",
-            "variantes"
-          ],
+          "required": ["categoria", "variantes"],
           "properties": {
             "categoria": {
               "type": "string",
@@ -189,96 +188,99 @@
               "type": "string",
               "pattern": "^raw/inversores/.+\\.pdf$"
             },
+            "parametros_comunes": {
+              "$ref": "#/$defs/parametros_comunes_inversor"
+            },
             "variantes": {
               "type": "array",
               "items": {
-                "type": "object",
-                "properties": {
-                  "parametros_clave": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "tipo"
-                    ],
-                    "properties": {
-                      "tipo": {
-                        "type": "string",
-                        "enum": [
-                          "onda_pura",
-                          "onda_modificada",
-                          "multifuncional",
-                          "hibrido",
-                          "conexion_a_red"
-                        ],
-                        "description": "Tipo de inversor"
-                      },
-                      "nivel_tension": {
-                        "type": "number",
-                        "minimum": 0,
-                        "description": "Nivel de tensi\u00f3n en Voltios (para onda_pura, onda_modificada, multifuncional)"
-                      },
-                      "capacidad": {
-                        "type": "number",
-                        "minimum": 0,
-                        "description": "Capacidad en Watts o kVA"
-                      },
-                      "fases": {
-                        "type": "string",
-                        "enum": [
-                          "bifasico",
-                          "trifasico"
-                        ],
-                        "description": "Tipo de fases (para hibrido o conexion_a_red)"
-                      }
-                    },
-                    "allOf": [
-                      {
-                        "description": "Onda pura, onda modificada o multifuncional requieren nivel_tension y capacidad",
-                        "if": {
-                          "properties": {
-                            "tipo": {
-                              "enum": [
-                                "onda_pura",
-                                "onda_modificada",
-                                "multifuncional"
-                              ]
-                            }
-                          },
-                          "required": [
-                            "tipo"
-                          ]
-                        },
-                        "then": {
-                          "required": [
-                            "nivel_tension",
-                            "capacidad"
-                          ]
-                        }
-                      },
-                      {
-                        "description": "Hibrido o conexion_a_red requieren fases y capacidad",
-                        "if": {
-                          "properties": {
-                            "tipo": {
-                              "enum": [
-                                "hibrido",
-                                "conexion_a_red"
-                              ]
-                            }
-                          },
-                          "required": [
-                            "tipo"
-                          ]
-                        },
-                        "then": {
-                          "required": [
-                            "fases",
-                            "capacidad"
-                          ]
-                        }
-                      }
-                    ]
-                  }
+                "$ref": "#/$defs/variante_inversor"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "parametros_comunes_inversor": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Parámetros compartidos por todas las variantes de un inversor",
+      "required": ["tipo"],
+      "properties": {
+        "tipo": {
+          "type": "string",
+          "enum": ["onda_pura", "onda_modificada", "multifuncional", "hibrido", "conexion_a_red"],
+          "description": "Tipo de inversor"
+        },
+        "nivel_tension": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Nivel de tensión en Voltios (para onda_pura, onda_modificada, multifuncional)"
+        },
+        "fases": {
+          "type": "string",
+          "enum": ["bifasico", "trifasico"],
+          "description": "Tipo de fases (para hibrido o conexion_a_red)"
+        }
+      },
+      "allOf": [
+        {
+          "description": "Onda pura, onda modificada o multifuncional requieren nivel_tension",
+          "if": {
+            "properties": {
+              "tipo": { "enum": ["onda_pura", "onda_modificada", "multifuncional"] }
+            },
+            "required": ["tipo"]
+          },
+          "then": {
+            "required": ["nivel_tension"]
+          }
+        },
+        {
+          "description": "Hibrido o conexion_a_red requieren fases",
+          "if": {
+            "properties": {
+              "tipo": { "enum": ["hibrido", "conexion_a_red"] }
+            },
+            "required": ["tipo"]
+          },
+          "then": {
+            "required": ["fases"]
+          }
+        }
+      ]
+    },
+    "variante_inversor": {
+      "allOf": [
+        { "$ref": "#/$defs/variante_base" },
+        {
+          "type": "object",
+          "required": ["parametros_clave"],
+          "properties": {
+            "parametros_clave": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["capacidad"],
+              "properties": {
+                "tipo": {
+                  "type": "string",
+                  "enum": ["onda_pura", "onda_modificada", "multifuncional", "hibrido", "conexion_a_red"],
+                  "description": "Tipo de inversor (override del valor en parametros_comunes)"
+                },
+                "nivel_tension": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Nivel de tensión en Voltios (override del valor en parametros_comunes)"
+                },
+                "capacidad": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Capacidad en Watts o kVA"
+                },
+                "fases": {
+                  "type": "string",
+                  "enum": ["bifasico", "trifasico"],
+                  "description": "Tipo de fases (override del valor en parametros_comunes)"
                 }
               }
             }
@@ -288,15 +290,10 @@
     },
     "controlador": {
       "allOf": [
-        {
-          "$ref": "#/$defs/base_producto"
-        },
+        { "$ref": "#/$defs/base_producto" },
         {
           "type": "object",
-          "required": [
-            "categoria",
-            "variantes"
-          ],
+          "required": ["categoria", "variantes"],
           "properties": {
             "categoria": {
               "type": "string",
@@ -306,40 +303,63 @@
               "type": "string",
               "pattern": "^raw/controladores/.+\\.pdf$"
             },
+            "parametros_comunes": {
+              "$ref": "#/$defs/parametros_comunes_controlador"
+            },
             "variantes": {
               "type": "array",
               "items": {
-                "type": "object",
-                "properties": {
-                  "parametros_clave": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "tipo",
-                      "tension_v",
-                      "capacidad_a"
-                    ],
-                    "properties": {
-                      "tipo": {
-                        "type": "string",
-                        "enum": [
-                          "mppt",
-                          "pwm"
-                        ],
-                        "description": "Tipo de controlador"
-                      },
-                      "tension_v": {
-                        "type": "number",
-                        "minimum": 0,
-                        "description": "Tensi\u00f3n en Voltios"
-                      },
-                      "capacidad_a": {
-                        "type": "number",
-                        "minimum": 0,
-                        "description": "Capacidad en Amperios"
-                      }
-                    }
-                  }
+                "$ref": "#/$defs/variante_controlador"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "parametros_comunes_controlador": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Parámetros compartidos por todas las variantes de un controlador",
+      "required": ["tipo", "tension_v"],
+      "properties": {
+        "tipo": {
+          "type": "string",
+          "enum": ["mppt", "pwm"],
+          "description": "Tipo de controlador"
+        },
+        "tension_v": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Tensión en Voltios"
+        }
+      }
+    },
+    "variante_controlador": {
+      "allOf": [
+        { "$ref": "#/$defs/variante_base" },
+        {
+          "type": "object",
+          "required": ["parametros_clave"],
+          "properties": {
+            "parametros_clave": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["capacidad_a"],
+              "properties": {
+                "tipo": {
+                  "type": "string",
+                  "enum": ["mppt", "pwm"],
+                  "description": "Tipo de controlador (override del valor en parametros_comunes)"
+                },
+                "tension_v": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Tensión en Voltios (override del valor en parametros_comunes)"
+                },
+                "capacidad_a": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Capacidad en Amperios"
                 }
               }
             }
@@ -349,15 +369,10 @@
     },
     "bateria": {
       "allOf": [
-        {
-          "$ref": "#/$defs/base_producto"
-        },
+        { "$ref": "#/$defs/base_producto" },
         {
           "type": "object",
-          "required": [
-            "categoria",
-            "variantes"
-          ],
+          "required": ["categoria", "variantes"],
           "properties": {
             "categoria": {
               "type": "string",
@@ -367,77 +382,77 @@
               "type": "string",
               "pattern": "^raw/baterias/.+\\.pdf$"
             },
+            "parametros_comunes": {
+              "$ref": "#/$defs/parametros_comunes_bateria"
+            },
             "variantes": {
               "type": "array",
               "items": {
-                "type": "object",
-                "properties": {
-                  "parametros_clave": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "tipo"
-                    ],
-                    "properties": {
-                      "tipo": {
-                        "type": "string",
-                        "enum": [
-                          "Gel",
-                          "Litio"
-                        ],
-                        "description": "Tipo de bater\u00eda"
-                      },
-                      "nivel_tension": {
-                        "type": "number",
-                        "minimum": 0,
-                        "description": "Nivel de tensi\u00f3n en Voltios (para Litio)"
-                      },
-                      "capacidad": {
-                        "type": "number",
-                        "minimum": 0,
-                        "description": "Capacidad en Ah o kWh"
-                      }
-                    },
-                    "allOf": [
-                      {
-                        "description": "Bater\u00edas Gel solo requieren capacidad",
-                        "if": {
-                          "properties": {
-                            "tipo": {
-                              "const": "Gel"
-                            }
-                          },
-                          "required": [
-                            "tipo"
-                          ]
-                        },
-                        "then": {
-                          "required": [
-                            "capacidad"
-                          ]
-                        }
-                      },
-                      {
-                        "description": "Bater\u00edas Litio requieren nivel_tension y capacidad",
-                        "if": {
-                          "properties": {
-                            "tipo": {
-                              "const": "Litio"
-                            }
-                          },
-                          "required": [
-                            "tipo"
-                          ]
-                        },
-                        "then": {
-                          "required": [
-                            "nivel_tension",
-                            "capacidad"
-                          ]
-                        }
-                      }
-                    ]
-                  }
+                "$ref": "#/$defs/variante_bateria"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "parametros_comunes_bateria": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Parámetros compartidos por todas las variantes de una batería",
+      "required": ["tipo"],
+      "properties": {
+        "tipo": {
+          "type": "string",
+          "enum": ["Gel", "Litio"],
+          "description": "Tipo de batería"
+        },
+        "nivel_tension": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Nivel de tensión en Voltios (para Litio)"
+        }
+      },
+      "allOf": [
+        {
+          "description": "Baterías Litio requieren nivel_tension",
+          "if": {
+            "properties": {
+              "tipo": { "const": "Litio" }
+            },
+            "required": ["tipo"]
+          },
+          "then": {
+            "required": ["nivel_tension"]
+          }
+        }
+      ]
+    },
+    "variante_bateria": {
+      "allOf": [
+        { "$ref": "#/$defs/variante_base" },
+        {
+          "type": "object",
+          "required": ["parametros_clave"],
+          "properties": {
+            "parametros_clave": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["capacidad"],
+              "properties": {
+                "tipo": {
+                  "type": "string",
+                  "enum": ["Gel", "Litio"],
+                  "description": "Tipo de batería (override del valor en parametros_comunes)"
+                },
+                "nivel_tension": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Nivel de tensión en Voltios (override del valor en parametros_comunes)"
+                },
+                "capacidad": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Capacidad en Ah o kWh"
                 }
               }
             }
