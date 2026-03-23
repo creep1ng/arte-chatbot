@@ -1,10 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/creep1ng/arte-chatbot/schemas/catalog_index.schema.json",
-  "title": "Arte Chatbot - Catálogo de Fichas Técnicas",
-  "description": "Schema para el archivo catalog_index.json que contiene los metadatos de las fichas técnicas de productos almacenados en S3. Definido en ADR-004.",
+  "title": "Arte Chatbot - Cat\u00e1logo de Fichas T\u00e9cnicas",
+  "description": "Schema para el archivo catalog_index.json que contiene los metadatos de las fichas t\u00e9cnicas de productos almacenados en S3. Definido en ADR-004.",
   "type": "object",
-  "required": ["version", "generado_en", "productos"],
+  "required": [
+    "version",
+    "generado_en",
+    "productos"
+  ],
   "additionalProperties": false,
   "properties": {
     "version": {
@@ -22,10 +26,18 @@
       "type": "array",
       "items": {
         "oneOf": [
-          { "$ref": "#/$defs/panel" },
-          { "$ref": "#/$defs/inversor" },
-          { "$ref": "#/$defs/controlador" },
-          { "$ref": "#/$defs/bateria" }
+          {
+            "$ref": "#/$defs/panel"
+          },
+          {
+            "$ref": "#/$defs/inversor"
+          },
+          {
+            "$ref": "#/$defs/controlador"
+          },
+          {
+            "$ref": "#/$defs/bateria"
+          }
         ]
       },
       "minItems": 1
@@ -34,7 +46,14 @@
   "$defs": {
     "base_producto": {
       "type": "object",
-      "required": ["id", "nombre_comercial", "categoria", "fabricante", "modelo", "ruta_s3"],
+      "required": [
+        "id",
+        "nombre_comercial",
+        "categoria",
+        "fabricante",
+        "ruta_s3",
+        "variantes"
+      ],
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -52,11 +71,6 @@
           "type": "string",
           "minLength": 2,
           "maxLength": 100
-        },
-        "modelo": {
-          "type": "string",
-          "minLength": 2,
-          "maxLength": 150
         },
         "ruta_s3": {
           "type": "string"
@@ -76,15 +90,41 @@
         "url_fabricante": {
           "type": "string",
           "format": "uri"
+        },
+        "variantes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "modelo",
+              "parametros_clave"
+            ],
+            "properties": {
+              "modelo": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 150
+              },
+              "parametros_clave": {
+                "type": "object"
+              }
+            }
+          }
         }
       }
     },
     "panel": {
       "allOf": [
-        { "$ref": "#/$defs/base_producto" },
+        {
+          "$ref": "#/$defs/base_producto"
+        },
         {
           "type": "object",
-          "required": ["categoria", "parametros_clave"],
+          "required": [
+            "categoria",
+            "variantes"
+          ],
           "properties": {
             "categoria": {
               "type": "string",
@@ -94,20 +134,34 @@
               "type": "string",
               "pattern": "^raw/paneles/.+\\.pdf$"
             },
-            "parametros_clave": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["tipo_celda", "potencia_w"],
-              "properties": {
-                "tipo_celda": {
-                  "type": "string",
-                  "enum": ["monocristalino", "policristalino"],
-                  "description": "Tipo de celda solar"
-                },
-                "potencia_w": {
-                  "type": "number",
-                  "minimum": 0,
-                  "description": "Potencia nominal en Watts"
+            "variantes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "parametros_clave": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "tipo_celda",
+                      "potencia_w"
+                    ],
+                    "properties": {
+                      "tipo_celda": {
+                        "type": "string",
+                        "enum": [
+                          "monocristalino",
+                          "policristalino"
+                        ],
+                        "description": "Tipo de celda solar"
+                      },
+                      "potencia_w": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Potencia nominal en Watts"
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -117,10 +171,15 @@
     },
     "inversor": {
       "allOf": [
-        { "$ref": "#/$defs/base_producto" },
+        {
+          "$ref": "#/$defs/base_producto"
+        },
         {
           "type": "object",
-          "required": ["categoria", "parametros_clave"],
+          "required": [
+            "categoria",
+            "variantes"
+          ],
           "properties": {
             "categoria": {
               "type": "string",
@@ -130,62 +189,98 @@
               "type": "string",
               "pattern": "^raw/inversores/.+\\.pdf$"
             },
-            "parametros_clave": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["tipo"],
-              "properties": {
-                "tipo": {
-                  "type": "string",
-                  "enum": ["onda_pura", "onda_modificada", "multifuncional", "hibrido", "conexion_a_red"],
-                  "description": "Tipo de inversor"
-                },
-                "nivel_tension": {
-                  "type": "number",
-                  "minimum": 0,
-                  "description": "Nivel de tensión en Voltios (para onda_pura, onda_modificada, multifuncional)"
-                },
-                "capacidad": {
-                  "type": "number",
-                  "minimum": 0,
-                  "description": "Capacidad en Watts o kVA"
-                },
-                "fases": {
-                  "type": "string",
-                  "enum": ["bifasico", "trifasico"],
-                  "description": "Tipo de fases (para hibrido o conexion_a_red)"
-                }
-              },
-              "allOf": [
-                {
-                  "description": "Onda pura, onda modificada o multifuncional requieren nivel_tension y capacidad",
-                  "if": {
+            "variantes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "parametros_clave": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "tipo"
+                    ],
                     "properties": {
                       "tipo": {
-                        "enum": ["onda_pura", "onda_modificada", "multifuncional"]
+                        "type": "string",
+                        "enum": [
+                          "onda_pura",
+                          "onda_modificada",
+                          "multifuncional",
+                          "hibrido",
+                          "conexion_a_red"
+                        ],
+                        "description": "Tipo de inversor"
+                      },
+                      "nivel_tension": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Nivel de tensi\u00f3n en Voltios (para onda_pura, onda_modificada, multifuncional)"
+                      },
+                      "capacidad": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Capacidad en Watts o kVA"
+                      },
+                      "fases": {
+                        "type": "string",
+                        "enum": [
+                          "bifasico",
+                          "trifasico"
+                        ],
+                        "description": "Tipo de fases (para hibrido o conexion_a_red)"
                       }
                     },
-                    "required": ["tipo"]
-                  },
-                  "then": {
-                    "required": ["nivel_tension", "capacidad"]
-                  }
-                },
-                {
-                  "description": "Hibrido o conexion_a_red requieren fases y capacidad",
-                  "if": {
-                    "properties": {
-                      "tipo": {
-                        "enum": ["hibrido", "conexion_a_red"]
+                    "allOf": [
+                      {
+                        "description": "Onda pura, onda modificada o multifuncional requieren nivel_tension y capacidad",
+                        "if": {
+                          "properties": {
+                            "tipo": {
+                              "enum": [
+                                "onda_pura",
+                                "onda_modificada",
+                                "multifuncional"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "tipo"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "nivel_tension",
+                            "capacidad"
+                          ]
+                        }
+                      },
+                      {
+                        "description": "Hibrido o conexion_a_red requieren fases y capacidad",
+                        "if": {
+                          "properties": {
+                            "tipo": {
+                              "enum": [
+                                "hibrido",
+                                "conexion_a_red"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "tipo"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "fases",
+                            "capacidad"
+                          ]
+                        }
                       }
-                    },
-                    "required": ["tipo"]
-                  },
-                  "then": {
-                    "required": ["fases", "capacidad"]
+                    ]
                   }
                 }
-              ]
+              }
             }
           }
         }
@@ -193,10 +288,15 @@
     },
     "controlador": {
       "allOf": [
-        { "$ref": "#/$defs/base_producto" },
+        {
+          "$ref": "#/$defs/base_producto"
+        },
         {
           "type": "object",
-          "required": ["categoria", "parametros_clave"],
+          "required": [
+            "categoria",
+            "variantes"
+          ],
           "properties": {
             "categoria": {
               "type": "string",
@@ -206,25 +306,40 @@
               "type": "string",
               "pattern": "^raw/controladores/.+\\.pdf$"
             },
-            "parametros_clave": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["tipo", "tension_v", "capacidad_a"],
-              "properties": {
-                "tipo": {
-                  "type": "string",
-                  "enum": ["mppt", "pwm"],
-                  "description": "Tipo de controlador"
-                },
-                "tension_v": {
-                  "type": "number",
-                  "minimum": 0,
-                  "description": "Tensión en Voltios"
-                },
-                "capacidad_a": {
-                  "type": "number",
-                  "minimum": 0,
-                  "description": "Capacidad en Amperios"
+            "variantes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "parametros_clave": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "tipo",
+                      "tension_v",
+                      "capacidad_a"
+                    ],
+                    "properties": {
+                      "tipo": {
+                        "type": "string",
+                        "enum": [
+                          "mppt",
+                          "pwm"
+                        ],
+                        "description": "Tipo de controlador"
+                      },
+                      "tension_v": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Tensi\u00f3n en Voltios"
+                      },
+                      "capacidad_a": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Capacidad en Amperios"
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -234,10 +349,15 @@
     },
     "bateria": {
       "allOf": [
-        { "$ref": "#/$defs/base_producto" },
+        {
+          "$ref": "#/$defs/base_producto"
+        },
         {
           "type": "object",
-          "required": ["categoria", "parametros_clave"],
+          "required": [
+            "categoria",
+            "variantes"
+          ],
           "properties": {
             "categoria": {
               "type": "string",
@@ -247,49 +367,79 @@
               "type": "string",
               "pattern": "^raw/baterias/.+\\.pdf$"
             },
-            "parametros_clave": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["tipo"],
-              "properties": {
-                "tipo": {
-                  "type": "string",
-                  "enum": ["Gel", "Litio"],
-                  "description": "Tipo de batería"
-                },
-                "nivel_tension": {
-                  "type": "number",
-                  "minimum": 0,
-                  "description": "Nivel de tensión en Voltios (para Litio)"
-                },
-                "capacidad": {
-                  "type": "number",
-                  "minimum": 0,
-                  "description": "Capacidad en Ah o kWh"
-                }
-              },
-              "allOf": [
-                {
-                  "description": "Baterías Gel solo requieren capacidad",
-                  "if": {
-                    "properties": { "tipo": { "const": "Gel" } },
-                    "required": ["tipo"]
-                  },
-                  "then": {
-                    "required": ["capacidad"]
+            "variantes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "parametros_clave": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "tipo"
+                    ],
+                    "properties": {
+                      "tipo": {
+                        "type": "string",
+                        "enum": [
+                          "Gel",
+                          "Litio"
+                        ],
+                        "description": "Tipo de bater\u00eda"
+                      },
+                      "nivel_tension": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Nivel de tensi\u00f3n en Voltios (para Litio)"
+                      },
+                      "capacidad": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Capacidad en Ah o kWh"
+                      }
+                    },
+                    "allOf": [
+                      {
+                        "description": "Bater\u00edas Gel solo requieren capacidad",
+                        "if": {
+                          "properties": {
+                            "tipo": {
+                              "const": "Gel"
+                            }
+                          },
+                          "required": [
+                            "tipo"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "capacidad"
+                          ]
+                        }
+                      },
+                      {
+                        "description": "Bater\u00edas Litio requieren nivel_tension y capacidad",
+                        "if": {
+                          "properties": {
+                            "tipo": {
+                              "const": "Litio"
+                            }
+                          },
+                          "required": [
+                            "tipo"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "nivel_tension",
+                            "capacidad"
+                          ]
+                        }
+                      }
+                    ]
                   }
-                },
-                {
-                  "description": "Baterías Litio requieren nivel_tension y capacidad",
-                  "if": {
-                    "properties": { "tipo": { "const": "Litio" } },
-                    "required": ["tipo"]
-                  },
-                  "then": {
-                    "required": ["nivel_tension", "capacidad"]
-                  }
                 }
-              ]
+              }
             }
           }
         }
