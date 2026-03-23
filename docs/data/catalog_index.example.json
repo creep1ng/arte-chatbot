@@ -1,0 +1,73 @@
+{
+  "version": "1.0.0",
+  "generado_en": "2026-03-23T11:30:00-05:00",
+  "generado_por": "manual",
+  "productos": [
+    {
+      "id": "jinko-tiger-pro-460w",
+      "nombre_comercial": "Jinko Tiger Pro 460W",
+      "categoria": "paneles",
+      "fabricante": "Jinko",
+      "modelo": "Tiger Pro 460W",
+      "ruta_s3": "raw/paneles/Jinko Tiger Pro 460W.pdf",
+      "parametros_clave": {
+        "potencia_w": 460,
+        "voltaje_vmp": 41.2,
+        "corriente_imp": 11.17,
+        "eficiencia_pct": 20.48,
+        "garantia_anos": 25
+      },
+      "descripcion": "Módulo fotovoltaico monocristalino de alta eficiencia con tecnología Half-Cell.",
+      "url_fabricante": "https://www.jinkosolar.com/products/monocrystalline-solar-modules/tiger-pro"
+    },
+    {
+      "id": "growatt-mod-10ktl3-x",
+      "nombre_comercial": "Growatt MOD 10KTL3-X",
+      "categoria": "inversores",
+      "fabricante": "Growatt",
+      "modelo": "MOD 10KTL3-X",
+      "ruta_s3": "raw/inversores/Growatt MOD 10KTL3-X.pdf",
+      "parametros_clave": {
+        "potencia_nominal_kw": 10,
+        "eficiencia_pct": 98.4,
+        "fases": 3,
+        "mppt_canales": 2,
+        "rango_voltaje_mppt": [160, 1000]
+      },
+      "descripcion": "Inversor trifásico on-grid con monitoreo WiFi integrado.",
+      "url_fabricante": "https://www.growatt.com/products/on-grid-inverter/mod-tl3-x"
+    },
+    {
+      "id": "victron-smartsolar-mppt-150-70",
+      "nombre_comercial": "Victron SmartSolar MPPT 150-70",
+      "categoria": "controladores",
+      "fabricante": "Victron",
+      "modelo": "SmartSolar MPPT 150-70",
+      "ruta_s3": "raw/controladores/Victron SmartSolar MPPT 150-70.pdf",
+      "parametros_clave": {
+        "corriente_maxima_a": 70,
+        "voltaje_sistema_v": 122448,
+        "mppt_canales": 1,
+        "eficiencia_conversion_pct": 98
+      },
+      "descripcion": "Controlador de carga MPPT con Bluetooth integrado para monitoreo remoto.",
+      "url_fabricante": "https://www.victronenergy.com/solar-charge-controllers/smartsolar-mppt-150-70"
+    },
+    {
+      "id": "huawei-luna2000-10kwh",
+      "nombre_comercial": "Huawei LUNA2000-10 kWh",
+      "categoria": "baterias",
+      "fabricante": "Huawei",
+      "modelo": "LUNA2000-10 kWh",
+      "ruta_s3": "raw/baterias/Huawei LUNA2000-10 kWh.pdf",
+      "parametros_clave": {
+        "capacidad_kwh": 10,
+        "voltaje_nominal_v": 48,
+        "ciclos_vida": 6000,
+        "profundidad_descarga_pct": 90
+      },
+      "descripcion": "Batería de litio LiFePO4 modular con sistema de gestión de batería integrado.",
+      "url_fabricante": "https://solar.huawei.com/residential/energy-storage"
+    }
+  ]
+}

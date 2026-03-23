@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/creep1ng/arte-chatbot/schemas/catalog_index.schema.json",
+  "title": "Arte Chatbot - Catálogo de Fichas Técnicas",
+  "description": "Schema para el archivo catalog_index.json que contiene los metadatos de las fichas técnicas de productos almacenados en S3. Definido en ADR-004.",
+  "type": "object",
+  "required": [
+    "version",
+    "generado_en",
+    "productos"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Versión del schema del catálogo. Permite control de compatibilidad en futuras actualizaciones.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "examples": [
+        "1.0.0"
+      ]
+    },
+    "generado_en": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp ISO 8601 de cuándo se generó el índice."
+    },
+    "generado_por": {
+      "type": "string",
+      "description": "Identificador del proceso o script que generó el índice.",
+      "examples": [
+        "catalog-indexer@1.0.0",
+        "manual"
+      ]
+    },
+    "productos": {
+      "type": "array",
+      "description": "Lista de productos del catálogo con sus metadatos.",
+      "items": {
+        "$ref": "#/$defs/producto"
+      },
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "producto": {
+      "type": "object",
+      "description": "Metadatos de un producto individual del catálogo.",
+      "required": [
+        "id",
+        "nombre_comercial",
+        "categoria",
+        "fabricante",
+        "modelo",
+        "ruta_s3",
+        "parametros_clave"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identificador único del producto en formato slug. Debe ser único en todo el catálogo.",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 3,
+          "maxLength": 100,
+          "examples": [
+            "jinko-tiger-pro-460w",
+            "growatt-mod-10ktl3-x"
+          ]
+        },
+        "nombre_comercial": {
+          "type": "string",
+          "description": "Nombre exacto del producto tal como lo usa el fabricante. Preserva mayúsculas, espacios y caracteres especiales.",
+          "minLength": 3,
+          "maxLength": 200,
+          "examples": [
+            "Jinko Tiger Pro 460W",
+            "Growatt MOD 10KTL3-X"
+          ]
+        },
+        "categoria": {
+          "type": "string",
+          "description": "Categoría del producto. Solo se permiten las categorías válidas definidas en ADR-004.",
+          "enum": [
+            "paneles",
+            "inversores",
+            "controladores",
+            "baterias"
+          ]
+        },
+        "fabricante": {
+          "type": "string",
+          "description": "Nombre del fabricante o marca del producto.",
+          "minLength": 2,
+          "maxLength": 100,
+          "examples": [
+            "Jinko",
+            "Growatt",
+            "Huawei",
+            "Victron"
+          ]
+        },
+        "modelo": {
+          "type": "string",
+          "description": "Modelo específico del producto.",
+          "minLength": 2,
+          "maxLength": 150,
+          "examples": [
+            "Tiger Pro 460W",
+            "MOD 10KTL3-X"
+          ]
+        },
+        "ruta_s3": {
+          "type": "string",
+          "description": "Ruta relativa del archivo PDF en el bucket S3. Formato: raw/{categoria}/{nombre_comercial}.pdf",
+          "pattern": "^raw/(paneles|inversores|controladores|baterias)/.+\\.pdf$",
+          "examples": [
+            "raw/paneles/Jinko Tiger Pro 460W.pdf",
+            "raw/inversores/Growatt MOD 10KTL3-X.pdf"
+          ]
+        },
+        "parametros_clave": {
+          "type": "object",
+          "description": "Diccionario con las especificaciones técnicas principales del producto. Los campos varían según la categoría.",
+          "additionalProperties": true,
+          "minProperties": 1,
+          "properties": {
+            "potencia_w": {
+              "type": "number",
+              "description": "Potencia nominal en Watts (paneles).",
+              "minimum": 0
+            },
+            "potencia_nominal_kw": {
+              "type": "number",
+              "description": "Potencia nominal en kilovatios (inversores).",
+              "minimum": 0
+            },
+            "voltaje_vmp": {
+              "type": "number",
+              "description": "Voltaje a máxima potencia en Voltios.",
+              "minimum": 0
+            },
+            "corriente_imp": {
+              "type": "number",
+              "description": "Corriente a máxima potencia en Amperios.",
+              "minimum": 0
+            },
+            "eficiencia_pct": {
+              "type": "number",
+              "description": "Eficiencia en porcentaje.",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "garantia_anos": {
+              "type": "integer",
+              "description": "Años de garantía del fabricante.",
+              "minimum": 0
+            },
+            "corriente_maxima_a": {
+              "type": "number",
+              "description": "Corriente máxima de carga en Amperios (controladores).",
+              "minimum": 0
+            },
+            "voltaje_sistema_v": {
+              "type": "integer",
+              "description": "Voltaje del sistema soportado (12/24/48).",
+              "enum": [
+                12,
+                24,
+                48,
+                1224,
+                1248,
+                2448,
+                122448
+              ]
+            },
+            "mppt_canales": {
+              "type": "integer",
+              "description": "Número de canales MPPT.",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "fases": {
+              "type": "integer",
+              "description": "Número de fases del inversor.",
+              "enum": [
+                1,
+                3
+              ]
+            },
+            "rango_voltaje_mppt": {
+              "type": "array",
+              "description": "Rango de voltaje MPPT [mínimo, máximo] en Voltios.",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "capacidad_kwh": {
+              "type": "number",
+              "description": "Capacidad de almacenamiento en kWh (baterías).",
+              "minimum": 0
+            },
+            "voltaje_nominal_v": {
+              "type": "number",
+              "description": "Voltaje nominal en Voltios (baterías).",
+              "minimum": 0
+            },
+            "ciclos_vida": {
+              "type": "integer",
+              "description": "Número de ciclos de carga/descarga (baterías).",
+              "minimum": 0
+            },
+            "profundidad_descarga_pct": {
+              "type": "number",
+              "description": "Profundidad de descarga máxima en porcentaje (baterías).",
+              "minimum": 0,
+              "maximum": 100
+            }
+          }
+        },
+        "descripcion": {
+          "type": "string",
+          "description": "Descripción breve del producto. Campo opcional.",
+          "maxLength": 500
+        },
+        "fecha_ingesta": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp ISO 8601 de cuando se ingirió el documento en S3. Campo opcional."
+        },
+        "version_ficha": {
+          "type": "string",
+          "description": "Versión de la ficha técnica si el fabricante la publica. Campo opcional.",
+          "maxLength": 50
+        },
+        "url_fabricante": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL oficial del producto en el sitio del fabricante. Campo opcional."
+        }
+      }
+    }
+  }
+}
