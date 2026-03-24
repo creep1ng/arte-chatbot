@@ -1,110 +1,212 @@
 {
   "version": "1.0.0",
-  "generado_en": "2026-03-23T12:09:39-05:00",
+  "generado_en": "2026-03-23T14:30:00-05:00",
   "generado_por": "manual",
   "productos": [
     {
-      "id": "jinko-tiger-pro-460w",
-      "nombre_comercial": "Jinko Tiger Pro 460W",
+      "id": "jinko-tiger-pro",
+      "nombre_comercial": "Jinko Tiger Pro",
       "categoria": "paneles",
       "fabricante": "Jinko",
-      "modelo": "Tiger Pro 460W",
-      "ruta_s3": "raw/paneles/Jinko Tiger Pro 460W.pdf",
-      "parametros_clave": {
-        "tipo_celda": "monocristalino",
-        "potencia_w": 460
-      },
+      "ruta_s3": "raw/paneles/Jinko Tiger Pro.pdf",
       "descripcion": "Módulo fotovoltaico monocristalino de alta eficiencia con tecnología Half-Cell.",
-      "url_fabricante": "https://www.jinkosolar.com/products/monocrystalline-solar-modules/tiger-pro"
+      "url_fabricante": "https://www.jinkosolar.com/products/monocrystalline-solar-modules/tiger-pro",
+      "parametros_comunes": {
+        "tipo_celda": "monocristalino"
+      },
+      "variantes": [
+        {
+          "modelo": "Tiger Pro 460W",
+          "parametros_clave": {
+            "potencia_w": 460
+          }
+        },
+        {
+          "modelo": "Tiger Pro 470W",
+          "parametros_clave": {
+            "potencia_w": 470
+          }
+        },
+        {
+          "modelo": "Tiger Pro 480W",
+          "parametros_clave": {
+            "potencia_w": 480
+          }
+        }
+      ]
     },
     {
-      "id": "growatt-spa-5000tl",
-      "nombre_comercial": "Growatt SPA 5000TL",
+      "id": "growatt-spa-tl",
+      "nombre_comercial": "Growatt SPA TL",
       "categoria": "inversores",
       "fabricante": "Growatt",
-      "modelo": "SPA 5000TL",
-      "ruta_s3": "raw/inversores/Growatt SPA 5000TL.pdf",
-      "parametros_clave": {
-        "tipo": "conexion_a_red",
-        "fases": "trifasico",
-        "capacidad": 5000
-      },
+      "ruta_s3": "raw/inversores/Growatt SPA TL.pdf",
       "descripcion": "Inversor trifásico con conexión a red para instalaciones residenciales.",
-      "url_fabricante": "https://www.growatt.com/products/on-grid-inverter/spa-tl"
+      "url_fabricante": "https://www.growatt.com/products/on-grid-inverter/spa-tl",
+      "parametros_comunes": {
+        "tipo": "conexion_a_red",
+        "fases": "trifasico"
+      },
+      "variantes": [
+        {
+          "modelo": "SPA 3000TL",
+          "parametros_clave": {
+            "capacidad": 3000
+          }
+        },
+        {
+          "modelo": "SPA 5000TL",
+          "parametros_clave": {
+            "capacidad": 5000
+          }
+        }
+      ]
     },
     {
-      "id": "growatt-5000s",
-      "nombre_comercial": "Growatt 5000S",
+      "id": "growatt-sp-s",
+      "nombre_comercial": "Growatt SP S",
       "categoria": "inversores",
       "fabricante": "Growatt",
-      "modelo": "5000S",
-      "ruta_s3": "raw/inversores/Growatt 5000S.pdf",
-      "parametros_clave": {
-        "tipo": "multifuncional",
-        "nivel_tension": 48,
-        "capacidad": 5000
-      },
+      "ruta_s3": "raw/inversores/Growatt SP S.pdf",
       "descripcion": "Inversor multifuncional para sistema off-grid.",
-      "url_fabricante": "https://www.growatt.com/products/off-grid-inverter/sp-s"
+      "url_fabricante": "https://www.growatt.com/products/off-grid-inverter/sp-s",
+      "parametros_comunes": {
+        "tipo": "multifuncional",
+        "nivel_tension": 48
+      },
+      "variantes": [
+        {
+          "modelo": "3000S",
+          "parametros_clave": {
+            "capacidad": 3000
+          }
+        },
+        {
+          "modelo": "5000S",
+          "parametros_clave": {
+            "capacidad": 5000
+          }
+        }
+      ]
     },
     {
-      "id": "victron-smartsolar-mppt-150-70",
-      "nombre_comercial": "Victron SmartSolar MPPT 150-70",
+      "id": "victron-smartsolar-mppt",
+      "nombre_comercial": "Victron SmartSolar MPPT",
       "categoria": "controladores",
       "fabricante": "Victron",
-      "modelo": "SmartSolar MPPT 150-70",
-      "ruta_s3": "raw/controladores/Victron SmartSolar MPPT 150-70.pdf",
-      "parametros_clave": {
-        "tipo": "mppt",
-        "tension_v": 150,
-        "capacidad_a": 70
-      },
+      "ruta_s3": "raw/controladores/Victron SmartSolar MPPT.pdf",
       "descripcion": "Controlador de carga MPPT con Bluetooth integrado para monitoreo remoto.",
-      "url_fabricante": "https://www.victronenergy.com/solar-charge-controllers/smartsolar-mppt-150-70"
+      "url_fabricante": "https://www.victronenergy.com/solar-charge-controllers/smartsolar-mppt",
+      "parametros_comunes": {
+        "tipo": "mppt",
+        "tension_v": 150
+      },
+      "variantes": [
+        {
+          "modelo": "SmartSolar MPPT 150/35",
+          "parametros_clave": {
+            "capacidad_a": 35
+          }
+        },
+        {
+          "modelo": "SmartSolar MPPT 150/45",
+          "parametros_clave": {
+            "capacidad_a": 45
+          }
+        },
+        {
+          "modelo": "SmartSolar MPPT 150/70",
+          "parametros_clave": {
+            "capacidad_a": 70
+          }
+        }
+      ]
     },
     {
-      "id": "victron-blueSolar-pwm",
-      "nombre_comercial": "Victron BlueSolar PWM 12/24/48V-30A",
+      "id": "victron-bluesolar-pwm",
+      "nombre_comercial": "Victron BlueSolar PWM",
       "categoria": "controladores",
       "fabricante": "Victron",
-      "modelo": "BlueSolar PWM 12/24/48V-30A",
       "ruta_s3": "raw/controladores/Victron BlueSolar PWM.pdf",
-      "parametros_clave": {
-        "tipo": "pwm",
-        "tension_v": 48,
-        "capacidad_a": 30
-      },
       "descripcion": "Controlador de carga PWM económico para pequeñas instalaciones.",
-      "url_fabricante": "https://www.victronenergy.com/solar-charge-controllers/blueSolar-pwm"
+      "url_fabricante": "https://www.victronenergy.com/solar-charge-controllers/bluesolar-pwm",
+      "parametros_comunes": {
+        "tipo": "pwm",
+        "tension_v": 48
+      },
+      "variantes": [
+        {
+          "modelo": "BlueSolar PWM 48V-20A",
+          "parametros_clave": {
+            "capacidad_a": 20
+          }
+        },
+        {
+          "modelo": "BlueSolar PWM 48V-30A",
+          "parametros_clave": {
+            "capacidad_a": 30
+          }
+        }
+      ]
     },
     {
       "id": "huawei-luna2000",
-      "nombre_comercial": "Huawei LUNA2000-10 kWh",
+      "nombre_comercial": "Huawei LUNA2000",
       "categoria": "baterias",
       "fabricante": "Huawei",
-      "modelo": "LUNA2000-10 kWh",
-      "ruta_s3": "raw/baterias/Huawei LUNA2000-10 kWh.pdf",
-      "parametros_clave": {
-        "tipo": "Litio",
-        "nivel_tension": 48,
-        "capacidad": 10
-      },
+      "ruta_s3": "raw/baterias/Huawei LUNA2000.pdf",
       "descripcion": "Batería de litio LiFePO4 modular con sistema de gestión de batería integrado.",
-      "url_fabricante": "https://solar.huawei.com/residential/energy-storage"
+      "url_fabricante": "https://solar.huawei.com/residential/energy-storage",
+      "parametros_comunes": {
+        "tipo": "Litio",
+        "nivel_tension": 48
+      },
+      "variantes": [
+        {
+          "modelo": "LUNA2000-5 kWh",
+          "parametros_clave": {
+            "capacidad": 5
+          }
+        },
+        {
+          "modelo": "LUNA2000-10 kWh",
+          "parametros_clave": {
+            "capacidad": 10
+          }
+        },
+        {
+          "modelo": "LUNA2000-15 kWh",
+          "parametros_clave": {
+            "capacidad": 15
+          }
+        }
+      ]
     },
     {
-      "id": "sunset-gel-250ah",
-      "nombre_comercial": "Sunset Gel 250Ah",
+      "id": "sunset-gel",
+      "nombre_comercial": "Sunset Gel",
       "categoria": "baterias",
       "fabricante": "Sunset",
-      "modelo": "Gel 250Ah",
-      "ruta_s3": "raw/baterias/Sunset Gel 250Ah.pdf",
-      "parametros_clave": {
-        "tipo": "Gel",
-        "capacidad": 250
-      },
+      "ruta_s3": "raw/baterias/Sunset Gel.pdf",
       "descripcion": "Batería solar de ciclo profundo tipo Gel para instalaciones aisladas.",
-      "url_fabricante": "https://www.sunset-solar.com/gel-batteries"
+      "url_fabricante": "https://www.sunset-solar.com/gel-batteries",
+      "parametros_comunes": {
+        "tipo": "Gel"
+      },
+      "variantes": [
+        {
+          "modelo": "Gel 100Ah",
+          "parametros_clave": {
+            "capacidad": 100
+          }
+        },
+        {
+          "modelo": "Gel 250Ah",
+          "parametros_clave": {
+            "capacidad": 250
+          }
+        }
+      ]
     }
   ]
 }
