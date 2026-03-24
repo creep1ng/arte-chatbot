@@ -1,5 +1,6 @@
 import hmac
 import os
+from typing import Optional
 
 from fastapi import Security, HTTPException, status
 from fastapi.security import APIKeyHeader
@@ -7,11 +8,9 @@ from fastapi.security import APIKeyHeader
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-def _get_chat_api_key() -> str:
-    key = os.environ.get("CHAT_API_KEY")
-    if not key:
-        raise RuntimeError("CHAT_API_KEY environment variable is not set")
-    return key
+def _get_chat_api_key() -> Optional[str]:
+    """Get the CHAT_API_KEY from environment, returning None if not set."""
+    return os.environ.get("CHAT_API_KEY")
 
 
 def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
@@ -24,7 +23,15 @@ def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing API key",
         )
-    if not hmac.compare_digest(api_key, _get_chat_api_key()):
+
+    valid_key = _get_chat_api_key()
+    if not valid_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CHAT_API_KEY not configured on server",
+        )
+
+    if not hmac.compare_digest(api_key, valid_key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key",
