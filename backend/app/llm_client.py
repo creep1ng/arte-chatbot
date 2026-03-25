@@ -66,7 +66,9 @@ class LLMClient:
         api_url: str = OPENAI_API_URL,
         model: str = DEFAULT_MODEL,
     ) -> None:
-        self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")
+        self.api_key = (
+            api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")
+        )
         self.api_url = api_url
         self.model = model
         self.default_system_prompt = ARTE_SYSTEM_PROMPT
@@ -108,7 +110,7 @@ class LLMClient:
                 {"role": "user", "content": message},
             ],
             "temperature": 0.7,
-            "max_tokens": 500,
+            "max_completion_tokens": 500,
             "user": session_id,
         }
 
@@ -163,7 +165,7 @@ class LLMClient:
                 ],
                 tools=tools,
                 temperature=0.7,
-                max_tokens=500,
+                max_completion_tokens=500,
                 user=session_id,
             )
 
@@ -248,7 +250,7 @@ class LLMClient:
                     },
                 ],
                 temperature=0.7,
-                max_tokens=1000,
+                max_completion_tokens=1000,
                 user=session_id,
             )
 
