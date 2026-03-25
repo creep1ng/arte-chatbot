@@ -2,6 +2,7 @@
 ARTE Chatbot Backend
 FastAPI server with /health and /chat endpoints.
 """
+
 import json
 import logging
 import uuid
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -34,6 +36,14 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ARTE Chatbot Backend")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Initialize clients
 llm_client = LLMClient()
 s3_client = S3Client()
@@ -46,12 +56,14 @@ _sessions: dict[str, list[dict[str, Any]]] = {}
 
 class ChatRequest(BaseModel):
     """Request model for /chat endpoint."""
+
     message: str = Field(..., min_length=1)
     session_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
     """Response model for /chat endpoint."""
+
     response: str
     escalate: bool = False
     reason: Optional[str] = None
@@ -259,4 +271,5 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
