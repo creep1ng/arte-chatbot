@@ -153,8 +153,9 @@
       "id": "huawei-luna2000",
       "nombre_comercial": "Huawei LUNA2000",
       "categoria": "baterias",
+      "subcategoria": "litio",
       "fabricante": "Huawei",
-      "ruta_s3": "raw/baterias/Huawei LUNA2000.pdf",
+      "ruta_s3": "raw/baterias/litio/Huawei LUNA2000.pdf",
       "descripcion": "Batería de litio LiFePO4 modular con sistema de gestión de batería integrado.",
       "url_fabricante": "https://solar.huawei.com/residential/energy-storage",
       "parametros_comunes": {
@@ -186,8 +187,9 @@
       "id": "sunset-gel",
       "nombre_comercial": "Sunset Gel",
       "categoria": "baterias",
+      "subcategoria": "gel",
       "fabricante": "Sunset",
-      "ruta_s3": "raw/baterias/Sunset Gel.pdf",
+      "ruta_s3": "raw/baterias/gel/Sunset Gel.pdf",
       "descripcion": "Batería solar de ciclo profundo tipo Gel para instalaciones aisladas.",
       "url_fabricante": "https://www.sunset-solar.com/gel-batteries",
       "parametros_comunes": {
