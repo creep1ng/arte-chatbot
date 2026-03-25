@@ -827,8 +827,8 @@ def main() -> int:
     parser.add_argument(
         "--bucket",
         type=str,
-        default=DEFAULT_BUCKET,
-        help=f"S3 bucket name (default: {DEFAULT_BUCKET}).",
+        default=None,
+        help="S3 bucket name (default: AWS_BUCKET_NAME env var or arte-chatbot-data).",
     )
     parser.add_argument(
         "--prefix",
