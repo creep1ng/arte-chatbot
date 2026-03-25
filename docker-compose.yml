@@ -30,7 +30,7 @@ services:
     env_file:
       - .env
     environment:
-      - API_URL=http://backend:8000
+      - API_URL=http://localhost:8000
     depends_on:
       - backend
     restart: unless-stopped
