@@ -28,6 +28,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from dotenv import load_dotenv
+
+# Load .env file from project root before importing modules that read env vars
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
+else:
+    # Also check current working directory
+    load_dotenv()
+
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
