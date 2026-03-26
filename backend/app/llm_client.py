@@ -1,6 +1,6 @@
 """LLM client module for Arte Chatbot.
 
-Provides a client to interact with LLM APIs (OpenAI-compatible)
+Provides a client to interact with OpenAI Responses API
 for generating chatbot responses with tool calling support.
 """
 
@@ -8,15 +8,12 @@ import logging
 import os
 from typing import Any, Optional
 
-import requests
-from openai import OpenAI
-from openai import APIError, AuthenticationError
+from openai import APIError, AuthenticationError, OpenAI
 
 from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
 
-OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-5.4-nano"
 
 ARTE_SYSTEM_PROMPT = (
@@ -25,20 +22,41 @@ ARTE_SYSTEM_PROMPT = (
     "de energía solar como paneles, inversores, controladores y baterías.\n\n"
     "## Instrucciones generales\n"
     "- Responde de manera clara, profesional y enfocada en soluciones energéticas.\n"
-    "- Cuando el usuario pregunte por especificaciones técnicas de un producto "
-    "  específico, usa la herramienta leer_ficha_tecnica para consultar la ficha técnica real.\n"
-    "- Si no tienes suficiente información para identificar el producto exacto, "
-    "  pregunta al usuario por los campos faltantes: categoría, fabricante, modelo o nombre comercial.\n\n"
-    "## Convention for S3 paths\n"
-    "- Cuando debas llamar a leer_ficha_tecnica, construye la ruta S3 usando: "
-    "  {categoria}/{fabricante}-{modelo}.pdf (todo en minúsculas, espacios reemplazados por guiones)\n"
+    "- Si la pregunta del usuario es general (por ejemplo: qué componentes tiene un "
+    "sistema solar, diferencias entre tipos de inversores, comparativas entre "
+    "tecnologías de baterías, conceptos de energía solar, etc.), responde "
+    "directamente con tu conocimiento sin necesidad de usar herramientas.\n\n"
+    "## Cuándo usar la herramienta leer_ficha_tecnica\n"
+    "- Usa la herramienta cuando el usuario consulte especificaciones técnicas "
+    "detalladas de un producto concreto.\n"
+    "- Si el usuario proporciona fabricante y modelo (por ejemplo: 'inversor "
+    "Must PC1800F', 'panel Jinko Tiger Pro 460W'), realiza la tool call "
+    "directamente con los datos disponibles.\n"
+    "- Si el usuario hace una consulta parcial como 'tienen inversores de "
+    "3000W?' o 'qué paneles de 500W manejan?', realiza la tool call con los "
+    "datos que tengas. Si faltan campos como fabricante o modelo, déjalos "
+    "vacíos o con el valor que puedas inferir. El sistema buscará en el "
+    "catálogo y te devolverá las opciones disponibles.\n"
+    "- No bloquees la tool call por falta de información. Es mejor intentar "
+    "la búsqueda con datos parciales que pedir todos los campos al usuario.\n\n"
+    "## Convención para rutas S3\n"
+    "- Cuando llames a leer_ficha_tecnica, construye la ruta S3 usando: "
+    "{categoria}/{fabricante}-{modelo}.pdf (todo en minúsculas, espacios "
+    "reemplazados por guiones).\n"
     "- Ejemplo: para un panel Jinko Tiger Pro 460W, la ruta sería: "
-    "  paneles/jinko-tiger-pro-460w.pdf\n\n"
+    "paneles/jinko-tiger-pro-460w.pdf\n\n"
     "## Cuando uses datos de una ficha técnica\n"
-    "- Cita los valores exactos del documento (potencia, voltaje, eficiencia, dimensiones, peso, etc.).\n"
+    "- Cita los valores exactos del documento (potencia, voltaje, eficiencia, "
+    "dimensiones, peso, etc.).\n"
     "- No inventes ni extrapoles datos que no estén en la ficha.\n"
     "- Si la ficha no contiene la información solicitada, indícalo claramente.\n"
-    "- Presenta los datos de forma estructurada y fácil de leer."
+    "- Presenta los datos de forma estructurada y fácil de leer.\n\n"
+    "## Preguntas generales\n"
+    "- Preguntas como '¿qué componentes tiene un sistema de energía solar?', "
+    "'¿cuál es la diferencia entre inversor multifuncional e híbrido?', "
+    "'¿cuál es la diferencia entre una batería de gel y una de litio?', o "
+    "cualquier consulta conceptual se responden directamente sin usar "
+    "herramientas. Usa tu conocimiento general sobre energía solar."
 )
 
 DATASHEET_SYSTEM_PROMPT = (
@@ -58,22 +76,20 @@ class LLMServiceError(Exception):
 
 
 class LLMClient:
-    """Client for interacting with OpenAI-compatible LLM APIs."""
+    """Client for interacting with OpenAI Responses API."""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        api_url: str = OPENAI_API_URL,
         model: str = DEFAULT_MODEL,
     ) -> None:
         self.api_key = (
             api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")
         )
-        self.api_url = api_url
         self.model = model
         self.default_system_prompt = ARTE_SYSTEM_PROMPT
 
-        # OpenAI SDK client for new methods
+        # OpenAI SDK client
         self._openai_client: Optional[OpenAI] = None
 
     @property
@@ -83,61 +99,13 @@ class LLMClient:
             self._openai_client = OpenAI(api_key=self.api_key)
         return self._openai_client
 
-    def get_llm_response(
-        self,
-        message: str,
-        session_id: str,
-        system_prompt: Optional[str] = None,
-    ) -> str:
-        """Send a message to the LLM and return the response text.
-
-        This is the original method using requests. Kept for backward compatibility.
-        """
-        if not self.api_key:
-            raise LLMServiceError("Missing OpenAI API key.")
-
-        prompt = system_prompt or self.default_system_prompt
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": message},
-            ],
-            "temperature": 0.7,
-            "max_completion_tokens": 500,
-            "user": session_id,
-        }
-
-        try:
-            response = requests.post(
-                self.api_url, headers=headers, json=payload, timeout=30
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        except requests.exceptions.Timeout:
-            raise LLMServiceError("LLM service timed out")
-        except requests.exceptions.RequestException as e:
-            raise LLMServiceError(f"LLM service error: {e}")
-        except (KeyError, IndexError) as e:
-            raise LLMServiceError(f"Unexpected LLM response format: {e}")
-
     def get_llm_response_with_tools(
         self,
         message: str,
         session_id: str,
         system_prompt: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Send a message to the LLM with tool definitions and return the full response.
-
-        This method allows the LLM to decide whether to call tools (like leer_ficha_tecnica)
-        based on the user's query.
+        """Send a message to the LLM with tool definitions using Responses API.
 
         Args:
             message: The user's message.
@@ -145,7 +113,7 @@ class LLMClient:
             system_prompt: Optional system prompt override.
 
         Returns:
-            The full response dict from OpenAI, which may contain tool_calls.
+            A dict with 'output_text' and optionally 'tool_calls'.
 
         Raises:
             LLMServiceError: If the API key is missing or the request fails.
@@ -153,47 +121,44 @@ class LLMClient:
         if not self.api_key:
             raise LLMServiceError("Missing OpenAI API key.")
 
-        prompt = system_prompt or self.default_system_prompt
+        instructions = system_prompt or self.default_system_prompt
         tools = get_tool_definitions()
 
         try:
-            response = self.openai_client.chat.completions.create(
+            response = self.openai_client.responses.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": message},
-                ],
+                instructions=instructions,
+                input=message,
                 tools=tools,
-                temperature=0.7,
-                max_completion_tokens=500,
-                user=session_id,
+                max_output_tokens=2000,
+                reasoning={"effort": "medium"},
+                prompt_cache_key=session_id,
             )
 
-            # Convert response to dict format for easier inspection
-            result: dict[str, Any] = {
-                "choices": [
-                    {
-                        "message": {
-                            "role": response.choices[0].message.role,
-                            "content": response.choices[0].message.content,
+            # Extract output text
+            output_text = response.output_text
+
+            # Extract tool calls from output
+            tool_calls = []
+            for item in response.output:
+                if item.type == "function_call":
+                    tool_calls.append(
+                        {
+                            "id": item.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": item.name,
+                                "arguments": item.arguments,
+                            },
                         }
-                    }
-                ]
+                    )
+
+            result: dict[str, Any] = {
+                "output_text": output_text,
             }
 
-            # Include tool_calls if present
-            if response.choices[0].message.tool_calls:
-                result["choices"][0]["message"]["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": tc.type,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in response.choices[0].message.tool_calls
-                ]
+            if tool_calls:
+                result["tool_calls"] = tool_calls
 
             return result
 
@@ -214,16 +179,13 @@ class LLMClient:
         session_id: str,
         system_prompt: Optional[str] = None,
     ) -> str:
-        """Send a message to the LLM with a file attached for analysis.
-
-        This method is used for the second LLM call when analyzing a technical
-        datasheet that has been uploaded to OpenAI Files API.
+        """Send a message to the LLM with a file attached using Responses API.
 
         Args:
             message: The user's message.
             file_id: The OpenAI file ID from the uploaded PDF.
             session_id: The session identifier for context.
-            system_prompt: Optional system prompt override. Defaults to DATASHEET_SYSTEM_PROMPT.
+            system_prompt: Optional system prompt override.
 
         Returns:
             The response content string from the LLM.
@@ -234,27 +196,27 @@ class LLMClient:
         if not self.api_key:
             raise LLMServiceError("Missing OpenAI API key.")
 
-        prompt = system_prompt or DATASHEET_SYSTEM_PROMPT
+        instructions = system_prompt or DATASHEET_SYSTEM_PROMPT
 
         try:
-            response = self.openai_client.chat.completions.create(
+            response = self.openai_client.responses.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": prompt},
+                instructions=instructions,
+                input=[
                     {
                         "role": "user",
                         "content": [
-                            {"type": "file", "file": {"file_id": file_id}},
-                            {"type": "text", "text": message},
+                            {"type": "input_file", "file_id": file_id},
+                            {"type": "input_text", "text": message},
                         ],
-                    },
+                    }
                 ],
-                temperature=0.7,
-                max_completion_tokens=1000,
-                user=session_id,
+                max_output_tokens=2000,
+                reasoning={"effort": "medium"},
+                prompt_cache_key=session_id,
             )
 
-            return response.choices[0].message.content or ""
+            return response.output_text
 
         except AuthenticationError as e:
             logger.error(f"OpenAI authentication error: {e}")
