@@ -5,6 +5,8 @@ from typing import Optional
 from fastapi import Security, HTTPException, status
 from fastapi.security import APIKeyHeader
 
+from backend.app.config import settings
+
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 

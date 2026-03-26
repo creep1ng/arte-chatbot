@@ -11,6 +11,8 @@ from typing import Optional
 from openai import OpenAI
 from openai import APIError, AuthenticationError, BadRequestError
 
+from backend.app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +57,9 @@ class FileInputsClient:
         Raises:
             FileUploadError: If the upload fails.
         """
+        if not self.api_key:
+            raise FileUploadError("OpenAI API key not configured")
+
         try:
             logger.info(f"Uploading PDF to OpenAI Files API: {filename}")
             import io
@@ -95,6 +100,9 @@ class FileInputsClient:
         Raises:
             FileUploadError: If the deletion fails.
         """
+        if not self.api_key:
+            raise FileUploadError("OpenAI API key not configured")
+
         try:
             logger.info(f"Deleting OpenAI file: {file_id}")
             self.client.files.delete(file_id)
