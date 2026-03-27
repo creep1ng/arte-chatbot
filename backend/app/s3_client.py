@@ -11,6 +11,8 @@ from typing import Optional
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
+from backend.app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,12 +40,22 @@ class S3Client:
             aws_secret_access_key: AWS secret access key. Defaults to AWS_SECRET_ACCESS_KEY env var.
             aws_region: AWS region. Defaults to AWS_REGION env var.
         """
-        self.bucket_name = bucket_name if bucket_name is not None else os.getenv("AWS_BUCKET_NAME", "")
-        self.aws_access_key_id = aws_access_key_id or os.getenv("AWS_ACCESS_KEY_ID")
-        self.aws_secret_access_key = aws_secret_access_key or os.getenv(
-            "AWS_SECRET_ACCESS_KEY"
+        self.bucket_name = (
+            bucket_name
+            if bucket_name is not None
+            else os.getenv("AWS_BUCKET_NAME") or settings.aws_bucket_name
         )
-        self.aws_region = aws_region or os.getenv("AWS_REGION", "us-east-1")
+        self.aws_access_key_id = (
+            aws_access_key_id
+            or os.getenv("AWS_ACCESS_KEY_ID")
+            or settings.aws_access_key_id
+        )
+        self.aws_secret_access_key = (
+            aws_secret_access_key
+            or os.getenv("AWS_SECRET_ACCESS_KEY")
+            or settings.aws_secret_access_key
+        )
+        self.aws_region = aws_region or os.getenv("AWS_REGION") or settings.aws_region
 
         if not self.bucket_name:
             logger.warning("AWS_BUCKET_NAME not configured")
@@ -82,17 +94,13 @@ class S3Client:
             logger.info(f"Downloading S3 object: {self.bucket_name}/{s3_key}")
             response = self.client.get_object(Bucket=self.bucket_name, Key=s3_key)
             pdf_bytes = response["Body"].read()
-            logger.info(
-                f"Downloaded {len(pdf_bytes)} bytes from {s3_key}"
-            )
+            logger.info(f"Downloaded {len(pdf_bytes)} bytes from {s3_key}")
             return pdf_bytes
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
             logger.error(f"S3 client error ({error_code}): {e}")
             if error_code == "NoSuchKey":
-                raise S3DownloadError(
-                    f"File not found in S3: {s3_key}"
-                ) from e
+                raise S3DownloadError(f"File not found in S3: {s3_key}") from e
             raise S3DownloadError(f"S3 download failed: {e}") from e
         except NoCredentialsError:
             logger.error("AWS credentials not available")

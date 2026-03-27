@@ -8,10 +8,6 @@ import logging
 import uuid
 from typing import Any, Optional
 
-from dotenv import load_dotenv
-
-load_dotenv(override=False)
-
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse

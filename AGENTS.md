@@ -128,6 +128,8 @@ docker compose exec backend pytest
 docker compose exec backend pytest backend/tests/test_api.py::test_health_check
 ```
 
+> **WARNING**: Los tests requieren un archivo `.env` (o variables de entorno exportadas) con al menos `OPENAI_API_KEY` y `CHAT_API_KEY` configuradas. `backend.main` instancia `FileInputsClient()` a nivel de módulo, lo cual falla si `OPENAI_API_KEY` no está presente durante la colección de tests. Copiar `.env.example` a `.env` antes de ejecutar `pytest`.
+
 ## Security & Compliance
 
 - **Manejo de Secretos**: Ninguna llave de API (OpenAI, Anthropic, AWS, etc.) debe ser subida al repositorio. Usar `.env` (ya en `.gitignore`).

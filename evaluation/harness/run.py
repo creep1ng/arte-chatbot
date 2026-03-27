@@ -7,23 +7,20 @@ against the /chat endpoint and record the results.
 
 import csv
 import json
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-from dotenv import load_dotenv
 
-# Load environment variables from .env file if present
-load_dotenv()
+from evaluation.harness.config import harness_settings
 
-# Configuration with environment variable support
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+# Configuration from centralized settings
+API_BASE_URL = harness_settings.api_base_url
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
-DATASET_PATH = Path(os.getenv("DATASET_PATH", Path(__file__).parent / "dataset.json"))
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", Path(__file__).parent / "output"))
+DATASET_PATH = harness_settings.dataset_path
+OUTPUT_DIR = harness_settings.output_dir
 
 
 def load_dataset() -> list[dict[str, Any]]:

@@ -4,12 +4,14 @@ This module provides a client to upload PDF files to OpenAI's Files API
 and manage file lifecycle for technical datasheet analysis.
 """
 
+import io
 import logging
-import os
 from typing import Optional
 
 from openai import OpenAI
 from openai import APIError, AuthenticationError, BadRequestError
+
+from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ class FileInputsClient:
         Args:
             api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
         """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or settings.openai_api_key
         if not self.api_key:
             raise FileUploadError("OpenAI API key not configured")
 
@@ -55,9 +57,11 @@ class FileInputsClient:
         Raises:
             FileUploadError: If the upload fails.
         """
+        if not self.api_key:
+            raise FileUploadError("OpenAI API key not configured")
+
         try:
             logger.info(f"Uploading PDF to OpenAI Files API: {filename}")
-            import io
 
             # Create a file-like object from bytes
             file_obj = io.BytesIO(pdf_bytes)
@@ -95,6 +99,9 @@ class FileInputsClient:
         Raises:
             FileUploadError: If the deletion fails.
         """
+        if not self.api_key:
+            raise FileUploadError("OpenAI API key not configured")
+
         try:
             logger.info(f"Deleting OpenAI file: {file_id}")
             self.client.files.delete(file_id)

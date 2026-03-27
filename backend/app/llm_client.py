@@ -12,12 +12,13 @@ import requests
 from openai import OpenAI
 from openai import APIError, AuthenticationError
 
+from backend.app.config import settings
 from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
 
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-DEFAULT_MODEL = "gpt-5.4-nano"
+DEFAULT_MODEL = settings.llm_model
 
 ARTE_SYSTEM_PROMPT = (
     "Eres un asistente técnico de Arte Soluciones Energéticas, una empresa B2B "

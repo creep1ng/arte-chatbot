@@ -1,16 +1,17 @@
 import hmac
-import os
 from typing import Optional
 
 from fastapi import Security, HTTPException, status
 from fastapi.security import APIKeyHeader
 
+from backend.app.config import settings
+
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 def _get_chat_api_key() -> Optional[str]:
-    """Get the CHAT_API_KEY from environment, returning None if not set."""
-    return os.environ.get("CHAT_API_KEY")
+    """Get the CHAT_API_KEY from settings, returning None if not set."""
+    return settings.chat_api_key
 
 
 def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
