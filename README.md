@@ -35,8 +35,11 @@ arte-chatbot/
 ├── backend/
 │   ├── __init__.py
 │   ├── main.py              # FastAPI application
+│   ├── config/              # Configuration files (catalog_index.json)
 │   ├── Dockerfile           # Backend container definition
 │   └── requirements.txt     # Python dependencies
+├── scripts/
+│   └── generate_index.py    # Script to generate catalog index from PDFs
 ├── rag/
 │   ├── __init__.py
 │   └── ...                  # RAG module components
@@ -183,6 +186,53 @@ uvicorn main:app --reload
 5. **Access the API:**
 
 The API will be available at `http://localhost:8000`
+
+## 📂 Catalog Indexing
+
+The catalog index is used to inject product information into the chatbot prompts. The system reads PDF files from an S3 bucket and generates a JSON index with metadata (category, brand, model).
+
+### Generating the Index
+
+```bash
+# Install dependencies (boto3 required)
+pip install boto3
+
+# Generate index from S3 bucket (default)
+python scripts/generate_index.py
+
+# Generate index from local directory
+python scripts/generate_index.py --source-dir ./local_pdfs
+
+# Dry run (show what would be indexed without writing)
+python scripts/generate_index.py --dry-run
+
+# Custom bucket and prefix
+python scripts/generate_index.py --bucket my-bucket --prefix my-folder/ --output custom_index.json
+```
+
+### Index Output Format
+
+The generated `catalog_index.json` has the following structure:
+
+```json
+[
+  {
+    "nombre": "Panel Solar 500W",
+    "categoria": "panel",
+    "ruta_s3": "s3://arte-chatbot-data/raw/panel-solar-500w.pdf"
+  }
+]
+```
+
+### Filename Convention
+
+PDF files in the S3 bucket must follow the naming convention:
+
+```
+{categoria}-{marca}-{modelo}.pdf
+```
+
+Example: `panel-solar-500w.pdf` → categoria: `panel`, marca: `solar`, modelo: `500w`
 
 ## 📡 API Endpoints
 

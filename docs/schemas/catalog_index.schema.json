@@ -66,6 +66,10 @@
           "type": "string",
           "description": "Categoría del producto, restringida por cada tipo específico"
         },
+        "subcategoria": {
+          "type": "string",
+          "description": "Subcategoría del producto (opcional). Ej: gel, litio, multifuncionales"
+        },
         "fabricante": {
           "type": "string",
           "minLength": 2,
