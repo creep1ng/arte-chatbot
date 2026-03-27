@@ -76,6 +76,9 @@ class _SettingsProxy:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._ensure_instance(), name)
 
+    def __dir__(self) -> list[str]:
+        return dir(self._ensure_instance())
+
     def __repr__(self) -> str:
         return repr(self._ensure_instance())
 

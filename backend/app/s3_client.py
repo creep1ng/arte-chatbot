@@ -41,13 +41,10 @@ class S3Client:
             aws_region: AWS region. Defaults to AWS_REGION env var.
         """
         self.bucket_name = (
-            bucket_name if bucket_name is not None else os.getenv("AWS_BUCKET_NAME", "")
+            bucket_name
+            if bucket_name is not None
+            else os.getenv("AWS_BUCKET_NAME") or settings.aws_bucket_name
         )
-        self.aws_access_key_id = aws_access_key_id or os.getenv("AWS_ACCESS_KEY_ID")
-        self.aws_secret_access_key = aws_secret_access_key or os.getenv(
-            "AWS_SECRET_ACCESS_KEY"
-        )
-        self.aws_region = aws_region or os.getenv("AWS_REGION", "us-east-1")
         self.aws_access_key_id = (
             aws_access_key_id
             or os.getenv("AWS_ACCESS_KEY_ID")
