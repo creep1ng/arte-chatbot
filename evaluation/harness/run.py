@@ -7,6 +7,7 @@ against the /chat endpoint and record the results.
 
 import csv
 import json
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,8 @@ from typing import Any
 import httpx
 
 from evaluation.harness.config import harness_settings
+
+logger = logging.getLogger(__name__)
 
 # Configuration from centralized settings
 API_BASE_URL = harness_settings.api_base_url
@@ -26,7 +29,7 @@ OUTPUT_DIR = harness_settings.output_dir
 def load_dataset() -> list[dict[str, Any]]:
     """Load the test dataset from JSON file."""
     if not DATASET_PATH.exists():
-        print(f"Error: Dataset not found at {DATASET_PATH}")
+        logger.error("Dataset not found at %s", DATASET_PATH)
         sys.exit(1)
 
     with open(DATASET_PATH, encoding="utf-8") as f:
@@ -155,6 +158,7 @@ def run_harness() -> list[dict[str, Any]]:
 
     # Load dataset
     dataset = load_dataset()
+    logger.info("Loaded %d test queries", len(dataset))
     print(f"Loaded {len(dataset)} test queries")
     print()
 
@@ -163,10 +167,16 @@ def run_harness() -> list[dict[str, Any]]:
         with httpx.Client() as client:
             health_response = client.get(f"{API_BASE_URL}/health", timeout=5.0)
             if health_response.status_code == 200:
+                logger.info("API health check passed")
                 print("✓ API is healthy")
             else:
+                logger.warning(
+                    "API health check returned status %d",
+                    health_response.status_code,
+                )
                 print(f"⚠ API returned status {health_response.status_code}")
     except httpx.ConnectError:
+        logger.error("Cannot connect to API at %s", API_BASE_URL)
         print(f"✗ Error: Cannot connect to API at {API_BASE_URL}")
         print("  Make sure the backend is running (docker compose up)")
         sys.exit(1)
@@ -182,14 +192,21 @@ def run_harness() -> list[dict[str, Any]]:
             query_id = query_data.get("id", f"q{i:03d}")
             query_preview = query_data.get("query", "")[:50]
 
+            logger.debug("Running query %d/%d: %s", i, len(dataset), query_id)
             print(f"[{i}/{len(dataset)}] {query_id}: {query_preview}...")
 
             result = run_single_query(client, query_data)
             results.append(result)
 
             if result["error"]:
+                logger.error("Query %s failed: %s", query_id, result["error"])
                 print(f"    ✗ Error: {result['error']}")
             else:
+                logger.debug(
+                    "Query %s completed: %.2fms",
+                    query_id,
+                    result["latency_ms"],
+                )
                 print(f"    ✓ Latency: {result['latency_ms']:.2f}ms")
 
     print()
@@ -204,6 +221,13 @@ def run_harness() -> list[dict[str, Any]]:
     avg_latency = sum(latencies) / len(latencies) if latencies else 0
     min_latency = min(latencies) if latencies else 0
     max_latency = max(latencies) if latencies else 0
+
+    logger.info(
+        "Evaluation complete: successful=%d, failed=%d, avg_latency=%.2fms",
+        successful,
+        failed,
+        avg_latency,
+    )
 
     print(f"Successful: {successful}")
     print(f"Failed: {failed}")

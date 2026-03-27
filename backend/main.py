@@ -8,6 +8,11 @@ import logging
 import uuid
 from typing import Any, Optional
 
+from backend.app.logging_config import setup_logging
+
+# Configure logging before anything else (reads LOG_LEVEL from centralized settings)
+setup_logging()
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -116,10 +121,15 @@ def _process_tool_call(
     fabricante = arguments.get("fabricante")
     modelo = arguments.get("modelo")
 
-    logger.info(
-        f"Processing tool call: {function_name} - "
-        f"ruta_s3={ruta_s3}, categoria={categoria}, "
-        f"fabricante={fabricante}, modelo={modelo}"
+    logger.debug(
+        "Tool call parameters: function=%s, ruta_s3=%s, categoria=%s, "
+        "fabricante=%s, modelo=%s, session_id=%s",
+        function_name,
+        ruta_s3,
+        categoria,
+        fabricante,
+        modelo,
+        session_id,
     )
 
     if not ruta_s3:
@@ -147,7 +157,12 @@ def _process_tool_call(
         try:
             file_inputs_client.delete_file(file_id)
         except Exception as e:
-            logger.warning(f"Failed to delete file {file_id}: {e}")
+            logger.warning(
+                "Failed to delete file: file_id=%s, session_id=%s, error=%s",
+                file_id,
+                session_id,
+                e,
+            )
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -160,6 +175,14 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     2. If tool call present, process it and make second call
     """
     session_id = request.session_id or str(uuid.uuid4())
+    request_id = str(uuid.uuid4())
+
+    logger.debug(
+        "Incoming request: request_id=%s, session_id=%s, message_preview=%s",
+        request_id,
+        session_id,
+        request.message[:100],
+    )
 
     # Initialize session if needed
     if session_id not in _sessions:
@@ -169,6 +192,12 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     escalation_result = default_detector.detect(request.message)
 
     if escalation_result.escalate:
+        logger.info(
+            "Escalation detected: request_id=%s, session_id=%s, reason=%s",
+            request_id,
+            session_id,
+            escalation_result.reason,
+        )
         return ChatResponse(
             response=DEFAULT_ESCALATION_MESSAGE,
             escalate=True,
@@ -178,6 +207,12 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
     try:
         # First LLM call with tools
+        logger.debug(
+            "Calling LLM with tools: request_id=%s, session_id=%s, model=%s",
+            request_id,
+            session_id,
+            llm_client.model,
+        )
         llm_response = llm_client.get_llm_response_with_tools(
             message=request.message,
             session_id=session_id,
@@ -218,7 +253,12 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         session_id=session_id,
                     )
                 except S3DownloadError as e:
-                    logger.error(f"S3 download error: {e}")
+                    logger.error(
+                        "S3 download error: request_id=%s, session_id=%s, error=%s",
+                        request_id,
+                        session_id,
+                        e,
+                    )
                     return ChatResponse(
                         response=(
                             "Lo siento, no pude acceder a la ficha técnica del "
@@ -230,7 +270,12 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         session_id=session_id,
                     )
                 except FileUploadError as e:
-                    logger.error(f"File upload error: {e}")
+                    logger.error(
+                        "File upload error: request_id=%s, session_id=%s, error=%s",
+                        request_id,
+                        session_id,
+                        e,
+                    )
                     return ChatResponse(
                         response=(
                             "Lo siento, tuve problemas al procesar la ficha técnica. "
@@ -240,7 +285,12 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         session_id=session_id,
                     )
                 except Exception as e:
-                    logger.exception(f"Error processing tool call: {e}")
+                    logger.exception(
+                        "Error processing tool call: request_id=%s, session_id=%s, error=%s",
+                        request_id,
+                        session_id,
+                        e,
+                    )
                     return ChatResponse(
                         response=(
                             "Ocurrió un error al procesar tu solicitud. "
@@ -258,10 +308,19 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         )
 
     except LLMServiceError as e:
-        logger.error(f"LLM service error: {e}")
+        logger.error(
+            "LLM service error: request_id=%s, session_id=%s, error=%s",
+            request_id,
+            session_id,
+            e,
+        )
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.exception(f"Unexpected error in chat endpoint: {e}")
+        logger.exception(
+            "Unexpected error in chat endpoint: request_id=%s, session_id=%s",
+            request_id,
+            session_id,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

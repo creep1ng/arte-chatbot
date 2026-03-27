@@ -61,7 +61,12 @@ class FileInputsClient:
             raise FileUploadError("OpenAI API key not configured")
 
         try:
-            logger.info(f"Uploading PDF to OpenAI Files API: {filename}")
+            logger.debug(
+                "File upload initiated: filename=%s, size_bytes=%d",
+                filename,
+                len(pdf_bytes),
+            )
+            logger.info("Uploading PDF to OpenAI Files API: %s", filename)
 
             # Create a file-like object from bytes
             file_obj = io.BytesIO(pdf_bytes)
@@ -74,20 +79,25 @@ class FileInputsClient:
             )
 
             file_id = response.id
-            logger.info(f"Successfully uploaded file with ID: {file_id}")
+            logger.debug(
+                "File upload complete: file_id=%s, filename=%s",
+                file_id,
+                filename,
+            )
+            logger.info("Successfully uploaded file with ID: %s", file_id)
             return file_id
 
         except AuthenticationError as e:
-            logger.error(f"OpenAI authentication error: {e}")
+            logger.error("OpenAI authentication error: %s", e)
             raise FileUploadError("Invalid OpenAI API key") from e
         except BadRequestError as e:
-            logger.error(f"OpenAI bad request error: {e}")
+            logger.error("OpenAI bad request error: %s", e)
             raise FileUploadError(f"Invalid file format or request: {e}") from e
         except APIError as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error("OpenAI API error: %s", e)
             raise FileUploadError(f"OpenAI API error: {e}") from e
         except Exception as e:
-            logger.exception(f"Unexpected error uploading file: {e}")
+            logger.exception("Unexpected error uploading file: %s", e)
             raise FileUploadError(f"Unexpected error: {e}") from e
 
     def delete_file(self, file_id: str) -> None:
@@ -103,15 +113,17 @@ class FileInputsClient:
             raise FileUploadError("OpenAI API key not configured")
 
         try:
-            logger.info(f"Deleting OpenAI file: {file_id}")
+            logger.debug("File deletion initiated: file_id=%s", file_id)
+            logger.info("Deleting OpenAI file: %s", file_id)
             self.client.files.delete(file_id)
-            logger.info(f"Successfully deleted file: {file_id}")
+            logger.debug("File deletion complete: file_id=%s", file_id)
+            logger.info("Successfully deleted file: %s", file_id)
         except AuthenticationError as e:
-            logger.error(f"OpenAI authentication error: {e}")
+            logger.error("OpenAI authentication error: %s", e)
             raise FileUploadError("Invalid OpenAI API key") from e
         except APIError as e:
-            logger.error(f"OpenAI API error deleting file: {e}")
+            logger.error("OpenAI API error deleting file: %s", e)
             raise FileUploadError(f"Error deleting file: {e}") from e
         except Exception as e:
-            logger.exception(f"Unexpected error deleting file: {e}")
+            logger.exception("Unexpected error deleting file: %s", e)
             raise FileUploadError(f"Unexpected error: {e}") from e

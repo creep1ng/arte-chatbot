@@ -99,6 +99,13 @@ class LLMClient:
 
         prompt = system_prompt or self.default_system_prompt
 
+        logger.debug(
+            "LLM call (legacy): model=%s, session_id=%s, message_preview=%s",
+            self.model,
+            session_id,
+            message[:100],
+        )
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -125,8 +132,14 @@ class LLMClient:
         except requests.exceptions.Timeout:
             raise LLMServiceError("LLM service timed out")
         except requests.exceptions.RequestException as e:
+            logger.error("LLM request failed: session_id=%s, error=%s", session_id, e)
             raise LLMServiceError(f"LLM service error: {e}")
         except (KeyError, IndexError) as e:
+            logger.error(
+                "Unexpected LLM response format: session_id=%s, error=%s",
+                session_id,
+                e,
+            )
             raise LLMServiceError(f"Unexpected LLM response format: {e}")
 
     def get_llm_response_with_tools(
@@ -156,6 +169,15 @@ class LLMClient:
 
         prompt = system_prompt or self.default_system_prompt
         tools = get_tool_definitions()
+
+        logger.debug(
+            "LLM call with tools: model=%s, session_id=%s, message_preview=%s, "
+            "num_tools=%d",
+            self.model,
+            session_id,
+            message[:100],
+            len(tools),
+        )
 
         try:
             response = self.openai_client.chat.completions.create(
@@ -199,13 +221,13 @@ class LLMClient:
             return result
 
         except AuthenticationError as e:
-            logger.error(f"OpenAI authentication error: {e}")
+            logger.error("OpenAI authentication error: %s", e)
             raise LLMServiceError("Invalid OpenAI API key") from e
         except APIError as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error("OpenAI API error: %s", e)
             raise LLMServiceError(f"OpenAI API error: {e}") from e
         except Exception as e:
-            logger.exception(f"Unexpected error calling OpenAI API: {e}")
+            logger.exception("Unexpected error calling OpenAI API: %s", e)
             raise LLMServiceError(f"LLM service error: {e}") from e
 
     def get_llm_response_with_file(
@@ -237,6 +259,15 @@ class LLMClient:
 
         prompt = system_prompt or DATASHEET_SYSTEM_PROMPT
 
+        logger.debug(
+            "LLM call with file: model=%s, session_id=%s, file_id=%s, "
+            "message_preview=%s",
+            self.model,
+            session_id,
+            file_id,
+            message[:100],
+        )
+
         try:
             response = self.openai_client.chat.completions.create(
                 model=self.model,
@@ -258,11 +289,11 @@ class LLMClient:
             return response.choices[0].message.content or ""
 
         except AuthenticationError as e:
-            logger.error(f"OpenAI authentication error: {e}")
+            logger.error("OpenAI authentication error (file): %s", e)
             raise LLMServiceError("Invalid OpenAI API key") from e
         except APIError as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error("OpenAI API error (file): %s", e)
             raise LLMServiceError(f"OpenAI API error: {e}") from e
         except Exception as e:
-            logger.exception(f"Unexpected error calling OpenAI API: {e}")
+            logger.exception("Unexpected error calling OpenAI API (file): %s", e)
             raise LLMServiceError(f"LLM service error: {e}") from e

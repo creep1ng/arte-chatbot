@@ -68,6 +68,15 @@ class _SettingsProxy:
 
     _instance: Optional[Settings] = None
 
+    def reset(self) -> None:
+        """Invalidate the cached Settings instance.
+
+        Call this in test fixtures when environment variables have been
+        patched (e.g., via monkeypatch.setenv) so that the next attribute
+        access creates a fresh Settings() that reads the updated env.
+        """
+        self._instance = None
+
     def _ensure_instance(self) -> Settings:
         if self._instance is None:
             self._instance = Settings()

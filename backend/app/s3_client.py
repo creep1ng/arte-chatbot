@@ -91,14 +91,24 @@ class S3Client:
             raise S3DownloadError("S3 bucket name not configured")
 
         try:
-            logger.info(f"Downloading S3 object: {self.bucket_name}/{s3_key}")
+            logger.debug(
+                "S3 download initiated: bucket=%s, key=%s",
+                self.bucket_name,
+                s3_key,
+            )
+            logger.info("Downloading S3 object: %s/%s", self.bucket_name, s3_key)
             response = self.client.get_object(Bucket=self.bucket_name, Key=s3_key)
             pdf_bytes = response["Body"].read()
-            logger.info(f"Downloaded {len(pdf_bytes)} bytes from {s3_key}")
+            logger.debug(
+                "S3 download complete: key=%s, size_bytes=%d",
+                s3_key,
+                len(pdf_bytes),
+            )
+            logger.info("Downloaded %d bytes from %s", len(pdf_bytes), s3_key)
             return pdf_bytes
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            logger.error(f"S3 client error ({error_code}): {e}")
+            logger.error("S3 client error (%s): %s", error_code, e)
             if error_code == "NoSuchKey":
                 raise S3DownloadError(f"File not found in S3: {s3_key}") from e
             raise S3DownloadError(f"S3 download failed: {e}") from e
@@ -106,7 +116,7 @@ class S3Client:
             logger.error("AWS credentials not available")
             raise S3DownloadError("AWS credentials not configured") from None
         except Exception as e:
-            logger.exception(f"Unexpected error downloading from S3: {e}")
+            logger.exception("Unexpected error downloading from S3: %s", e)
             raise S3DownloadError(f"Unexpected S3 error: {e}") from e
 
     def file_exists(self, s3_key: str) -> bool:
@@ -123,6 +133,10 @@ class S3Client:
 
         try:
             self.client.head_object(Bucket=self.bucket_name, Key=s3_key)
+            logger.debug("S3 file exists: bucket=%s, key=%s", self.bucket_name, s3_key)
             return True
         except ClientError:
+            logger.debug(
+                "S3 file not found: bucket=%s, key=%s", self.bucket_name, s3_key
+            )
             return False
