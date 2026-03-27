@@ -220,16 +220,11 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         )
 
         # Check if the response contains tool calls
-        choices = llm_response.get("choices", [])
-        if not choices:
-            raise LLMServiceError("Invalid LLM response: no choices")
-
-        message = choices[0].get("message", {})
-        tool_calls = message.get("tool_calls")
+        tool_calls = llm_response.get("tool_calls")
 
         if not tool_calls:
             # No tool call needed - return normal response
-            content = message.get("content", "")
+            content = llm_response.get("output_text", "")
             return ChatResponse(
                 response=content,
                 escalate=False,
@@ -302,7 +297,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
         # If we get here with tool_calls but none were processed
         return ChatResponse(
-            response=message.get("content", ""),
+            response=llm_response.get("output_text", ""),
             escalate=False,
             session_id=session_id,
         )

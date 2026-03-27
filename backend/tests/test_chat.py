@@ -1,6 +1,7 @@
 """
 Unit and Integration tests for the /chat endpoint.
 """
+
 import os
 import uuid
 import pytest
@@ -47,7 +48,9 @@ class TestChatEndpointUnit:
 
     def test_chat_returns_escalate_for_cotizacion(self) -> None:
         """Test escalation flag for 'cotización' keyword."""
-        response = client.post("/chat", json={"message": "Necesito una cotización de paneles"})
+        response = client.post(
+            "/chat", json={"message": "Necesito una cotización de paneles"}
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
@@ -60,11 +63,15 @@ class TestChatEndpointUnit:
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
-        assert "cotización" in data["reason"].lower() or "pedido" in data["reason"].lower()
+        assert (
+            "cotización" in data["reason"].lower() or "pedido" in data["reason"].lower()
+        )
 
     def test_chat_returns_escalate_for_garantia(self) -> None:
         """Test escalation flag for 'garantía' keyword."""
-        response = client.post("/chat", json={"message": "Tengo un problema con la garantía"})
+        response = client.post(
+            "/chat", json={"message": "Tengo un problema con la garantía"}
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
@@ -72,18 +79,11 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_no_escalate_for_normal_message(self, mock_llm) -> None:
         """Test no escalation for normal messages."""
-        # get_llm_response_with_tools returns a dict with choices
-        mock_llm.return_value = {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "Mocked LLM Response"
-                    }
-                }
-            ]
-        }
-        response = client.post("/chat", json={"message": "¿Cuánta potencia tiene el panel de 400W?"})
+        # get_llm_response_with_tools returns a dict with output_text (Responses API)
+        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
+        response = client.post(
+            "/chat", json={"message": "¿Cuánta potencia tiene el panel de 400W?"}
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is False
@@ -93,16 +93,7 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_session_id(self, mock_llm) -> None:
         """Test that session_id is returned in response."""
-        mock_llm.return_value = {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "Mocked LLM Response"
-                    }
-                }
-            ]
-        }
+        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
         response = client.post("/chat", json={"message": "Hola"})
         assert response.status_code == 200
         data = response.json()
@@ -112,17 +103,10 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_accepts_custom_session_id(self, mock_llm) -> None:
         """Test that custom session_id can be provided."""
-        mock_llm.return_value = {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "Mocked LLM Response"
-                    }
-                }
-            ]
-        }
-        response = client.post("/chat", json={"message": "Hola", "session_id": "my-session-123"})
+        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
+        response = client.post(
+            "/chat", json={"message": "Hola", "session_id": "my-session-123"}
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["session_id"] == "my-session-123"
@@ -140,6 +124,7 @@ class TestChatEndpointUnit:
 # Integration Tests
 
 API_URL = "http://localhost:8000/chat"
+
 
 @pytest.fixture(scope="module")
 def api_key():
@@ -162,7 +147,9 @@ def test_chat_status_200(chat_api_key):
     """Verify the /chat endpoint returns 200 for a valid request with auth header."""
     payload = {"message": "Hello", "session_id": str(uuid.uuid4())}
     try:
-        response = requests.post(API_URL, json=payload, headers={"X-API-Key": chat_api_key})
+        response = requests.post(
+            API_URL, json=payload, headers={"X-API-Key": chat_api_key}
+        )
         assert response.status_code == 200
     except requests.exceptions.ConnectionError:
         pytest.skip("Backend is not running locally on port 8000")
@@ -173,7 +160,9 @@ def test_chat_response_not_empty(api_key, chat_api_key):
     """Verify the response body is non-empty when the API key is available."""
     payload = {"message": "Test", "session_id": str(uuid.uuid4())}
     try:
-        response = requests.post(API_URL, json=payload, headers={"X-API-Key": chat_api_key})
+        response = requests.post(
+            API_URL, json=payload, headers={"X-API-Key": chat_api_key}
+        )
         assert response.json().get("response"), "Response should not be empty"
     except requests.exceptions.ConnectionError:
         pytest.skip("Backend is not running locally on port 8000")
@@ -185,7 +174,9 @@ def test_session_id_uuid_format(api_key, chat_api_key):
     session_id = str(uuid.uuid4())
     payload = {"message": "UUID check", "session_id": session_id}
     try:
-        response = requests.post(API_URL, json=payload, headers={"X-API-Key": chat_api_key})
+        response = requests.post(
+            API_URL, json=payload, headers={"X-API-Key": chat_api_key}
+        )
         returned_id = response.json().get("session_id")
         assert returned_id is not None
         try:
@@ -199,10 +190,13 @@ def test_session_id_uuid_format(api_key, chat_api_key):
 @pytest.mark.integration
 def test_openai_api_key_loaded_from_env(api_key):
     """Verify the OPENAI_API_KEY environment variable is set."""
-    assert os.getenv("OPENAI_API_KEY") is not None, "OPENAI_API_KEY must be loaded from environment"
+    assert os.getenv("OPENAI_API_KEY") is not None, (
+        "OPENAI_API_KEY must be loaded from environment"
+    )
 
 
 # Tool Calling Tests
+
 
 class TestChatEndpointWithToolCall:
     """Tests for /chat endpoint with tool calling functionality."""
@@ -214,26 +208,19 @@ class TestChatEndpointWithToolCall:
         self, mock_file_inputs: MagicMock, mock_s3: MagicMock, mock_llm: MagicMock
     ) -> None:
         """Test chat endpoint with tool call in response."""
-        # Mock LLM response with tool call
+        # Mock LLM response with tool call (Responses API format)
         mock_llm.return_value = {
-            "choices": [
+            "output_text": "",
+            "tool_calls": [
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": "call_abc123",
-                                "type": "function",
-                                "function": {
-                                    "name": "leer_ficha_tecnica",
-                                    "arguments": '{"ruta_s3": "paneles/jinko-tiger-pro-460w.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger Pro 460W"}',
-                                },
-                            }
-                        ],
-                    }
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                        "name": "leer_ficha_tecnica",
+                        "arguments": '{"ruta_s3": "paneles/jinko-tiger-pro-460w.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger Pro 460W"}',
+                    },
                 }
-            ]
+            ],
         }
 
         # Mock S3 download
@@ -244,12 +231,18 @@ class TestChatEndpointWithToolCall:
         mock_file_inputs.delete_file.return_value = None
 
         # Mock second LLM call
-        with patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
-            mock_llm_file.return_value = "El panel Jinko Tiger Pro 460W tiene una potencia de 460W."
+        with patch(
+            "backend.main.llm_client.get_llm_response_with_file"
+        ) as mock_llm_file:
+            mock_llm_file.return_value = (
+                "El panel Jinko Tiger Pro 460W tiene una potencia de 460W."
+            )
 
             response = client.post(
                 "/chat",
-                json={"message": "Dime las especificaciones del panel Jinko Tiger Pro 460W"},
+                json={
+                    "message": "Dime las especificaciones del panel Jinko Tiger Pro 460W"
+                },
             )
 
         assert response.status_code == 200
@@ -266,30 +259,25 @@ class TestChatEndpointWithToolCall:
         """Test chat endpoint handles S3 download errors gracefully."""
         from backend.app.s3_client import S3DownloadError
 
-        # Mock LLM response with tool call
+        # Mock LLM response with tool call (Responses API format)
         mock_llm.return_value = {
-            "choices": [
+            "output_text": "",
+            "tool_calls": [
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": "call_abc123",
-                                "type": "function",
-                                "function": {
-                                    "name": "leer_ficha_tecnica",
-                                    "arguments": '{"ruta_s3": "paneles/nonexistent.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
-                                },
-                            }
-                        ],
-                    }
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                        "name": "leer_ficha_tecnica",
+                        "arguments": '{"ruta_s3": "paneles/nonexistent.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
+                    },
                 }
-            ]
+            ],
         }
 
         # Mock S3 download error
-        mock_s3.download_pdf.side_effect = S3DownloadError("File not found in S3: nonexistent.pdf")
+        mock_s3.download_pdf.side_effect = S3DownloadError(
+            "File not found in S3: nonexistent.pdf"
+        )
 
         response = client.post(
             "/chat",
@@ -300,7 +288,10 @@ class TestChatEndpointWithToolCall:
         data = response.json()
         # Should return graceful error message, not crash
         assert data["response"] is not None
-        assert "no pude acceder" in data["response"].lower() or "disponible" in data["response"].lower()
+        assert (
+            "no pude acceder" in data["response"].lower()
+            or "disponible" in data["response"].lower()
+        )
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     @patch("backend.main.s3_client")
@@ -311,26 +302,19 @@ class TestChatEndpointWithToolCall:
         """Test chat endpoint handles file upload errors gracefully."""
         from backend.app.file_inputs import FileUploadError
 
-        # Mock LLM response with tool call
+        # Mock LLM response with tool call (Responses API format)
         mock_llm.return_value = {
-            "choices": [
+            "output_text": "",
+            "tool_calls": [
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": "call_abc123",
-                                "type": "function",
-                                "function": {
-                                    "name": "leer_ficha_tecnica",
-                                    "arguments": '{"ruta_s3": "paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
-                                },
-                            }
-                        ],
-                    }
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                        "name": "leer_ficha_tecnica",
+                        "arguments": '{"ruta_s3": "paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
+                    },
                 }
-            ]
+            ],
         }
 
         # Mock S3 download success
@@ -356,26 +340,19 @@ class TestChatEndpointWithToolCall:
         self, mock_file_inputs: MagicMock, mock_s3: MagicMock, mock_llm: MagicMock
     ) -> None:
         """Test chat endpoint cleans up uploaded files after second LLM call."""
-        # Mock LLM response with tool call
+        # Mock LLM response with tool call (Responses API format)
         mock_llm.return_value = {
-            "choices": [
+            "output_text": "",
+            "tool_calls": [
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": "call_abc123",
-                                "type": "function",
-                                "function": {
-                                    "name": "leer_ficha_tecnica",
-                                    "arguments": '{"ruta_s3": "paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
-                                },
-                            }
-                        ],
-                    }
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                        "name": "leer_ficha_tecnica",
+                        "arguments": '{"ruta_s3": "paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
+                    },
                 }
-            ]
+            ],
         }
 
         # Mock S3 download
@@ -385,7 +362,9 @@ class TestChatEndpointWithToolCall:
         mock_file_inputs.upload_pdf.return_value = "file-abc123"
 
         # Mock second LLM call
-        with patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
+        with patch(
+            "backend.main.llm_client.get_llm_response_with_file"
+        ) as mock_llm_file:
             mock_llm_file.return_value = "Test response"
 
             response = client.post(
@@ -401,16 +380,9 @@ class TestChatEndpointWithToolCall:
         self, mock_llm: MagicMock
     ) -> None:
         """Test chat endpoint returns normal response when no tool call."""
-        # Mock LLM response without tool call
+        # Mock LLM response without tool call (Responses API format)
         mock_llm.return_value = {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "Soy el asistente de Arte Soluciones Energéticas. ¿En qué puedo ayudarte?",
-                    }
-                }
-            ]
+            "output_text": "Soy el asistente de Arte Soluciones Energéticas. ¿En qué puedo ayudarte?",
         }
 
         response = client.post("/chat", json={"message": "Hola"})
@@ -421,19 +393,10 @@ class TestChatEndpointWithToolCall:
         assert "Arte Soluciones Energéticas" in data["response"]
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
-    def test_chat_endpoint_passes_session_id_to_llm(
-        self, mock_llm: MagicMock
-    ) -> None:
+    def test_chat_endpoint_passes_session_id_to_llm(self, mock_llm: MagicMock) -> None:
         """Test chat endpoint passes session_id to LLM client."""
         mock_llm.return_value = {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "Test response",
-                    }
-                }
-            ]
+            "output_text": "Test response",
         }
 
         custom_session = "custom-session-abc123"
@@ -467,7 +430,9 @@ class TestProcessToolCall:
         mock_file_inputs.upload_pdf.return_value = "file-xyz789"
 
         # Mock second LLM call
-        with patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
+        with patch(
+            "backend.main.llm_client.get_llm_response_with_file"
+        ) as mock_llm_file:
             mock_llm_file.return_value = "El panel tiene 460W de potencia."
 
             tool_call = {
@@ -488,9 +453,7 @@ class TestProcessToolCall:
         mock_file_inputs.delete_file.assert_called_once_with("file-xyz789")
 
     @patch("backend.main.s3_client")
-    def test_process_tool_call_s3_error(
-        self, mock_s3: MagicMock
-    ) -> None:
+    def test_process_tool_call_s3_error(self, mock_s3: MagicMock) -> None:
         """Test _process_tool_call propagates S3 errors."""
         from backend.main import _process_tool_call
         from backend.app.s3_client import S3DownloadError

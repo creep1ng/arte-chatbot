@@ -106,6 +106,7 @@ Cada producto debe tener la siguiente estructura:
 4. nombre_comercial debe ser el nombre de la serie/línea, NO un modelo individual.
 5. variantes debe contener TODOS los modelos listados en la ficha técnica.
 6. Si la ficha cubre una sola variante, igual debe haber un array con un elemento.
+7. Asegúrate siempre incluir la marca del equipo. Suelen estar en los encabezados (parte superior) de las fichas técnicas.
 
 Responde ÚNICAMENTE con un objeto JSON válido con la clave "productos" que contenga un array."""
 
@@ -817,8 +818,8 @@ def main() -> int:
     parser.add_argument(
         "--bucket",
         type=str,
-        default=DEFAULT_BUCKET,
-        help=f"S3 bucket name (default: {DEFAULT_BUCKET}).",
+        default=None,
+        help="S3 bucket name (default: AWS_BUCKET_NAME env var or arte-chatbot-data).",
     )
     parser.add_argument(
         "--prefix",
