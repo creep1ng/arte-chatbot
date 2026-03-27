@@ -32,6 +32,7 @@ from backend.app.auth import verify_api_key
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.tools import get_tool_definitions
+from backend.app.session import session_manager
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +50,6 @@ app.add_middleware(
 llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
-
-# Session storage (in-memory for Sprint 1)
-# TODO: Replace with PostgreSQL in future sprints
-_sessions: dict[str, list[dict[str, Any]]] = {}
 
 
 class ChatRequest(BaseModel):
@@ -184,10 +181,6 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         request.message[:100],
     )
 
-    # Initialize session if needed
-    if session_id not in _sessions:
-        _sessions[session_id] = []
-
     # Detect escalation
     escalation_result = default_detector.detect(request.message)
 
@@ -198,6 +191,13 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             session_id,
             escalation_result.reason,
         )
+        # Guardamos la consulta en la sesión aunque vayamos a escalar
+        session_manager.add_turn(
+            session_id=session_id,
+            question=request.message,
+            answer=DEFAULT_ESCALATION_MESSAGE,
+            source_documents=[],
+        )
         return ChatResponse(
             response=DEFAULT_ESCALATION_MESSAGE,
             escalate=True,
@@ -206,6 +206,9 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         )
 
     try:
+        # Obtener contexto de la sesión para mejorar el prompt
+        context_string = session_manager.get_context_string(session_id)
+
         # First LLM call with tools
         logger.debug(
             "Calling LLM with tools: request_id=%s, session_id=%s, model=%s",
@@ -217,6 +220,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             message=request.message,
             session_id=session_id,
             system_prompt=ARTE_SYSTEM_PROMPT,
+            context=context_string,
         )
 
         # Check if the response contains tool calls
@@ -225,6 +229,12 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         if not tool_calls:
             # No tool call needed - return normal response
             content = llm_response.get("output_text", "")
+            session_manager.add_turn(
+                session_id=session_id,
+                question=request.message,
+                answer=content,
+                source_documents=[],
+            )
             return ChatResponse(
                 response=content,
                 escalate=False,
@@ -241,6 +251,12 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         tool_call=tool_call,
                         user_message=request.message,
                         session_id=session_id,
+                    )
+                    session_manager.add_turn(
+                        session_id=session_id,
+                        question=request.message,
+                        answer=final_response,
+                        source_documents=[],
                     )
                     return ChatResponse(
                         response=final_response,

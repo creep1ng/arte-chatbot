@@ -105,6 +105,7 @@ class LLMClient:
         message: str,
         session_id: str,
         system_prompt: Optional[str] = None,
+        context: str = "",
     ) -> dict[str, Any]:
         """Send a message to the LLM with tool definitions using Responses API.
 
@@ -112,6 +113,7 @@ class LLMClient:
             message: The user's message.
             session_id: The session identifier for context.
             system_prompt: Optional system prompt override.
+            context: Optional session context string with conversation history.
 
         Returns:
             A dict with 'output_text' and optionally 'tool_calls'.
@@ -124,6 +126,13 @@ class LLMClient:
 
         instructions = system_prompt or self.default_system_prompt
         tools = get_tool_definitions()
+
+        # Construir el input con contexto si está disponible
+        user_input = message
+        if context:
+            user_input = (
+                f"Contexto de la conversación:\n{context}\n\nPregunta actual: {message}"
+            )
 
         logger.debug(
             "LLM call with tools: model=%s, session_id=%s, message_preview=%s, "
@@ -138,7 +147,7 @@ class LLMClient:
             response = self.openai_client.responses.create(
                 model=self.model,
                 instructions=instructions,
-                input=message,
+                input=user_input,
                 tools=tools,
                 max_output_tokens=2000,
                 reasoning={"effort": "medium"},
