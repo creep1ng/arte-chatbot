@@ -34,12 +34,12 @@ class TestLLMClientInitialization:
     def test_llm_client_default_model(self) -> None:
         """Test LLMClient uses default model."""
         client = LLMClient()
-        assert client.model == "gpt-4o"
+        assert client.model == "gpt-5.4-nano"
 
     def test_llm_client_custom_model(self) -> None:
         """Test LLMClient accepts custom model."""
-        client = LLMClient(model="gpt-4")
-        assert client.model == "gpt-4"
+        client = LLMClient(model="gpt-5.4-nano")
+        assert client.model == "gpt-5.4-nano"
 
 
 class TestLLMClientWithTools:

@@ -15,7 +15,7 @@ from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-4o"
+DEFAULT_MODEL = "gpt-5.4-nano"
 
 ARTE_SYSTEM_PROMPT = (
     "Eres un asistente técnico de Arte Soluciones Energéticas, una empresa B2B "
