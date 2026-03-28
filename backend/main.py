@@ -3,8 +3,15 @@ ARTE Chatbot Backend
 FastAPI server with /health and /chat endpoints.
 """
 
-import json
 import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+import json
+import os
 import uuid
 from typing import Any, Optional
 
@@ -27,10 +34,12 @@ from backend.app.llm_client import (
     LLMServiceError,
     ARTE_SYSTEM_PROMPT,
 )
+from backend.app.schemas import SourceDocument
 from backend.app.auth import verify_api_key
+from backend.app.catalog import CatalogSearch
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
-from backend.app.tools import get_tool_definitions
+from backend.app.tools import DATASHEET_CATEGORIES, get_tool_definitions
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +53,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Diagnostic logging for environment configuration
+def _log_environment_configuration() -> None:
+    required_env_vars = [
+        "CHAT_API_KEY",
+        "OPENAI_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_BUCKET_NAME",
+    ]
+    for env_var in required_env_vars:
+        status = "set" if os.getenv(env_var) else "missing"
+        logger.info("Environment check: %s is %s", env_var, status)
+
+
+_log_environment_configuration()
+
+
+def _log_tool_definitions() -> None:
+    tools = get_tool_definitions()
+    for tool in tools:
+        function_block = tool.get("function", {})
+        name = function_block.get("name")
+        tool_type = tool.get("type")
+        has_parameters = isinstance(function_block.get("parameters"), dict)
+        logger.info(
+            "Tool configuration: name=%s, type=%s, has_parameters=%s",
+            name,
+            tool_type,
+            has_parameters,
+        )
+
+
+_log_tool_definitions()
+
 # Initialize clients
 llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
+catalog_search = CatalogSearch()
+
+MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
 
 # Session storage (in-memory for Sprint 1)
 # TODO: Replace with PostgreSQL in future sprints
@@ -68,6 +114,7 @@ class ChatResponse(BaseModel):
     escalate: bool = False
     reason: Optional[str] = None
     session_id: str
+    source_documents: list[SourceDocument] = Field(default_factory=list)
 
 
 @app.get("/health")
@@ -126,9 +173,6 @@ def _process_tool_call(
         f"fabricante={fabricante}, modelo={modelo}"
     )
 
-    if not ruta_s3:
-        raise ValueError("Missing ruta_s3 in tool arguments")
-
     # Download PDF from S3
     pdf_bytes = s3_client.download_pdf(ruta_s3)
 
@@ -152,6 +196,125 @@ def _process_tool_call(
             file_inputs_client.delete_file(file_id)
         except Exception as e:
             logger.warning(f"Failed to delete file {file_id}: {e}")
+
+
+def _parse_tool_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
+    function = tool_call.get("function", {})
+    arguments_raw = function.get("arguments", "{}")
+    if isinstance(arguments_raw, dict):
+        return arguments_raw
+    try:
+        return json.loads(arguments_raw or "{}")
+    except json.JSONDecodeError as exc:
+        logger.warning("Invalid JSON arguments for tool %s: %s", function.get("name"), exc)
+        return {}
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _handle_buscar_producto_tool(tool_call: dict[str, Any]) -> tuple[str, bool]:
+    arguments = _parse_tool_arguments(tool_call)
+    categoria = arguments.get("categoria")
+    if not isinstance(categoria, str):
+        return ("No se pudo determinar la categoría para buscar productos.", False)
+    categoria = categoria.strip()
+    if categoria not in DATASHEET_CATEGORIES:
+        categorias_validas = ", ".join(DATASHEET_CATEGORIES)
+        return (
+            f"La categoría proporcionada no es válida. Usa una de: {categorias_validas}.",
+            False,
+        )
+
+    fabricante = arguments.get("fabricante")
+    if isinstance(fabricante, str):
+        fabricante = fabricante.strip() or None
+    else:
+        fabricante = None
+
+    tipo = arguments.get("tipo")
+    if isinstance(tipo, str):
+        tipo = tipo.strip() or None
+    else:
+        tipo = None
+
+    capacidad_min = _safe_float(arguments.get("capacidad_min"))
+    capacidad_max = _safe_float(arguments.get("capacidad_max"))
+
+    productos = catalog_search.search(
+        categoria=categoria,
+        fabricante=fabricante,
+        capacidad_min=capacidad_min,
+        capacidad_max=capacidad_max,
+        tipo=tipo,
+    )
+
+    if not productos:
+        return (
+            "No encontré productos que coincidan con los filtros proporcionados. ",
+            False,
+        )
+
+    return (json.dumps({"productos": productos}), False)
+
+
+def _handle_leer_ficha_tecnica_tool(
+    tool_call: dict[str, Any],
+    *,
+    user_message: str,
+    session_id: str,
+) -> tuple[str, bool, bool]:
+    arguments = _parse_tool_arguments(tool_call)
+    ruta_s3 = arguments.get("ruta_s3")
+
+    if not ruta_s3:
+        return (
+            "No cuento con la ruta_s3 del producto. Ejecuta buscar_producto para obtenerla antes de volver a solicitar la ficha técnica.",
+            False,
+            False,
+        )
+
+    try:
+        final_response = _process_tool_call(
+            tool_call=tool_call,
+            user_message=user_message,
+            session_id=session_id,
+        )
+        return (final_response, True, True)
+    except S3DownloadError as exc:
+        logger.error("S3 download error: %s", exc)
+        return (
+            "Lo siento, no pude acceder a la ficha técnica del producto solicitado. El archivo no está disponible en nuestro catálogo. Por favor, contacta al equipo de ventas para más información.",
+            True,
+            False,
+        )
+    except FileUploadError as exc:
+        logger.error("File upload error: %s", exc)
+        return (
+            "Lo siento, tuve problemas al procesar la ficha técnica. Por favor, intenta novamente o contacta al equipo de ventas.",
+            True,
+            False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error processing leer_ficha_tecnica tool: %s", exc)
+        return (
+            "Ocurrió un error al procesar tu solicitud. Por favor, intenta más tarde.",
+            True,
+            False,
+        )
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -178,89 +341,112 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             escalate=True,
             reason=escalation_result.reason,
             session_id=session_id,
+            source_documents=[],
         )
+
+    system_message = {"role": "system", "content": ARTE_SYSTEM_PROMPT}
+    conversation_history: list[dict[str, Any]] = [
+        system_message,
+        {"role": "user", "content": request.message},
+    ]
+    source_docs: list[SourceDocument] = []
 
     try:
-        # First LLM call with tools (Responses API)
-        llm_response = llm_client.get_llm_response_with_tools(
-            message=request.message,
-            session_id=session_id,
-            system_prompt=ARTE_SYSTEM_PROMPT,
-        )
-
-        # Check if the response contains tool calls
-        tool_calls = llm_response.get("tool_calls")
-
-        if not tool_calls:
-            # No tool call needed - return normal response
-            content = llm_response.get("output_text", "")
-            return ChatResponse(
-                response=content,
-                escalate=False,
+        last_output_text = ""
+        for iteration in range(1, MAX_AGENTIC_ITERATIONS + 1):
+            logger.info("Agentic iteration %s started", iteration)
+            llm_response = llm_client.get_llm_response_with_tools(
+                messages=conversation_history,
                 session_id=session_id,
+                system_prompt=ARTE_SYSTEM_PROMPT,
             )
+            last_output_text = llm_response.get("output_text", "")
+            tool_calls = llm_response.get("tool_calls", [])
 
-        # Process tool calls
-        for tool_call in tool_calls:
-            function_name = tool_call.get("function", {}).get("name")
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": last_output_text,
+            }
+            if tool_calls:
+                assistant_message["tool_calls"] = tool_calls
+            conversation_history.append(assistant_message)
 
-            if function_name == "leer_ficha_tecnica":
-                try:
-                    final_response = _process_tool_call(
-                        tool_call=tool_call,
+            if not tool_calls:
+                return ChatResponse(
+                    response=last_output_text,
+                    escalate=False,
+                    session_id=session_id,
+                    source_documents=source_docs,
+                )
+
+            for tool_call in tool_calls:
+                function = tool_call.get("function", {})
+                function_name = function.get("name")
+                tool_call_id = tool_call.get("id")
+                arguments = _parse_tool_arguments(tool_call)
+                logger.info(
+                    "Agentic iteration %s invoking tool %s",
+                    iteration,
+                    function_name,
+                )
+
+                if function_name == "buscar_producto":
+                    handler_output, is_terminal = _handle_buscar_producto_tool(
+                        tool_call
+                    )
+                elif function_name == "leer_ficha_tecnica":
+                    (
+                        handler_output,
+                        is_terminal,
+                        include_source_doc,
+                    ) = _handle_leer_ficha_tecnica_tool(
+                        tool_call,
                         user_message=request.message,
                         session_id=session_id,
                     )
-                    return ChatResponse(
-                        response=final_response,
-                        escalate=False,
-                        session_id=session_id,
-                    )
-                except S3DownloadError as e:
-                    logger.error(f"S3 download error: {e}")
-                    return ChatResponse(
-                        response=(
-                            "Lo siento, no pude acceder a la ficha técnica del "
-                            "producto solicitado. El archivo no está disponible "
-                            "en nuestro catálogo. Por favor, contacta al equipo "
-                            "de ventas para más información."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                    )
-                except FileUploadError as e:
-                    logger.error(f"File upload error: {e}")
-                    return ChatResponse(
-                        response=(
-                            "Lo siento, tuve problemas al procesar la ficha técnica. "
-                            "Por favor, intenta novamente o contacta al equipo de ventas."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                    )
-                except Exception as e:
-                    logger.exception(f"Error processing tool call: {e}")
-                    return ChatResponse(
-                        response=(
-                            "Ocurrió un error al procesar tu solicitud. "
-                            "Por favor, intenta más tarde."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
+                    if include_source_doc:
+                        ruta_s3 = arguments.get("ruta_s3")
+                        if ruta_s3:
+                            source_docs.append(SourceDocument(ruta=ruta_s3))
+                else:
+                    handler_output, is_terminal = (
+                        f"Herramienta desconocida: {function_name}",
+                        False,
                     )
 
-        # If we get here with tool_calls but none were processed
+                if is_terminal:
+                    return ChatResponse(
+                        response=handler_output,
+                        escalate=False,
+                        session_id=session_id,
+                        source_documents=source_docs,
+                    )
+
+                if handler_output:
+                    conversation_history.append(
+                        {
+                            "role": "tool",
+                            "content": handler_output,
+                            "tool_call_id": tool_call_id,
+                        }
+                    )
+
+        logger.warning(
+            "Agentic loop exhausted %s iterations without terminal response",
+            MAX_AGENTIC_ITERATIONS,
+        )
         return ChatResponse(
-            response=llm_response.get("output_text", ""),
+            response=last_output_text,
             escalate=False,
             session_id=session_id,
+            source_documents=source_docs,
         )
 
-    except LLMServiceError as e:
-        logger.error(f"LLM service error: {e}")
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        logger.exception(f"Unexpected error in chat endpoint: {e}")
+    except LLMServiceError as exc:
+        logger.error("LLM service error: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unexpected error in chat endpoint: %s", exc)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

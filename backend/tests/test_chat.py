@@ -2,6 +2,7 @@
 Unit and Integration tests for the /chat endpoint.
 """
 
+import json
 import os
 import uuid
 import pytest
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend.main import app
 from backend.app.auth import verify_api_key
+from backend.app.schemas import SourceDocument
 
 client = TestClient(app)
 
@@ -391,6 +393,7 @@ class TestChatEndpointWithToolCall:
         data = response.json()
         assert data["escalate"] is False
         assert "Arte Soluciones Energéticas" in data["response"]
+        assert data["source_documents"] == []
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_endpoint_passes_session_id_to_llm(self, mock_llm: MagicMock) -> None:
@@ -410,6 +413,248 @@ class TestChatEndpointWithToolCall:
         assert call_args is not None
         _, kwargs = call_args
         assert kwargs.get("session_id") == custom_session
+
+
+class TestSourceDocumentsBehavior:
+    """Tests covering source_documents enrichment in ChatResponse."""
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_source_documents_empty_on_no_tool_call(self, mock_llm: MagicMock) -> None:
+        mock_llm.return_value = {
+            "output_text": "Respuesta sin herramientas",
+            "tool_calls": [],
+        }
+
+        response = client.post(
+            "/chat",
+            json={"message": "Consulta general"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["response"] == "Respuesta sin herramientas"
+        assert data["source_documents"] == []
+
+    @patch("backend.main._handle_leer_ficha_tecnica_tool")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_source_documents_populated_on_leer_ficha_tecnica(
+        self,
+        mock_llm: MagicMock,
+        mock_leer: MagicMock,
+    ) -> None:
+        leer_tool_call = {
+            "id": "call_leer",
+            "type": "function",
+            "function": {
+                "name": "leer_ficha_tecnica",
+                "arguments": json.dumps({"ruta_s3": "paneles/test.pdf"}),
+            },
+        }
+
+        mock_llm.return_value = {"output_text": "", "tool_calls": [leer_tool_call]}
+        mock_leer.return_value = ("Contenido ficha", True, True)
+
+        response = client.post(
+            "/chat",
+            json={"message": "Necesito la ficha del panel Test"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["response"] == "Contenido ficha"
+        assert data["source_documents"] == [
+            {"ruta": "paneles/test.pdf", "contenido_relevante": None}
+        ]
+
+    def test_source_documents_not_null_on_escalation(self) -> None:
+        response = client.post(
+            "/chat",
+            json={"message": "Necesito una cotización de 10 inversores"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["escalate"] is True
+        assert data["source_documents"] == []
+
+
+class TestSourceDocumentSchema:
+    """Unit tests for the SourceDocument model."""
+
+    def test_source_document_schema_has_ruta_field(self) -> None:
+        doc = SourceDocument(ruta="paneles/test.pdf")
+        assert hasattr(doc, "ruta")
+        assert doc.ruta == "paneles/test.pdf"
+
+    def test_source_document_contenido_relevante_is_optional(self) -> None:
+        doc = SourceDocument(ruta="paneles/test.pdf")
+        assert doc.contenido_relevante is None
+
+class TestAgenticLoopBehavior:
+    """Tests covering the iterative agentic loop inside /chat."""
+
+    @patch("backend.main.catalog_search.search")
+    @patch("backend.main._process_tool_call")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_agentic_loop_buscar_then_leer_then_respond(
+        self,
+        mock_llm: MagicMock,
+        mock_process: MagicMock,
+        mock_search: MagicMock,
+    ) -> None:
+        """Simulate buscar_producto followed by leer_ficha_tecnica within the loop."""
+
+        buscar_tool_call = {
+            "id": "call_buscar",
+            "type": "function",
+            "function": {
+                "name": "buscar_producto",
+                "arguments": json.dumps(
+                    {
+                        "categoria": "paneles",
+                        "fabricante": "Jinko",
+                        "tipo": "mono",
+                    }
+                ),
+            },
+        }
+
+        leer_tool_call = {
+            "id": "call_leer",
+            "type": "function",
+            "function": {
+                "name": "leer_ficha_tecnica",
+                "arguments": json.dumps({"ruta_s3": "paneles/jinko-tiger-pro.pdf"}),
+            },
+        }
+
+        mock_llm.side_effect = [
+            {"output_text": "", "tool_calls": [buscar_tool_call]},
+            {"output_text": "", "tool_calls": [leer_tool_call]},
+        ]
+
+        mock_search.return_value = [
+            {
+                "ruta_s3": "paneles/jinko-tiger-pro.pdf",
+                "modelo": "Jinko Tiger Pro",
+            }
+        ]
+
+        mock_process.return_value = "Ficha técnica procesada"
+
+        response = client.post(
+            "/chat",
+            json={"message": "Necesito la ficha del panel Jinko Tiger Pro"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["response"] == "Ficha técnica procesada"
+        assert mock_llm.call_count == 2
+        mock_search.assert_called_once()
+        mock_process.assert_called_once_with(
+            tool_call=leer_tool_call,
+            user_message="Necesito la ficha del panel Jinko Tiger Pro",
+            session_id=data["session_id"],
+        )
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_agentic_loop_stops_when_no_tool_calls(self, mock_llm: MagicMock) -> None:
+        """Ensure loop returns immediately when the model does not request tools."""
+
+        mock_llm.return_value = {
+            "output_text": "Respuesta directa",
+            "tool_calls": [],
+        }
+
+        response = client.post(
+            "/chat",
+            json={"message": "Cuéntame sobre paneles en general"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["response"] == "Respuesta directa"
+        assert mock_llm.call_count == 1
+
+    @patch("backend.main.MAX_AGENTIC_ITERATIONS", 2)
+    @patch("backend.main.logger.warning")
+    @patch("backend.main.catalog_search.search", return_value=[])
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_agentic_loop_respects_max_iterations(
+        self,
+        mock_llm: MagicMock,
+        mock_search: MagicMock,
+        mock_warning: MagicMock,
+    ) -> None:
+        """Verify the loop stops after reaching MAX_AGENTIC_ITERATIONS."""
+
+        looping_response = {
+            "output_text": "Sigo buscando opciones",
+            "tool_calls": [
+                {
+                    "id": "call_loop",
+                    "type": "function",
+                    "function": {
+                        "name": "buscar_producto",
+                        "arguments": json.dumps(
+                            {
+                                "categoria": "paneles",
+                            }
+                        ),
+                    },
+                }
+            ],
+        }
+
+        mock_llm.side_effect = [looping_response, looping_response]
+
+        response = client.post(
+            "/chat",
+            json={"message": "Busca paneles de 500W"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["response"] == "Sigo buscando opciones"
+        assert mock_llm.call_count == 2
+        mock_search.assert_called()
+        mock_warning.assert_called_once()
+
+    @patch("backend.main._process_tool_call")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_leer_ficha_tecnica_with_direct_ruta_s3_still_works(
+        self,
+        mock_llm: MagicMock,
+        mock_process: MagicMock,
+    ) -> None:
+        """Ensure leer_ficha_tecnica tool call with ruta_s3 ends the loop."""
+
+        leer_tool_call = {
+            "id": "call_direct_leer",
+            "type": "function",
+            "function": {
+                "name": "leer_ficha_tecnica",
+                "arguments": json.dumps({"ruta_s3": "paneles/longi-500w.pdf"}),
+            },
+        }
+
+        mock_llm.return_value = {"output_text": "", "tool_calls": [leer_tool_call]}
+        mock_process.return_value = "Información obtenida directamente"
+
+        response = client.post(
+            "/chat",
+            json={"message": "Dame la ficha del panel Longi 500W"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["response"] == "Información obtenida directamente"
+        mock_process.assert_called_once_with(
+            tool_call=leer_tool_call,
+            user_message="Dame la ficha del panel Longi 500W",
+            session_id=data["session_id"],
+        )
 
 
 class TestProcessToolCall:
@@ -495,3 +740,40 @@ class TestProcessToolCall:
             )
 
         assert "Unknown tool" in str(exc_info.value)
+
+
+class TestBuscarProductoTool:
+    """Unit tests for buscar_producto tool handler."""
+
+    @patch("backend.main.catalog_search.search", return_value=[])
+    def test_buscar_producto_no_results_informs_user(
+        self, mock_search: MagicMock
+    ) -> None:
+        """Ensure the handler informs the user when no products match."""
+        from backend.main import _handle_buscar_producto_tool
+
+        tool_call = {
+            "id": "call_buscar_empty",
+            "function": {
+                "name": "buscar_producto",
+                "arguments": json.dumps(
+                    {
+                        "categoria": "paneles",
+                        "fabricante": "Trina",
+                        "tipo": "mono",
+                    }
+                ),
+            },
+        }
+
+        output, is_terminal = _handle_buscar_producto_tool(tool_call)
+
+        assert "No encontré productos" in output
+        assert is_terminal is False
+        mock_search.assert_called_once_with(
+            categoria="paneles",
+            fabricante="Trina",
+            capacidad_min=None,
+            capacidad_max=None,
+            tipo="mono",
+        )
