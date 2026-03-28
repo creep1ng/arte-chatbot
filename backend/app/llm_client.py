@@ -1,9 +1,10 @@
 """LLM client module for Arte Chatbot.
 
-Provides a client to interact with OpenAI Responses API
+Provides a client to interact with OpenAI Chat Completions API
 for generating chatbot responses with tool calling support.
 """
 
+import json
 import logging
 import os
 from typing import Any, Optional
@@ -14,7 +15,7 @@ from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-5.4-nano"
+DEFAULT_MODEL = "gpt-4o"
 
 ARTE_SYSTEM_PROMPT = (
     "Eres un asistente técnico de Arte Soluciones Energéticas, una empresa B2B "
@@ -56,7 +57,15 @@ ARTE_SYSTEM_PROMPT = (
     "'¿cuál es la diferencia entre inversor multifuncional e híbrido?', "
     "'¿cuál es la diferencia entre una batería de gel y una de litio?', o "
     "cualquier consulta conceptual se responden directamente sin usar "
-    "herramientas. Usa tu conocimiento general sobre energía solar."
+    "herramientas. Usa tu conocimiento general sobre energía solar.\n\n"
+    "## Herramientas\n"
+    "- Usa la herramienta buscar_producto cuando el usuario pregunte por una "
+    "categoría o tipo de producto sin especificar modelo exacto.\n"
+    "- Usa la herramienta leer_ficha_tecnica únicamente cuando ya tengas la "
+    "ruta_s3 del producto específico.\n"
+    "- Si no hay un producto concreto y la pregunta es general, responde directamente.\n"
+    "- Si buscar_producto no encuentra resultados, informa al usuario y sugiere "
+    "contactar al equipo de ventas."
 )
 
 DATASHEET_SYSTEM_PROMPT = (
@@ -76,7 +85,7 @@ class LLMServiceError(Exception):
 
 
 class LLMClient:
-    """Client for interacting with OpenAI Responses API."""
+    """Client for interacting with OpenAI Chat Completions API."""
 
     def __init__(
         self,
@@ -99,16 +108,38 @@ class LLMClient:
             self._openai_client = OpenAI(api_key=self.api_key)
         return self._openai_client
 
+    @staticmethod
+    def _extract_text_from_content(content: Any) -> str:
+        """Convert chat completion message content into a plain string."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    block_text = block.get("text")
+                    if block_text:
+                        text_parts.append(str(block_text))
+                else:
+                    text_parts.append(str(block))
+            return "\n".join(text_parts)
+        return str(content)
+
     def get_llm_response_with_tools(
         self,
-        message: str,
+        message: Optional[str] = None,
+        *,
+        messages: Optional[list[dict[str, Any]]] = None,
         session_id: str,
         system_prompt: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Send a message to the LLM with tool definitions using Responses API.
+        """Send messages to the LLM with tool definitions using Chat Completions.
 
         Args:
-            message: The user's message.
+            message: Single-turn user input (legacy usage).
+            messages: Full message list to send to the Responses API.
             session_id: The session identifier for context.
             system_prompt: Optional system prompt override.
 
@@ -124,43 +155,60 @@ class LLMClient:
         instructions = system_prompt or self.default_system_prompt
         tools = get_tool_definitions()
 
-        try:
-            response = self.openai_client.responses.create(
-                model=self.model,
-                instructions=instructions,
-                input=message,
-                tools=tools,
-                max_output_tokens=2000,
-                reasoning={"effort": "medium"},
-                prompt_cache_key=session_id,
+        if messages is None and message is None:
+            raise ValueError("Either 'message' or 'messages' must be provided.")
+
+        if messages is None:
+            messages_payload: list[dict[str, Any]] = [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": message},
+            ]
+        else:
+            messages_payload = list(messages)
+            has_system_message = any(
+                msg.get("role") == "system" for msg in messages_payload
             )
+            if not has_system_message:
+                messages_payload = [
+                    {"role": "system", "content": instructions},
+                    *messages_payload,
+                ]
 
-            # Extract output text
-            output_text = response.output_text
+        try:
+            logger.info(
+                "Tool payload: %s", json.dumps(tools, ensure_ascii=False, indent=2)
+            )
+            response = self.openai_client.chat.completions.create(
+                model=self.model,
+                messages=messages_payload,
+                tools=tools,
+                max_tokens=2000,
+                user=session_id,
+            )
+            choice = response.choices[0]
+            message_content = self._extract_text_from_content(choice.message.content)
+            tool_calls_payload: list[dict[str, Any]] = []
 
-            # Extract tool calls from output
-            tool_calls = []
-            for item in response.output:
-                if item.type == "function_call":
-                    tool_calls.append(
-                        {
-                            "id": item.call_id,
-                            "type": "function",
-                            "function": {
-                                "name": item.name,
-                                "arguments": item.arguments,
-                            },
-                        }
-                    )
+            tool_calls = getattr(choice.message, "tool_calls", None) or []
+            for tool_call in tool_calls:
+                arguments = tool_call.function.arguments
+                parsed_args: Any = arguments
 
-            result: dict[str, Any] = {
-                "output_text": output_text,
+                tool_calls_payload.append(
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": parsed_args,
+                        },
+                    }
+                )
+
+            return {
+                "output_text": message_content,
+                "tool_calls": tool_calls_payload,
             }
-
-            if tool_calls:
-                result["tool_calls"] = tool_calls
-
-            return result
 
         except AuthenticationError as e:
             logger.error(f"OpenAI authentication error: {e}")
@@ -179,7 +227,7 @@ class LLMClient:
         session_id: str,
         system_prompt: Optional[str] = None,
     ) -> str:
-        """Send a message to the LLM with a file attached using Responses API.
+        """Send a message to the LLM with a file attached using Chat Completions.
 
         Args:
             message: The user's message.
@@ -199,24 +247,25 @@ class LLMClient:
         instructions = system_prompt or DATASHEET_SYSTEM_PROMPT
 
         try:
-            response = self.openai_client.responses.create(
+            response = self.openai_client.chat.completions.create(
                 model=self.model,
-                instructions=instructions,
-                input=[
+                messages=[
+                    {"role": "system", "content": instructions},
                     {
                         "role": "user",
                         "content": [
                             {"type": "input_file", "file_id": file_id},
                             {"type": "input_text", "text": message},
                         ],
-                    }
+                    },
                 ],
-                max_output_tokens=2000,
-                reasoning={"effort": "medium"},
-                prompt_cache_key=session_id,
+                max_tokens=2000,
+                user=session_id,
             )
 
-            return response.output_text
+            return self._extract_text_from_content(
+                response.choices[0].message.content
+            )
 
         except AuthenticationError as e:
             logger.error(f"OpenAI authentication error: {e}")

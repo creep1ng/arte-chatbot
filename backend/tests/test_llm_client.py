@@ -34,7 +34,7 @@ class TestLLMClientInitialization:
     def test_llm_client_default_model(self) -> None:
         """Test LLMClient uses default model."""
         client = LLMClient()
-        assert client.model == "gpt-5.4-nano"
+        assert client.model == "gpt-4o"
 
     def test_llm_client_custom_model(self) -> None:
         """Test LLMClient accepts custom model."""
@@ -50,21 +50,27 @@ class TestLLMClientWithTools:
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools returns dict with tool_calls when LLM invokes tool."""
-        # Setup mock
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
-        # Mock Responses API output with function_call item
-        mock_function_call = MagicMock()
-        mock_function_call.type = "function_call"
-        mock_function_call.call_id = "call_abc123"
-        mock_function_call.name = "leer_ficha_tecnica"
-        mock_function_call.arguments = '{"ruta_s3": "paneles/jinko-tiger-pro-460w.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger Pro 460W"}'
+        tool_call = MagicMock()
+        tool_call.id = "call_abc123"
+        tool_call.function.name = "leer_ficha_tecnica"
+        tool_call.function.arguments = {
+            "ruta_s3": "paneles/jinko-tiger-pro-460w.pdf",
+            "categoria": "paneles",
+        }
+
+        message = MagicMock()
+        message.content = ""
+        message.tool_calls = [tool_call]
+
+        mock_choice = MagicMock()
+        mock_choice.message = message
 
         mock_response = MagicMock()
-        mock_response.output_text = ""
-        mock_response.output = [mock_function_call]
-        mock_client.responses.create.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
         result = client.get_llm_response_with_tools(
@@ -82,23 +88,19 @@ class TestLLMClientWithTools:
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools returns dict without tool_calls for normal messages."""
-        # Setup mock
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
-        # Mock response without tool call (only message output)
-        mock_message = MagicMock()
-        mock_message.type = "message"
-        mock_message.content = [
-            MagicMock(text="Hola, soy el asistente de Arte Soluciones Energéticas.")
-        ]
+        message = MagicMock()
+        message.content = "Hola, soy el asistente de Arte Soluciones Energéticas."
+        message.tool_calls = None
+
+        mock_choice = MagicMock()
+        mock_choice.message = message
 
         mock_response = MagicMock()
-        mock_response.output_text = (
-            "Hola, soy el asistente de Arte Soluciones Energéticas."
-        )
-        mock_response.output = [mock_message]
-        mock_client.responses.create.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
         result = client.get_llm_response_with_tools(
@@ -107,7 +109,7 @@ class TestLLMClientWithTools:
         )
 
         assert "output_text" in result
-        assert "tool_calls" not in result
+        assert result["tool_calls"] == []
         assert (
             result["output_text"]
             == "Hola, soy el asistente de Arte Soluciones Energéticas."
@@ -117,18 +119,19 @@ class TestLLMClientWithTools:
     def test_get_llm_response_with_tools_uses_tools_parameter(
         self, mock_openai_class: MagicMock
     ) -> None:
-        """Test get_llm_response_with_tools passes tools to OpenAI API."""
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
-        mock_message = MagicMock()
-        mock_message.type = "message"
-        mock_message.content = [MagicMock(text="Test")]
+        message = MagicMock()
+        message.content = "Test"
+        message.tool_calls = None
+
+        mock_choice = MagicMock()
+        mock_choice.message = message
 
         mock_response = MagicMock()
-        mock_response.output_text = "Test"
-        mock_response.output = [mock_message]
-        mock_client.responses.create.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
         client.get_llm_response_with_tools(
@@ -137,27 +140,35 @@ class TestLLMClientWithTools:
         )
 
         # Verify tools parameter was passed
-        call_kwargs = mock_client.responses.create.call_args.kwargs
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
         assert "tools" in call_kwargs
-        assert len(call_kwargs["tools"]) == 1
-        assert call_kwargs["tools"][0]["name"] == "leer_ficha_tecnica"
+        tools = call_kwargs["tools"]
+        assert len(tools) >= 2
+        tool_names = {
+            tool.get("function", {}).get("name")
+            for tool in tools
+            if isinstance(tool.get("function"), dict)
+        }
+        assert "leer_ficha_tecnica" in tool_names
+        assert "buscar_producto" in tool_names
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_tools_uses_instructions(
         self, mock_openai_class: MagicMock
     ) -> None:
-        """Test get_llm_response_with_tools passes instructions parameter."""
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
-        mock_message = MagicMock()
-        mock_message.type = "message"
-        mock_message.content = [MagicMock(text="Test")]
+        message = MagicMock()
+        message.content = "Test"
+        message.tool_calls = None
+
+        mock_choice = MagicMock()
+        mock_choice.message = message
 
         mock_response = MagicMock()
-        mock_response.output_text = "Test"
-        mock_response.output = [mock_message]
-        mock_client.responses.create.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
         client.get_llm_response_with_tools(
@@ -166,9 +177,10 @@ class TestLLMClientWithTools:
         )
 
         # Verify instructions parameter was passed
-        call_kwargs = mock_client.responses.create.call_args.kwargs
-        assert "instructions" in call_kwargs
-        assert call_kwargs["instructions"] == ARTE_SYSTEM_PROMPT
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        messages = call_kwargs["messages"]
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == ARTE_SYSTEM_PROMPT
 
     def test_get_llm_response_with_tools_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_tools raises error without API key."""
@@ -196,9 +208,15 @@ class TestLLMClientWithFile:
         mock_openai_class.return_value = mock_client
 
         # Mock response
+        mock_message = MagicMock()
+        mock_message.content = "El panel tiene una potencia de 460W..."
+
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+
         mock_response = MagicMock()
-        mock_response.output_text = "El panel tiene una potencia de 460W..."
-        mock_client.responses.create.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
         result = client.get_llm_response_with_file(
@@ -210,19 +228,16 @@ class TestLLMClientWithFile:
         assert result == "El panel tiene una potencia de 460W..."
 
         # Verify the call was made with correct parameters
-        call_kwargs = mock_client.responses.create.call_args.kwargs
-        assert "input" in call_kwargs
-        input_data = call_kwargs["input"]
-
-        # Check user message contains file in content array format
-        user_message = input_data[0]
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert "messages" in call_kwargs
+        messages = call_kwargs["messages"]
+        assert messages[0]["role"] == "system"
+        user_message = messages[1]
         assert user_message["role"] == "user"
         assert isinstance(user_message["content"], list)
-        # Verify file item
         file_item = user_message["content"][0]
         assert file_item["type"] == "input_file"
         assert file_item["file_id"] == "file-abc123"
-        # Verify text item
         text_item = user_message["content"][1]
         assert text_item["type"] == "input_text"
 
@@ -234,9 +249,15 @@ class TestLLMClientWithFile:
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
+        mock_message = MagicMock()
+        mock_message.content = "Test"
+
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+
         mock_response = MagicMock()
-        mock_response.output_text = "Test"
-        mock_client.responses.create.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
         client.get_llm_response_with_file(
@@ -246,9 +267,9 @@ class TestLLMClientWithFile:
         )
 
         # Verify the instructions parameter used
-        call_kwargs = mock_client.responses.create.call_args.kwargs
-        assert "instructions" in call_kwargs
-        assert "ficha técnica" in call_kwargs["instructions"].lower()
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        messages = call_kwargs["messages"]
+        assert "ficha técnica" in messages[0]["content"].lower()
 
     def test_get_llm_response_with_file_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_file raises error without API key."""
