@@ -30,7 +30,7 @@ from backend.app.llm_client import (
 from backend.app.auth import verify_api_key
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
-from backend.app.tools import get_tool_definitions
+from backend.app.catalog import CatalogSearch
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +48,13 @@ app.add_middleware(
 llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
+catalog_search = CatalogSearch(s3_client=s3_client)
 
 # Session storage (in-memory for Sprint 1)
 # TODO: Replace with PostgreSQL in future sprints
 _sessions: dict[str, list[dict[str, Any]]] = {}
+
+MAX_AGENTIC_ITERATIONS = 3
 
 
 class ChatRequest(BaseModel):
@@ -114,7 +117,9 @@ def _process_tool_call(
         raise ValueError(f"Unknown tool: {function_name}")
 
     # Parse tool arguments
-    arguments = json.loads(tool_call.get("function", {}).get("arguments", "{}"))
+    arguments = _parse_tool_arguments(
+        tool_call.get("function", {}).get("arguments")
+    )
     ruta_s3 = arguments.get("ruta_s3")
     categoria = arguments.get("categoria")
     fabricante = arguments.get("fabricante")
@@ -127,7 +132,7 @@ def _process_tool_call(
     )
 
     if not ruta_s3:
-        raise ValueError("Missing ruta_s3 in tool arguments")
+        return "Error: se necesita ruta_s3 para leer la ficha técnica. Usa buscar_producto primero."
 
     # Download PDF from S3
     pdf_bytes = s3_client.download_pdf(ruta_s3)
@@ -154,15 +159,40 @@ def _process_tool_call(
             logger.warning(f"Failed to delete file {file_id}: {e}")
 
 
+def _parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
+    """Parse tool arguments coming from the LLM payload."""
+
+    if isinstance(raw_arguments, dict):
+        return raw_arguments
+
+    if raw_arguments is None:
+        return {}
+
+    if isinstance(raw_arguments, str):
+        try:
+            return json.loads(raw_arguments)
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON in tool arguments: %s", raw_arguments)
+            return {}
+
+    logger.warning("Unexpected tool arguments type: %s", type(raw_arguments))
+    return {}
+
+
+def _safe_float(raw_value: Any) -> float | None:
+    """Convert raw tool argument into float when possible."""
+
+    if raw_value is None:
+        return None
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
-    """
-    Chat endpoint that handles user messages.
-
-    Implements two-call LLM pattern:
-    1. First call checks if tools need to be invoked
-    2. If tool call present, process it and make second call
-    """
+    """Chat endpoint implementing iterative agentic tool loop."""
     session_id = request.session_id or str(uuid.uuid4())
 
     # Initialize session if needed
@@ -180,78 +210,164 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             session_id=session_id,
         )
 
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": ARTE_SYSTEM_PROMPT},
+        {"role": "user", "content": request.message},
+    ]
+
+    iteration = 0
+    last_completion_text = ""
+
     try:
-        # First LLM call with tools (Responses API)
-        llm_response = llm_client.get_llm_response_with_tools(
-            message=request.message,
-            session_id=session_id,
-            system_prompt=ARTE_SYSTEM_PROMPT,
-        )
-
-        # Check if the response contains tool calls
-        tool_calls = llm_response.get("tool_calls")
-
-        if not tool_calls:
-            # No tool call needed - return normal response
-            content = llm_response.get("output_text", "")
-            return ChatResponse(
-                response=content,
-                escalate=False,
+        while iteration < MAX_AGENTIC_ITERATIONS:
+            llm_response = llm_client.get_llm_response_with_tools(
+                messages=messages,
                 session_id=session_id,
             )
 
-        # Process tool calls
-        for tool_call in tool_calls:
-            function_name = tool_call.get("function", {}).get("name")
+            last_completion_text = llm_response.get("output_text", "")
+            tool_calls = llm_response.get("tool_calls") or []
 
-            if function_name == "leer_ficha_tecnica":
-                try:
-                    final_response = _process_tool_call(
-                        tool_call=tool_call,
-                        user_message=request.message,
-                        session_id=session_id,
-                    )
-                    return ChatResponse(
-                        response=final_response,
-                        escalate=False,
-                        session_id=session_id,
-                    )
-                except S3DownloadError as e:
-                    logger.error(f"S3 download error: {e}")
-                    return ChatResponse(
-                        response=(
-                            "Lo siento, no pude acceder a la ficha técnica del "
-                            "producto solicitado. El archivo no está disponible "
-                            "en nuestro catálogo. Por favor, contacta al equipo "
-                            "de ventas para más información."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                    )
-                except FileUploadError as e:
-                    logger.error(f"File upload error: {e}")
-                    return ChatResponse(
-                        response=(
-                            "Lo siento, tuve problemas al procesar la ficha técnica. "
-                            "Por favor, intenta novamente o contacta al equipo de ventas."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                    )
-                except Exception as e:
-                    logger.exception(f"Error processing tool call: {e}")
-                    return ChatResponse(
-                        response=(
-                            "Ocurrió un error al procesar tu solicitud. "
-                            "Por favor, intenta más tarde."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
+            if not tool_calls:
+                return ChatResponse(
+                    response=last_completion_text,
+                    escalate=False,
+                    session_id=session_id,
+                )
+
+            # Track assistant turn including tool calls for the LLM.
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": last_completion_text,
+                    "tool_calls": tool_calls,
+                }
+            )
+
+            for tool_call in tool_calls:
+                function_payload = tool_call.get("function", {})
+                function_name = function_payload.get("name")
+
+                if function_name == "buscar_producto":
+                    arguments = _parse_tool_arguments(
+                        function_payload.get("arguments")
                     )
 
-        # If we get here with tool_calls but none were processed
+                    categoria = arguments.get("categoria")
+                    if not categoria:
+                        tool_result = (
+                            "Error: se requiere la categoría para buscar productos."
+                        )
+                    else:
+                        resultados = catalog_search.search(
+                            categoria=categoria,
+                            fabricante=arguments.get("fabricante"),
+                            capacidad_min=_safe_float(arguments.get("capacidad_min")),
+                            capacidad_max=_safe_float(arguments.get("capacidad_max")),
+                            tipo=arguments.get("tipo"),
+                        )
+                        if resultados:
+                            tool_result = json.dumps(resultados, ensure_ascii=False)
+                        else:
+                            tool_result = (
+                                "No se encontraron productos que cumplan los criterios."
+                            )
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.get("id"),
+                            "content": tool_result,
+                        }
+                    )
+
+                elif function_name == "leer_ficha_tecnica":
+                    try:
+                        final_response = _process_tool_call(
+                            tool_call=tool_call,
+                            user_message=request.message,
+                            session_id=session_id,
+                        )
+                        return ChatResponse(
+                            response=final_response,
+                            escalate=False,
+                            session_id=session_id,
+                        )
+                    except S3DownloadError:
+                        tool_result = (
+                            "Error: no se pudo descargar la ficha técnica del producto."
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.get("id"),
+                                "content": tool_result,
+                            }
+                        )
+                        return ChatResponse(
+                            response=(
+                                "Lo siento, no pude acceder a la ficha técnica del "
+                                "producto solicitado. El archivo no está disponible "
+                                "en nuestro catálogo. Por favor, contacta al equipo "
+                                "de ventas para más información."
+                            ),
+                            escalate=False,
+                            session_id=session_id,
+                        )
+                    except FileUploadError:
+                        tool_result = (
+                            "Error: no se pudo procesar la ficha técnica en el LLM."
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.get("id"),
+                                "content": tool_result,
+                            }
+                        )
+                        return ChatResponse(
+                            response=(
+                                "Lo siento, tuve problemas al procesar la ficha técnica. "
+                                "Por favor, intenta nuevamente o contacta al equipo de ventas."
+                            ),
+                            escalate=False,
+                            session_id=session_id,
+                        )
+                    except Exception:
+                        logger.exception("Error inesperado procesando leer_ficha_tecnica")
+                        tool_result = (
+                            "Error inesperado al leer la ficha técnica. Intenta más tarde."
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.get("id"),
+                                "content": tool_result,
+                            }
+                        )
+                        return ChatResponse(
+                            response=(
+                                "Ocurrió un error al procesar tu solicitud. "
+                                "Por favor, intenta más tarde."
+                            ),
+                            escalate=False,
+                            session_id=session_id,
+                        )
+                else:
+                    logger.warning("Unhandled tool call: %s", function_name)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.get("id"),
+                            "content": "Error: herramienta no soportada.",
+                        }
+                    )
+
+            iteration += 1
+
+        # Max iterations reached – return the last completion text as fallback.
         return ChatResponse(
-            response=llm_response.get("output_text", ""),
+            response=last_completion_text,
             escalate=False,
             session_id=session_id,
         )

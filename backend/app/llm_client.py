@@ -182,7 +182,7 @@ class LLMClient:
                 model=self.model,
                 messages=messages_payload,
                 tools=tools,
-                max_tokens=2000,
+                max_completion_tokens=2000,
                 user=session_id,
             )
             choice = response.choices[0]
@@ -259,7 +259,7 @@ class LLMClient:
                         ],
                     },
                 ],
-                max_tokens=2000,
+                max_completion_tokens=2000,
                 user=session_id,
             )
 
