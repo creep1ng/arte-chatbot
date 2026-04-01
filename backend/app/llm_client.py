@@ -57,7 +57,18 @@ ARTE_SYSTEM_PROMPT = (
     "'¿cuál es la diferencia entre inversor multifuncional e híbrido?', "
     "'¿cuál es la diferencia entre una batería de gel y una de litio?', o "
     "cualquier consulta conceptual se responden directamente sin usar "
-    "herramientas. Usa tu conocimiento general sobre energía solar."
+    "herramientas. Usa tu conocimiento general sobre energía solar.\n\n"
+    "## Clasificación de intención\n"
+    "- Al INICIO de cada respuesta, incluye un marcador de clasificación.\n"
+    "- Usa EXACTAMENTE este formato: [INTENT: <tipo>]\n"
+    "- Tipos válidos: FAQ, product_info, escalate_quote, escalate_technical, escalate_order\n"
+    "- FAQ: preguntas generales sobre energía solar, conceptos, diferencias entre tecnologías\n"
+    "- product_info: consultas sobre especificaciones, modelos, características de productos\n"
+    "- escalate_quote: solicitudes de cotización, presupuesto, precio de proyectos completos\n"
+    "- escalate_technical: problemas técnicos que requieren revisión, errores en equipos\n"
+    "- escalate_order: pedidos, compras, adquisición de productos\n"
+    "- Ejemplo: [INTENT: FAQ] Los paneles monocristalinos tienen mayor eficiencia...\n"
+    "- Ejemplo: [INTENT: escalate_quote] Un agente de ventas te contactará..."
 )
 
 DATASHEET_SYSTEM_PROMPT = (

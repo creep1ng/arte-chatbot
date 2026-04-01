@@ -1,0 +1,77 @@
+[
+  {
+    "id": "ie001",
+    "query": "¿Cuál es la diferencia entre paneles monocristalinos y policristalinos?",
+    "expected_intent_type": "FAQ"
+  },
+  {
+    "id": "ie002",
+    "query": "¿Qué es un inversor híbrido y para qué sirve?",
+    "expected_intent_type": "FAQ"
+  },
+  {
+    "id": "ie003",
+    "query": "¿Cómo funciona la conexión a red de un sistema solar?",
+    "expected_intent_type": "FAQ"
+  },
+  {
+    "id": "ie004",
+    "query": "¿Qué características técnicas tiene el panel JA Solar JAM72S30-545?",
+    "expected_intent_type": "product_info"
+  },
+  {
+    "id": "ie005",
+    "query": "¿Qué modelos de inversores Huawei tienen disponibles?",
+    "expected_intent_type": "product_info"
+  },
+  {
+    "id": "ie006",
+    "query": "Necesito saber la potencia y eficiencia del panel Longi Hi-MO 5",
+    "expected_intent_type": "product_info"
+  },
+  {
+    "id": "ie007",
+    "query": "Necesito una cotización para un sistema solar de 10kW para mi empresa",
+    "expected_intent_type": "escalate_quote"
+  },
+  {
+    "id": "ie008",
+    "query": "¿Cuánto cuesta un proyecto completo de energía solar residencial?",
+    "expected_intent_type": "escalate_quote"
+  },
+  {
+    "id": "ie009",
+    "query": "Quiero un presupuesto para 50 paneles con instalación incluida",
+    "expected_intent_type": "escalate_quote"
+  },
+  {
+    "id": "ie010",
+    "query": "Mi inversor está mostrando un error E027 y se apaga solo",
+    "expected_intent_type": "escalate_technical"
+  },
+  {
+    "id": "ie011",
+    "query": "El sistema de monitoreo no me muestra los datos de producción desde hace una semana",
+    "expected_intent_type": "escalate_technical"
+  },
+  {
+    "id": "ie012",
+    "query": "El inversor hace un ruido extraño como zumbido y necesita revisión técnica",
+    "expected_intent_type": "escalate_technical"
+  },
+  {
+    "id": "ie013",
+    "query": "Quiero hacer un pedido de 20 paneles solares para mi proyecto",
+    "expected_intent_type": "escalate_order"
+  },
+  {
+    "id": "ie014",
+    "query": "Necesito comprar un inversor Fronius y que me lo envíen",
+    "expected_intent_type": "escalate_order"
+  },
+  {
+    "id": "ie015",
+    "query": "Deseo adquirir el sistema completo que me mostraron, ¿cómo procedo con la compra?",
+    "expected_intent_type": "escalate_order"
+  }
+]

@@ -5,6 +5,7 @@ FastAPI server with /health and /chat endpoints.
 
 import json
 import logging
+import re
 import uuid
 from typing import Any, Optional
 
@@ -18,11 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from rag import (
-    DEFAULT_ESCALATION_MESSAGE,
-    EscalationDetector,
-    default_detector,
-)
+from rag import DEFAULT_ESCALATION_MESSAGE
 from backend.app.llm_client import (
     LLMClient,
     LLMServiceError,
@@ -35,6 +32,37 @@ from backend.app.tools import get_tool_definitions
 from backend.app.session import session_manager
 
 logger = logging.getLogger(__name__)
+
+INTENT_TYPES = [
+    "FAQ",
+    "product_info",
+    "escalate_quote",
+    "escalate_technical",
+    "escalate_order",
+]
+
+INTENT_MARKER_RE = re.compile(r"\[INTENT:\s*(\w+)\]")
+
+
+def _extract_intent_type(text: str) -> tuple[str, str]:
+    """Extract intent_type from LLM output text.
+
+    The LLM is instructed to prefix responses with [INTENT: <type>].
+    This function parses the marker and returns the cleaned response.
+
+    Args:
+        text: Raw LLM output text.
+
+    Returns:
+        Tuple of (intent_type, cleaned_response_text).
+    """
+    match = INTENT_MARKER_RE.search(text)
+    if match:
+        intent = match.group(1)
+        if intent in INTENT_TYPES:
+            cleaned = INTENT_MARKER_RE.sub("", text).strip()
+            return intent, cleaned
+    return "FAQ", text
 
 app = FastAPI(title="ARTE Chatbot Backend")
 
@@ -64,6 +92,7 @@ class ChatResponse(BaseModel):
 
     response: str
     escalate: bool = False
+    intent_type: str = "FAQ"
     reason: Optional[str] = None
     session_id: str
 
@@ -181,29 +210,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         request.message[:100],
     )
 
-    # Detect escalation
-    escalation_result = default_detector.detect(request.message)
-
-    if escalation_result.escalate:
-        logger.info(
-            "Escalation detected: request_id=%s, session_id=%s, reason=%s",
-            request_id,
-            session_id,
-            escalation_result.reason,
-        )
-        # Guardamos la consulta en la sesión aunque vayamos a escalar
-        session_manager.add_turn(
-            session_id=session_id,
-            question=request.message,
-            answer=DEFAULT_ESCALATION_MESSAGE,
-            source_documents=[],
-        )
-        return ChatResponse(
-            response=DEFAULT_ESCALATION_MESSAGE,
-            escalate=True,
-            reason=escalation_result.reason,
-            session_id=session_id,
-        )
+    # Escalation is now determined by LLM intent_type classification (US-05)
+    # No keyword-based detection. The LLM prefixes responses with [INTENT: <type>].
 
     try:
         # Obtener contexto de la sesión para mejorar el prompt
@@ -229,15 +237,33 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         if not tool_calls:
             # No tool call needed - return normal response
             content = llm_response.get("output_text", "")
+            intent_type, cleaned_content = _extract_intent_type(content)
+            escalate_intents = ["escalate_quote", "escalate_technical", "escalate_order"]
+            should_escalate = intent_type in escalate_intents
+            if should_escalate:
+                session_manager.add_turn(
+                    session_id=session_id,
+                    question=request.message,
+                    answer=DEFAULT_ESCALATION_MESSAGE,
+                    source_documents=[],
+                )
+                return ChatResponse(
+                    response=DEFAULT_ESCALATION_MESSAGE,
+                    escalate=True,
+                    intent_type=intent_type,
+                    reason=f"Intent classified as {intent_type}",
+                    session_id=session_id,
+                )
             session_manager.add_turn(
                 session_id=session_id,
                 question=request.message,
-                answer=content,
+                answer=cleaned_content,
                 source_documents=[],
             )
             return ChatResponse(
-                response=content,
+                response=cleaned_content,
                 escalate=False,
+                intent_type=intent_type,
                 session_id=session_id,
             )
 
@@ -252,15 +278,33 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         user_message=request.message,
                         session_id=session_id,
                     )
+                    intent_type, cleaned_response = _extract_intent_type(final_response)
+                    escalate_intents = ["escalate_quote", "escalate_technical", "escalate_order"]
+                    should_escalate = intent_type in escalate_intents
+                    if should_escalate:
+                        session_manager.add_turn(
+                            session_id=session_id,
+                            question=request.message,
+                            answer=DEFAULT_ESCALATION_MESSAGE,
+                            source_documents=[],
+                        )
+                        return ChatResponse(
+                            response=DEFAULT_ESCALATION_MESSAGE,
+                            escalate=True,
+                            intent_type=intent_type,
+                            reason=f"Intent classified as {intent_type}",
+                            session_id=session_id,
+                        )
                     session_manager.add_turn(
                         session_id=session_id,
                         question=request.message,
-                        answer=final_response,
+                        answer=cleaned_response,
                         source_documents=[],
                     )
                     return ChatResponse(
-                        response=final_response,
+                        response=cleaned_response,
                         escalate=False,
+                        intent_type=intent_type,
                         session_id=session_id,
                     )
                 except S3DownloadError as e:
@@ -278,6 +322,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                             "de ventas para más información."
                         ),
                         escalate=False,
+                        intent_type="FAQ",
                         session_id=session_id,
                     )
                 except FileUploadError as e:
@@ -293,6 +338,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                             "Por favor, intenta novamente o contacta al equipo de ventas."
                         ),
                         escalate=False,
+                        intent_type="FAQ",
                         session_id=session_id,
                     )
                 except Exception as e:
@@ -308,13 +354,16 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                             "Por favor, intenta más tarde."
                         ),
                         escalate=False,
+                        intent_type="FAQ",
                         session_id=session_id,
                     )
 
         # If we get here with tool_calls but none were processed
+        intent_type, cleaned_text = _extract_intent_type(llm_response.get("output_text", ""))
         return ChatResponse(
-            response=llm_response.get("output_text", ""),
+            response=cleaned_text,
             escalate=False,
+            intent_type=intent_type,
             session_id=session_id,
         )
 
