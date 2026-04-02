@@ -66,6 +66,8 @@ class ChatResponse(BaseModel):
     escalate: bool = False
     reason: Optional[str] = None
     session_id: str
+    source_documents: list[str] = []
+    num_sources: int = 0
 
 
 @app.get("/health")
@@ -91,7 +93,7 @@ def _process_tool_call(
     tool_call: dict[str, Any],
     user_message: str,
     session_id: str,
-) -> str:
+) -> tuple[str, list[str]]:
     """Process a tool call for reading a technical datasheet.
 
     Args:
@@ -100,7 +102,7 @@ def _process_tool_call(
         session_id: The session identifier.
 
     Returns:
-        The LLM response based on the datasheet content.
+        Tuple of (llm_response_text, list_of_s3_paths_used).
 
     Raises:
         S3DownloadError: If the PDF cannot be downloaded from S3.
@@ -148,7 +150,7 @@ def _process_tool_call(
             file_id=file_id,
             session_id=session_id,
         )
-        return response
+        return response, [ruta_s3]
     finally:
         # Clean up: delete the uploaded file
         try:
@@ -203,6 +205,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             escalate=True,
             reason=escalation_result.reason,
             session_id=session_id,
+            source_documents=[],
+            num_sources=0,
         )
 
     try:
@@ -239,6 +243,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 response=content,
                 escalate=False,
                 session_id=session_id,
+                source_documents=[],
+                num_sources=0,
             )
 
         # Process tool calls
@@ -247,7 +253,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
             if function_name == "leer_ficha_tecnica":
                 try:
-                    final_response = _process_tool_call(
+                    final_response, source_docs = _process_tool_call(
                         tool_call=tool_call,
                         user_message=request.message,
                         session_id=session_id,
@@ -256,12 +262,14 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         session_id=session_id,
                         question=request.message,
                         answer=final_response,
-                        source_documents=[],
+                        source_documents=source_docs,
                     )
                     return ChatResponse(
                         response=final_response,
                         escalate=False,
                         session_id=session_id,
+                        source_documents=source_docs,
+                        num_sources=len(source_docs),
                     )
                 except S3DownloadError as e:
                     logger.error(
@@ -279,6 +287,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         ),
                         escalate=False,
                         session_id=session_id,
+                        source_documents=[],
+                        num_sources=0,
                     )
                 except FileUploadError as e:
                     logger.error(
@@ -294,6 +304,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         ),
                         escalate=False,
                         session_id=session_id,
+                        source_documents=[],
+                        num_sources=0,
                     )
                 except Exception as e:
                     logger.exception(
@@ -309,6 +321,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         ),
                         escalate=False,
                         session_id=session_id,
+                        source_documents=[],
+                        num_sources=0,
                     )
 
         # If we get here with tool_calls but none were processed
@@ -316,6 +330,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             response=llm_response.get("output_text", ""),
             escalate=False,
             session_id=session_id,
+            source_documents=[],
+            num_sources=0,
         )
 
     except LLMServiceError as e:

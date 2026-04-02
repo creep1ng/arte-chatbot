@@ -34,7 +34,7 @@ def extract_numerical_values(text: str) -> List[str]:
         List of numerical value strings found in the text
     """
     # Regex pattern to match numerical values with common electrical/technical units
-    pattern = r'\d+[\\.,]?\\d*\s*(?:W|V|A|%|°C|kWh)'
+    pattern = r'\d+[\.,]?\d*\s*(?:W|V|A|%|°C|kWh)'
     # Return the full match
     full_matches = re.findall(pattern, text, re.IGNORECASE)
     return full_matches
@@ -99,19 +99,8 @@ def process_csv(csv_path: Path) -> Dict[str, Any]:
     
     try:
         with open(csv_path, 'r', encoding='utf-8') as csvfile:
-            # Try to detect if it's a CSV with headers
-            sample = csvfile.read(1024)
-            csvfile.seek(0)
-            sniffer = csv.Sniffer()
-            has_header = sniffer.has_header(sample)
-            
-            reader = csv.DictReader(csvfile) if has_header else None
-            if not has_header:
-                # If no header, we need to know the column positions
-                # For now, assume we have header based on harness output
-                print("Error: CSV file appears to have no header. Expected header with columns.")
-                sys.exit(1)
-            
+            reader = csv.DictReader(csvfile)
+
             for row_num, row in enumerate(reader, start=2):  # start at 2 since header is row 1
                 total_rows += 1
                 
@@ -159,7 +148,7 @@ def process_csv(csv_path: Path) -> Dict[str, Any]:
     
     # Prepare results
     results = {
-        'timestamp': datetime.utcnow().isoformat() + 'Z',
+        'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         'total_queries': total_rows,
         'hallucination_count': hallucination_count,
         'hallucination_rate_percent': round(hallucination_rate, 2),
