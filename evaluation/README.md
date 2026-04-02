@@ -146,6 +146,38 @@ The harness is designed to run as part of the GitHub Actions pipeline. Add this 
 |----------|-------|-----------------|----------------|----------|------------|------------|-----------|-------|-----------|
 | q001 | ... | technical_specs | false | ... | abc-123 | 45.32 | false | | 2024-01-15... |
 
+## Hallucination Check
+
+Run the hallucination check script on a harness CSV output:
+
+```bash
+python evaluation/hallucination_check.py --run evaluation/harness/output/results_YYYYMMDD_HHMMSS.csv
+```
+
+Optionally upload the report to S3:
+
+```bash
+python evaluation/hallucination_check.py --run evaluation/harness/output/results_YYYYMMDD_HHMMSS.csv --upload-s3
+```
+
+### Environment variables for S3 upload
+
+| Variable | Description |
+|----------|-------------|
+| `AWS_ACCESS_KEY_ID` | AWS access key |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
+| `AWS_BUCKET_NAME` | S3 bucket name (e.g. `arte-chatbot-data`) |
+| `AWS_REGION` | AWS region (defaults to `us-east-1`) |
+
+### Report output
+
+The report is saved to `evaluation/results/hallucination_<timestamp>.json` containing:
+- `hallucination_rate_percent`: Global hallucination rate
+- `suspicious_queries`: List of flagged queries with reasons
+- `average_num_sources`: Mean `num_sources` across all queries
+
+A rate below **20%** satisfies the US-07 acceptance criterion.
+
 ## Troubleshooting
 
 ### Connection Refused
