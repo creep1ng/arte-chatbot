@@ -139,7 +139,7 @@ class LLMClient:
 
         Args:
             message: Single-turn user input (legacy usage).
-            messages: Full message list to send to the Responses API.
+            messages: Full message list to send to the OpenAI Chat Completions API.
             session_id: The session identifier for context.
             system_prompt: Optional system prompt override.
 
@@ -175,7 +175,7 @@ class LLMClient:
                 ]
 
         try:
-            logger.info(
+            logger.debug(
                 "Tool payload: %s", json.dumps(tools, ensure_ascii=False, indent=2)
             )
             response = self.openai_client.chat.completions.create(
@@ -211,14 +211,14 @@ class LLMClient:
             }
 
         except AuthenticationError as e:
-            logger.error(f"OpenAI authentication error: {e}")
+            logger.error("OpenAI authentication error: %s", e)
             raise LLMServiceError("Invalid OpenAI API key") from e
         except APIError as e:
-            logger.error(f"OpenAI API error: {e}")
-            raise LLMServiceError(f"OpenAI API error: {e}") from e
+            logger.error("OpenAI API error: %s", e)
+            raise LLMServiceError("OpenAI API error: %s" % str(e)) from e
         except Exception as e:
-            logger.exception(f"Unexpected error calling OpenAI API: {e}")
-            raise LLMServiceError(f"LLM service error: {e}") from e
+            logger.exception("Unexpected error calling OpenAI API: %s", e)
+            raise LLMServiceError("LLM service error: %s" % str(e)) from e
 
     def get_llm_response_with_file(
         self,
@@ -268,11 +268,11 @@ class LLMClient:
             )
 
         except AuthenticationError as e:
-            logger.error(f"OpenAI authentication error: {e}")
+            logger.error("OpenAI authentication error: %s", e)
             raise LLMServiceError("Invalid OpenAI API key") from e
         except APIError as e:
-            logger.error(f"OpenAI API error: {e}")
-            raise LLMServiceError(f"OpenAI API error: {e}") from e
+            logger.error("OpenAI API error: %s", e)
+            raise LLMServiceError("OpenAI API error: %s" % str(e)) from e
         except Exception as e:
-            logger.exception(f"Unexpected error calling OpenAI API: {e}")
-            raise LLMServiceError(f"LLM service error: {e}") from e
+            logger.exception("Unexpected error calling OpenAI API: %s", e)
+            raise LLMServiceError("LLM service error: %s" % str(e)) from e
