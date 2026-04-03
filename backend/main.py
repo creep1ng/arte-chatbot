@@ -8,15 +8,12 @@ import logging
 import uuid
 from typing import Any, Optional
 
-from dotenv import load_dotenv
-
-load_dotenv(override=False)
-
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from backend.config.settings import Settings
 from rag import (
     DEFAULT_ESCALATION_MESSAGE,
     EscalationDetector,
@@ -31,6 +28,7 @@ from backend.app.auth import verify_api_key
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.catalog import CatalogSearch
+from backend.app.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +43,16 @@ app.add_middleware(
 )
 
 # Initialize clients
-llm_client = LLMClient()
+settings = Settings()
+llm_client = LLMClient(model=settings.llm_model)
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
 catalog_search = CatalogSearch(s3_client=s3_client)
+session_manager = SessionManager()
 
 # Session storage (in-memory for Sprint 1)
 # TODO: Replace with PostgreSQL in future sprints
 _sessions: dict[str, list[dict[str, Any]]] = {}
-
-MAX_AGENTIC_ITERATIONS = 3
 
 
 class ChatRequest(BaseModel):
@@ -203,6 +201,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     escalation_result = default_detector.detect(request.message)
 
     if escalation_result.escalate:
+        session_manager.add_turn(session_id, "user", request.message)
         return ChatResponse(
             response=DEFAULT_ESCALATION_MESSAGE,
             escalate=True,
@@ -215,11 +214,14 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         {"role": "user", "content": request.message},
     ]
 
+    # Track user message in session
+    session_manager.add_turn(session_id, "user", request.message)
+
     iteration = 0
     last_completion_text = ""
 
     try:
-        while iteration < MAX_AGENTIC_ITERATIONS:
+        while iteration < settings.max_agentic_iterations:
             llm_response = llm_client.get_llm_response_with_tools(
                 messages=messages,
                 session_id=session_id,
@@ -229,6 +231,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             tool_calls = llm_response.get("tool_calls") or []
 
             if not tool_calls:
+                session_manager.add_turn(session_id, "assistant", last_completion_text)
                 return ChatResponse(
                     response=last_completion_text,
                     escalate=False,
@@ -288,22 +291,13 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                             user_message=request.message,
                             session_id=session_id,
                         )
+                        session_manager.add_turn(session_id, "assistant", final_response)
                         return ChatResponse(
                             response=final_response,
                             escalate=False,
                             session_id=session_id,
                         )
                     except S3DownloadError:
-                        tool_result = (
-                            "Error: no se pudo descargar la ficha técnica del producto."
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call.get("id"),
-                                "content": tool_result,
-                            }
-                        )
                         return ChatResponse(
                             response=(
                                 "Lo siento, no pude acceder a la ficha técnica del "
@@ -315,16 +309,6 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                             session_id=session_id,
                         )
                     except FileUploadError:
-                        tool_result = (
-                            "Error: no se pudo procesar la ficha técnica en el LLM."
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call.get("id"),
-                                "content": tool_result,
-                            }
-                        )
                         return ChatResponse(
                             response=(
                                 "Lo siento, tuve problemas al procesar la ficha técnica. "
@@ -335,16 +319,6 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         )
                     except Exception:
                         logger.exception("Error inesperado procesando leer_ficha_tecnica")
-                        tool_result = (
-                            "Error inesperado al leer la ficha técnica. Intenta más tarde."
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call.get("id"),
-                                "content": tool_result,
-                            }
-                        )
                         return ChatResponse(
                             response=(
                                 "Ocurrió un error al procesar tu solicitud. "
@@ -366,6 +340,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             iteration += 1
 
         # Max iterations reached – return the last completion text as fallback.
+        session_manager.add_turn(session_id, "assistant", last_completion_text)
         return ChatResponse(
             response=last_completion_text,
             escalate=False,
@@ -373,10 +348,10 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         )
 
     except LLMServiceError as e:
-        logger.error(f"LLM service error: {e}")
+        logger.error("LLM service error: %s", e)
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.exception(f"Unexpected error in chat endpoint: {e}")
+        logger.exception("Unexpected error in chat endpoint: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
