@@ -6,7 +6,7 @@ Tests the LLM client for OpenAI Responses API integration with tool calling supp
 
 import os
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from backend.app.llm_client import (
     LLMClient,
     LLMServiceError,
@@ -45,16 +45,15 @@ class TestLLMClientInitialization:
 class TestLLMClientWithTools:
     """Tests for get_llm_response_with_tools method."""
 
-    @patch("backend.app.llm_client.OpenAI")
-    def test_get_llm_response_with_tools_returns_tool_calls(
+    @pytest.mark.asyncio
+    @patch("backend.app.llm_client.AsyncOpenAI")
+    async def test_get_llm_response_with_tools_returns_tool_calls(
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools returns dict with tool_calls when LLM invokes tool."""
-        # Setup mock
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
 
-        # Mock Responses API output with function_call item
         mock_function_call = MagicMock()
         mock_function_call.type = "function_call"
         mock_function_call.call_id = "call_abc123"
@@ -67,7 +66,7 @@ class TestLLMClientWithTools:
         mock_client.responses.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
-        result = client.get_llm_response_with_tools(
+        result = await client.get_llm_response_with_tools(
             message="Dime las especificaciones del panel Jinko Tiger Pro 460W",
             session_id="test-session-123",
         )
@@ -77,16 +76,15 @@ class TestLLMClientWithTools:
         assert len(result["tool_calls"]) == 1
         assert result["tool_calls"][0]["function"]["name"] == "leer_ficha_tecnica"
 
-    @patch("backend.app.llm_client.OpenAI")
-    def test_get_llm_response_with_tools_no_tool_calls(
+    @pytest.mark.asyncio
+    @patch("backend.app.llm_client.AsyncOpenAI")
+    async def test_get_llm_response_with_tools_no_tool_calls(
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools returns dict without tool_calls for normal messages."""
-        # Setup mock
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
 
-        # Mock response without tool call (only message output)
         mock_message = MagicMock()
         mock_message.type = "message"
         mock_message.content = [
@@ -101,7 +99,7 @@ class TestLLMClientWithTools:
         mock_client.responses.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
-        result = client.get_llm_response_with_tools(
+        result = await client.get_llm_response_with_tools(
             message="Hola",
             session_id="test-session-123",
         )
@@ -113,12 +111,13 @@ class TestLLMClientWithTools:
             == "Hola, soy el asistente de Arte Soluciones Energéticas."
         )
 
-    @patch("backend.app.llm_client.OpenAI")
-    def test_get_llm_response_with_tools_uses_tools_parameter(
+    @pytest.mark.asyncio
+    @patch("backend.app.llm_client.AsyncOpenAI")
+    async def test_get_llm_response_with_tools_uses_tools_parameter(
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools passes tools to OpenAI API."""
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
 
         mock_message = MagicMock()
@@ -131,23 +130,23 @@ class TestLLMClientWithTools:
         mock_client.responses.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
-        client.get_llm_response_with_tools(
+        await client.get_llm_response_with_tools(
             message="Test",
             session_id="test-session",
         )
 
-        # Verify tools parameter was passed
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "tools" in call_kwargs
         assert len(call_kwargs["tools"]) == 1
         assert call_kwargs["tools"][0]["name"] == "leer_ficha_tecnica"
 
-    @patch("backend.app.llm_client.OpenAI")
-    def test_get_llm_response_with_tools_uses_instructions(
+    @pytest.mark.asyncio
+    @patch("backend.app.llm_client.AsyncOpenAI")
+    async def test_get_llm_response_with_tools_uses_instructions(
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools passes instructions parameter."""
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
 
         mock_message = MagicMock()
@@ -160,22 +159,22 @@ class TestLLMClientWithTools:
         mock_client.responses.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
-        client.get_llm_response_with_tools(
+        await client.get_llm_response_with_tools(
             message="Test",
             session_id="test-session",
         )
 
-        # Verify instructions parameter was passed
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "instructions" in call_kwargs
         assert call_kwargs["instructions"] == ARTE_SYSTEM_PROMPT
 
-    def test_get_llm_response_with_tools_raises_without_api_key(self) -> None:
+    @pytest.mark.asyncio
+    async def test_get_llm_response_with_tools_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_tools raises error without API key."""
         client = LLMClient(api_key="")
 
         with pytest.raises(LLMServiceError) as exc_info:
-            client.get_llm_response_with_tools(
+            await client.get_llm_response_with_tools(
                 message="Test",
                 session_id="test-session",
             )
@@ -186,22 +185,21 @@ class TestLLMClientWithTools:
 class TestLLMClientWithFile:
     """Tests for get_llm_response_with_file method."""
 
-    @patch("backend.app.llm_client.OpenAI")
-    def test_get_llm_response_with_file_sends_message(
+    @pytest.mark.asyncio
+    @patch("backend.app.llm_client.AsyncOpenAI")
+    async def test_get_llm_response_with_file_sends_message(
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_file sends message with file_id to OpenAI."""
-        # Setup mock
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
 
-        # Mock response
         mock_response = MagicMock()
         mock_response.output_text = "El panel tiene una potencia de 460W..."
         mock_client.responses.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
-        result = client.get_llm_response_with_file(
+        result = await client.get_llm_response_with_file(
             message="¿Cuáles son las especificaciones de este panel?",
             file_id="file-abc123",
             session_id="test-session-123",
@@ -209,29 +207,26 @@ class TestLLMClientWithFile:
 
         assert result == "El panel tiene una potencia de 460W..."
 
-        # Verify the call was made with correct parameters
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "input" in call_kwargs
         input_data = call_kwargs["input"]
 
-        # Check user message contains file in content array format
         user_message = input_data[0]
         assert user_message["role"] == "user"
         assert isinstance(user_message["content"], list)
-        # Verify file item
         file_item = user_message["content"][0]
         assert file_item["type"] == "input_file"
         assert file_item["file_id"] == "file-abc123"
-        # Verify text item
         text_item = user_message["content"][1]
         assert text_item["type"] == "input_text"
 
-    @patch("backend.app.llm_client.OpenAI")
-    def test_get_llm_response_with_file_uses_datasheet_prompt(
+    @pytest.mark.asyncio
+    @patch("backend.app.llm_client.AsyncOpenAI")
+    async def test_get_llm_response_with_file_uses_datasheet_prompt(
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_file uses DATASHEET_SYSTEM_PROMPT."""
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
 
         mock_response = MagicMock()
@@ -239,23 +234,23 @@ class TestLLMClientWithFile:
         mock_client.responses.create.return_value = mock_response
 
         client = LLMClient(api_key="sk-test-key")
-        client.get_llm_response_with_file(
+        await client.get_llm_response_with_file(
             message="Test",
             file_id="file-abc123",
             session_id="test-session",
         )
 
-        # Verify the instructions parameter used
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "instructions" in call_kwargs
         assert "ficha técnica" in call_kwargs["instructions"].lower()
 
-    def test_get_llm_response_with_file_raises_without_api_key(self) -> None:
+    @pytest.mark.asyncio
+    async def test_get_llm_response_with_file_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_file raises error without API key."""
         client = LLMClient(api_key="")
 
         with pytest.raises(LLMServiceError) as exc_info:
-            client.get_llm_response_with_file(
+            await client.get_llm_response_with_file(
                 message="Test",
                 file_id="file-abc123",
                 session_id="test-session",
@@ -315,19 +310,16 @@ class TestLLMServiceError:
 class TestLLMClientLazyInitialization:
     """Tests for lazy client initialization."""
 
-    @patch("backend.app.llm_client.OpenAI")
+    @patch("backend.app.llm_client.AsyncOpenAI")
     def test_openai_client_property_lazy_init(
         self, mock_openai_class: MagicMock
     ) -> None:
-        """Test that OpenAI client is not initialized until accessed."""
+        """Test that AsyncOpenAI client is not initialized until accessed."""
         client = LLMClient(api_key="sk-test-key")
 
-        # Client should not be initialized yet
         assert client._openai_client is None
 
-        # Access the openai_client property
         _ = client.openai_client
 
-        # Now it should be initialized
         assert client._openai_client is not None
         mock_openai_class.assert_called_once_with(api_key="sk-test-key")

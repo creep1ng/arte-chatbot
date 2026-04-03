@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # App
     log_level: str = Field(default="INFO", description="Logging level")
 
+    # Queue
+    queue_workers: int = Field(default=5, description="Number of async queue workers")
+    max_queue_size: int = Field(
+        default=100, description="Maximum queue size before backpressure"
+    )
+
 
 class _SettingsProxy:
     """Lazy proxy that defers Settings() instantiation to first attribute access.

@@ -3,9 +3,10 @@ Unit tests for the s3_client.py module.
 
 Tests the S3 client for downloading technical datasheets from AWS S3.
 """
+
 import os
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from backend.app.s3_client import S3Client, S3DownloadError
 
 
@@ -16,7 +17,6 @@ class TestS3ClientInitialization:
     def test_s3_client_default_env_vars(self) -> None:
         """Test S3Client initialization with default env vars."""
         client = S3Client()
-        # Should not raise, but bucket_name will be empty
         assert client.bucket_name == ""
 
     @patch.dict(os.environ, {"AWS_BUCKET_NAME": "test-bucket"}, clear=True)
@@ -50,23 +50,21 @@ class TestS3ClientInitialization:
         assert client.aws_region == "us-east-1"
 
 
-class TestS3DownloadPdf:
-    """Tests for download_pdf method."""
+class TestS3DownloadPdfSync:
+    """Tests for _download_pdf_sync method."""
 
     @patch("backend.app.s3_client.boto3")
-    def test_download_pdf_success(self, mock_boto3: MagicMock) -> None:
-        """Test download_pdf returns bytes on success."""
-        # Setup mock
+    def test_download_pdf_sync_success(self, mock_boto3: MagicMock) -> None:
+        """Test _download_pdf_sync returns bytes on success."""
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
 
-        # Mock response with PDF bytes
         mock_body = MagicMock()
         mock_body.read.return_value = b"%PDF-1.4 test content"
         mock_s3.get_object.return_value = {"Body": mock_body}
 
         client = S3Client(bucket_name="test-bucket")
-        result = client.download_pdf("paneles/test-panel.pdf")
+        result = client._download_pdf_sync("paneles/test-panel.pdf")
 
         assert isinstance(result, bytes)
         assert b"%PDF-1.4" in result
@@ -75,11 +73,10 @@ class TestS3DownloadPdf:
         )
 
     @patch("backend.app.s3_client.boto3")
-    def test_download_pdf_file_not_found(self, mock_boto3: MagicMock) -> None:
-        """Test download_pdf raises S3DownloadError when file not found."""
+    def test_download_pdf_sync_file_not_found(self, mock_boto3: MagicMock) -> None:
+        """Test _download_pdf_sync raises S3DownloadError when file not found."""
         from botocore.exceptions import ClientError
 
-        # Setup mock to raise NoSuchKey error
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
 
@@ -89,23 +86,27 @@ class TestS3DownloadPdf:
         client = S3Client(bucket_name="test-bucket")
 
         with pytest.raises(S3DownloadError) as exc_info:
-            client.download_pdf("paneles/nonexistent.pdf")
+            client._download_pdf_sync("paneles/nonexistent.pdf")
 
         assert "File not found in S3" in str(exc_info.value)
 
     @patch("backend.app.s3_client.boto3")
-    def test_download_pdf_no_bucket_configured(self, mock_boto3: MagicMock) -> None:
-        """Test download_pdf raises error when bucket not configured."""
+    def test_download_pdf_sync_no_bucket_configured(
+        self, mock_boto3: MagicMock
+    ) -> None:
+        """Test _download_pdf_sync raises error when bucket not configured."""
         client = S3Client(bucket_name="")
 
         with pytest.raises(S3DownloadError) as exc_info:
-            client.download_pdf("test.pdf")
+            client._download_pdf_sync("test.pdf")
 
         assert "bucket name not configured" in str(exc_info.value)
 
     @patch("backend.app.s3_client.boto3")
-    def test_download_pdf_generic_client_error(self, mock_boto3: MagicMock) -> None:
-        """Test download_pdf raises S3DownloadError on generic client error."""
+    def test_download_pdf_sync_generic_client_error(
+        self, mock_boto3: MagicMock
+    ) -> None:
+        """Test _download_pdf_sync raises S3DownloadError on generic client error."""
         from botocore.exceptions import ClientError
 
         mock_s3 = MagicMock()
@@ -117,13 +118,13 @@ class TestS3DownloadPdf:
         client = S3Client(bucket_name="test-bucket")
 
         with pytest.raises(S3DownloadError) as exc_info:
-            client.download_pdf("test.pdf")
+            client._download_pdf_sync("test.pdf")
 
         assert "S3 download failed" in str(exc_info.value)
 
     @patch("backend.app.s3_client.boto3")
-    def test_download_pdf_no_credentials(self, mock_boto3: MagicMock) -> None:
-        """Test download_pdf raises error when credentials not available."""
+    def test_download_pdf_sync_no_credentials(self, mock_boto3: MagicMock) -> None:
+        """Test _download_pdf_sync raises error when credentials not available."""
         from botocore.exceptions import NoCredentialsError
 
         mock_s3 = MagicMock()
@@ -133,23 +134,73 @@ class TestS3DownloadPdf:
         client = S3Client(bucket_name="test-bucket")
 
         with pytest.raises(S3DownloadError) as exc_info:
-            client.download_pdf("test.pdf")
+            client._download_pdf_sync("test.pdf")
 
         assert "credentials" in str(exc_info.value).lower()
 
 
-class TestS3FileExists:
-    """Tests for file_exists method."""
+class TestS3DownloadPdf:
+    """Tests for async download_pdf method."""
 
+    @pytest.mark.asyncio
     @patch("backend.app.s3_client.boto3")
-    def test_file_exists_returns_true(self, mock_boto3: MagicMock) -> None:
-        """Test file_exists returns True when file exists."""
+    async def test_download_pdf_success(self, mock_boto3: MagicMock) -> None:
+        """Test download_pdf returns bytes on success."""
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
-        mock_s3.head_object.return_value = {}  # No exception means file exists
+
+        mock_body = MagicMock()
+        mock_body.read.return_value = b"%PDF-1.4 test content"
+        mock_s3.get_object.return_value = {"Body": mock_body}
 
         client = S3Client(bucket_name="test-bucket")
-        result = client.file_exists("paneles/test.pdf")
+        result = await client.download_pdf("paneles/test-panel.pdf")
+
+        assert isinstance(result, bytes)
+        assert b"%PDF-1.4" in result
+
+    @pytest.mark.asyncio
+    @patch("backend.app.s3_client.boto3")
+    async def test_download_pdf_file_not_found(self, mock_boto3: MagicMock) -> None:
+        """Test download_pdf raises S3DownloadError when file not found."""
+        from botocore.exceptions import ClientError
+
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+
+        error_response = {"Error": {"Code": "NoSuchKey", "Message": "Not Found"}}
+        mock_s3.get_object.side_effect = ClientError(error_response, "GetObject")
+
+        client = S3Client(bucket_name="test-bucket")
+
+        with pytest.raises(S3DownloadError) as exc_info:
+            await client.download_pdf("paneles/nonexistent.pdf")
+
+        assert "File not found in S3" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_download_pdf_no_bucket_configured(self) -> None:
+        """Test download_pdf raises error when bucket not configured."""
+        client = S3Client(bucket_name="")
+
+        with pytest.raises(S3DownloadError) as exc_info:
+            await client.download_pdf("test.pdf")
+
+        assert "bucket name not configured" in str(exc_info.value)
+
+
+class TestS3FileExistsSync:
+    """Tests for _file_exists_sync method."""
+
+    @patch("backend.app.s3_client.boto3")
+    def test_file_exists_sync_returns_true(self, mock_boto3: MagicMock) -> None:
+        """Test _file_exists_sync returns True when file exists."""
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        mock_s3.head_object.return_value = {}
+
+        client = S3Client(bucket_name="test-bucket")
+        result = client._file_exists_sync("paneles/test.pdf")
 
         assert result is True
         mock_s3.head_object.assert_called_once_with(
@@ -157,7 +208,51 @@ class TestS3FileExists:
         )
 
     @patch("backend.app.s3_client.boto3")
-    def test_file_exists_returns_false(self, mock_boto3: MagicMock) -> None:
+    def test_file_exists_sync_returns_false(self, mock_boto3: MagicMock) -> None:
+        """Test _file_exists_sync returns False when file doesn't exist."""
+        from botocore.exceptions import ClientError
+
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        mock_s3.head_object.side_effect = ClientError(
+            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
+        )
+
+        client = S3Client(bucket_name="test-bucket")
+        result = client._file_exists_sync("paneles/nonexistent.pdf")
+
+        assert result is False
+
+    @patch("backend.app.s3_client.boto3")
+    def test_file_exists_sync_no_bucket(self, mock_boto3: MagicMock) -> None:
+        """Test _file_exists_sync returns False when bucket not configured."""
+        client = S3Client(bucket_name="")
+
+        result = client._file_exists_sync("test.pdf")
+
+        assert result is False
+        mock_boto3.client.assert_not_called()
+
+
+class TestS3FileExists:
+    """Tests for async file_exists method."""
+
+    @pytest.mark.asyncio
+    @patch("backend.app.s3_client.boto3")
+    async def test_file_exists_returns_true(self, mock_boto3: MagicMock) -> None:
+        """Test file_exists returns True when file exists."""
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        mock_s3.head_object.return_value = {}
+
+        client = S3Client(bucket_name="test-bucket")
+        result = await client.file_exists("paneles/test.pdf")
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    @patch("backend.app.s3_client.boto3")
+    async def test_file_exists_returns_false(self, mock_boto3: MagicMock) -> None:
         """Test file_exists returns False when file doesn't exist."""
         from botocore.exceptions import ClientError
 
@@ -168,20 +263,18 @@ class TestS3FileExists:
         )
 
         client = S3Client(bucket_name="test-bucket")
-        result = client.file_exists("paneles/nonexistent.pdf")
+        result = await client.file_exists("paneles/nonexistent.pdf")
 
         assert result is False
 
-    @patch("backend.app.s3_client.boto3")
-    def test_file_exists_no_bucket(self, mock_boto3: MagicMock) -> None:
+    @pytest.mark.asyncio
+    async def test_file_exists_no_bucket(self) -> None:
         """Test file_exists returns False when bucket not configured."""
         client = S3Client(bucket_name="")
 
-        result = client.file_exists("test.pdf")
+        result = await client.file_exists("test.pdf")
 
         assert result is False
-        # boto3 should not be called
-        mock_boto3.client.assert_not_called()
 
 
 class TestS3ClientLazyInitialization:
@@ -192,13 +285,10 @@ class TestS3ClientLazyInitialization:
         """Test that boto3 client is not initialized until accessed."""
         client = S3Client(bucket_name="test-bucket")
 
-        # Client should not be initialized yet
         assert client._client is None
 
-        # Access the client property
         _ = client.client
 
-        # Now it should be initialized
         assert client._client is not None
         mock_boto3.client.assert_called_once()
 

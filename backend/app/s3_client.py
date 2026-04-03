@@ -4,6 +4,7 @@ This module provides a client to interact with AWS S3 for downloading
 PDF files containing technical product datasheets.
 """
 
+import asyncio
 import logging
 import os
 from typing import Optional
@@ -74,7 +75,7 @@ class S3Client:
             )
         return self._client
 
-    def download_pdf(self, s3_key: str) -> bytes:
+    def _download_pdf_sync(self, s3_key: str) -> bytes:
         """Download a PDF file from S3 and return raw bytes.
 
         Args:
@@ -119,7 +120,21 @@ class S3Client:
             logger.exception("Unexpected error downloading from S3: %s", e)
             raise S3DownloadError(f"Unexpected S3 error: {e}") from e
 
-    def file_exists(self, s3_key: str) -> bool:
+    async def download_pdf(self, s3_key: str) -> bytes:
+        """Download a PDF file from S3 asynchronously.
+
+        Args:
+            s3_key: The S3 key (path) to the PDF file.
+
+        Returns:
+            Raw bytes of the PDF file.
+
+        Raises:
+            S3DownloadError: If the download fails.
+        """
+        return await asyncio.to_thread(self._download_pdf_sync, s3_key)
+
+    def _file_exists_sync(self, s3_key: str) -> bool:
         """Check if a file exists in S3.
 
         Args:
@@ -140,3 +155,14 @@ class S3Client:
                 "S3 file not found: bucket=%s, key=%s", self.bucket_name, s3_key
             )
             return False
+
+    async def file_exists(self, s3_key: str) -> bool:
+        """Check if a file exists in S3 asynchronously.
+
+        Args:
+            s3_key: The S3 key (path) to check.
+
+        Returns:
+            True if the file exists, False otherwise.
+        """
+        return await asyncio.to_thread(self._file_exists_sync, s3_key)

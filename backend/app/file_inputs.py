@@ -8,7 +8,7 @@ import io
 import logging
 from typing import Optional
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 from openai import APIError, AuthenticationError, BadRequestError
 
 from backend.app.config import settings
@@ -35,16 +35,16 @@ class FileInputsClient:
         if not self.api_key:
             raise FileUploadError("OpenAI API key not configured")
 
-        self._client: Optional[OpenAI] = None
+        self._client: Optional[AsyncOpenAI] = None
 
     @property
-    def client(self) -> OpenAI:
+    def client(self) -> AsyncOpenAI:
         """Lazy initialization of the OpenAI client."""
         if self._client is None:
-            self._client = OpenAI(api_key=self.api_key)
+            self._client = AsyncOpenAI(api_key=self.api_key)
         return self._client
 
-    def upload_pdf(self, pdf_bytes: bytes, filename: str) -> str:
+    async def upload_pdf(self, pdf_bytes: bytes, filename: str) -> str:
         """Upload a PDF file to OpenAI Files API with purpose="user_data".
 
         Args:
@@ -73,7 +73,7 @@ class FileInputsClient:
             file_obj.name = filename
 
             # Upload the file with purpose="user_data" for use in Chat Completions
-            response = self.client.files.create(
+            response = await self.client.files.create(
                 file=file_obj,
                 purpose="user_data",
             )
@@ -100,7 +100,7 @@ class FileInputsClient:
             logger.exception("Unexpected error uploading file: %s", e)
             raise FileUploadError(f"Unexpected error: {e}") from e
 
-    def delete_file(self, file_id: str) -> None:
+    async def delete_file(self, file_id: str) -> None:
         """Delete a file from OpenAI Files API.
 
         Args:
@@ -115,7 +115,7 @@ class FileInputsClient:
         try:
             logger.debug("File deletion initiated: file_id=%s", file_id)
             logger.info("Deleting OpenAI file: %s", file_id)
-            self.client.files.delete(file_id)
+            await self.client.files.delete(file_id)
             logger.debug("File deletion complete: file_id=%s", file_id)
             logger.info("Successfully deleted file: %s", file_id)
         except AuthenticationError as e:

@@ -8,7 +8,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from openai import APIError, AuthenticationError, OpenAI
+from openai import APIError, AuthenticationError, AsyncOpenAI
 
 from backend.app.config import settings
 from backend.app.tools import get_tool_definitions
@@ -91,16 +91,16 @@ class LLMClient:
         self.default_system_prompt = ARTE_SYSTEM_PROMPT
 
         # OpenAI SDK client
-        self._openai_client: Optional[OpenAI] = None
+        self._openai_client: Optional[AsyncOpenAI] = None
 
     @property
-    def openai_client(self) -> OpenAI:
+    def openai_client(self) -> AsyncOpenAI:
         """Lazy initialization of the OpenAI SDK client."""
         if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=self.api_key)
+            self._openai_client = AsyncOpenAI(api_key=self.api_key)
         return self._openai_client
 
-    def get_llm_response_with_tools(
+    async def get_llm_response_with_tools(
         self,
         message: str,
         session_id: str,
@@ -144,7 +144,7 @@ class LLMClient:
         )
 
         try:
-            response = self.openai_client.responses.create(
+            response = await self.openai_client.responses.create(
                 model=self.model,
                 instructions=instructions,
                 input=user_input,
@@ -191,7 +191,7 @@ class LLMClient:
             logger.exception("Unexpected error calling OpenAI API: %s", e)
             raise LLMServiceError(f"LLM service error: {e}") from e
 
-    def get_llm_response_with_file(
+    async def get_llm_response_with_file(
         self,
         message: str,
         file_id: str,
@@ -227,7 +227,7 @@ class LLMClient:
         )
 
         try:
-            response = self.openai_client.responses.create(
+            response = await self.openai_client.responses.create(
                 model=self.model,
                 instructions=instructions,
                 input=[
