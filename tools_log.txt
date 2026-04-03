@@ -1,0 +1,268 @@
+arte-chatbot-backend  | INFO:     Started server process [1]
+arte-chatbot-backend  | INFO:     Waiting for application startup.
+arte-chatbot-backend  | INFO:     Application startup complete.
+arte-chatbot-backend  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+arte-chatbot-backend  | INFO:     127.0.0.1:45482 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:49850 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43540 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:56436 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35332 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     172.18.0.1:36332 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:37460 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | INFO:     127.0.0.1:47018 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35296 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35856 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:34548 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:38228 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:50646 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:46058 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:52142 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:60678 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:48812 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:48472 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:54124 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:47660 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42710 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55850 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:34502 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:45304 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:45464 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59356 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:51180 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43394 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:50600 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37714 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:51752 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:52248 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35332 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40276 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59994 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:48084 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37988 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55814 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59904 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:32858 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     172.18.0.1:49996 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:45198 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:51152 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:53744 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37398 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36750 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43268 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59602 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36886 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:34176 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55050 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:38810 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:41218 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35532 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:52104 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36978 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:51994 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43530 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36656 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59822 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40112 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37474 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43692 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:41304 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35858 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43460 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55268 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:60636 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:57804 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:33330 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35948 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35018 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:48524 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:58194 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:57796 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:46688 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37714 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42310 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35930 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:47962 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:48654 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42868 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:51330 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:60226 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:46776 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:49936 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:54356 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:54790 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:38576 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:51426 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43198 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:54892 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36952 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59054 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40392 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:39460 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42262 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:60612 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:38226 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35716 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:41094 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35638 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40982 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:46366 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40446 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:50974 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35232 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:49714 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59536 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40448 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:54036 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:41550 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:38966 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:53274 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37182 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37618 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:52008 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42900 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36836 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55822 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:38176 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:58156 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:34064 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:33902 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:47360 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:58024 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:45998 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:57206 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:60804 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:50128 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:56064 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:34078 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:44132 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:33110 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:39646 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:33308 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:60432 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:48090 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35974 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:57630 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:46614 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:49342 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:33152 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:60362 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:39408 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37968 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:53464 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:50296 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:53442 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:45504 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:52752 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40878 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55532 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35934 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42020 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:46228 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35394 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:46790 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55000 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42760 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:44422 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:53284 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37106 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40576 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37238 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:39634 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35220 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:32832 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:58742 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:45896 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55110 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:51344 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:56898 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:41460 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:49352 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36072 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43980 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40062 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:49826 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:49828 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:49840 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | INFO:     127.0.0.1:36128 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:33830 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59100 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40226 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36242 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:46650 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:58470 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42784 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59006 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55464 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:48768 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:38850 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40128 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42872 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:59274 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:40920 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36710 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:52380 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:54106 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:33802 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:60610 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55740 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:34060 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43168 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:58342 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:44796 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:35766 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:35776 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | INFO:     127.0.0.1:40684 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:46668 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:34466 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:43986 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:60464 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:34886 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:34888 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | INFO:     127.0.0.1:40808 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36984 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:42000 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:44506 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:49822 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:54606 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:57704 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:54266 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:37092 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:36914 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:35548 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:41294 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:49422 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:57956 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:49530 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:55700 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:45616 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:51158 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | INFO:     127.0.0.1:33768 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:33994 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | LLM service error: OpenAI API error: Error code: 400 - {'error': {'message': "Missing required parameter: 'tools[1].name'.", 'type': 'invalid_request_error', 'param': 'tools[1].name', 'code': 'missing_required_parameter'}}
+arte-chatbot-backend  | INFO:     172.18.0.1:46230 - "POST /chat HTTP/1.1" 503 Service Unavailable
+arte-chatbot-backend  | INFO:     127.0.0.1:40030 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:54834 - "GET /health HTTP/1.1" 200 OK
+arte-chatbot-backend  | INFO:     127.0.0.1:56680 - "GET /health HTTP/1.1" 200 OK
