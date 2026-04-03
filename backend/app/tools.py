@@ -17,9 +17,8 @@ LEER_FICHA_TECNICA_TOOL: dict[str, Any] = {
         "description": (
             "Lee y analiza la ficha técnica PDF de un producto del catálogo "
             "de Arte Soluciones Energéticas. Úsala cuando el usuario pregunte "
-            "por especificaciones técnicas de un producto. Puedes invocarla "
-            "con datos parciales (solo categoría, o categoría + fabricante, "
-            "etc.) para buscar opciones disponibles en el catálogo."
+            "por especificaciones técnicas de un producto. ruta_s3 es obligatoria. "
+            "Usa buscar_producto primero si no conoces la ruta exacta."
         ),
         "parameters": {
             "type": "object",
@@ -27,10 +26,9 @@ LEER_FICHA_TECNICA_TOOL: dict[str, Any] = {
                 "ruta_s3": {
                     "type": "string",
                     "description": (
-                        "Ruta completa del archivo PDF en S3. Ejemplo: "
-                        "paneles/jinko-tiger-pro-460w.pdf. Si no se conoce "
-                        "la ruta exacta, se puede omitir y el sistema "
-                        "buscará por los demás campos."
+                        "Ruta completa del archivo PDF en S3 (obligatoria). "
+                        "Ejemplo: paneles/jinko-tiger-pro-460w.pdf. "
+                        "Usa buscar_producto para obtener la ruta_s3 si no la conoces."
                     ),
                 },
                 "categoria": {
