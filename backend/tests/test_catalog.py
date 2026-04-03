@@ -193,3 +193,38 @@ def test_catalog_unavailable_returns_empty_list_without_raising() -> None:
     resultados = catalog_search.search(categoria="paneles")
 
     assert resultados == []
+
+
+class TestCatalogCache:
+    """Tests for CatalogSearch caching behavior."""
+
+    def test_catalog_cache_is_used_on_second_call(self) -> None:
+        """Test that catalog is cached after first load."""
+        # Setup
+        catalog_data = _build_catalog_data()
+        mock_s3 = MagicMock()
+        mock_s3.download_pdf.return_value = json.dumps(catalog_data).encode()
+
+        catalog = CatalogSearch(s3_client=mock_s3)
+
+        # First search
+        catalog.search(categoria="paneles")
+        assert mock_s3.download_pdf.call_count == 1
+
+        # Second search (should use cache)
+        catalog.search(categoria="inversores")
+        assert mock_s3.download_pdf.call_count == 1  # No additional calls
+
+    def test_cache_is_cleared_on_error(self) -> None:
+        """Test that cache handles errors gracefully."""
+        mock_s3 = MagicMock()
+        mock_s3.download_pdf.side_effect = S3DownloadError("Network error")
+
+        catalog = CatalogSearch(s3_client=mock_s3)
+        result = catalog.search(categoria="paneles")
+
+        # Should return empty list on error
+        assert result == []
+
+        # Cache should be set to empty dict
+        assert catalog._catalog_cache == {"productos": []}

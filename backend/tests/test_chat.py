@@ -411,6 +411,62 @@ class TestChatEndpointWithToolCall:
         _, kwargs = call_args
         assert kwargs.get("session_id") == custom_session
 
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.catalog_search")
+    def test_chat_buscar_producto_agentic_flow(
+        self, mock_catalog_search: MagicMock, mock_llm: MagicMock
+    ) -> None:
+        """Test buscar_producto tool call in agentic loop."""
+        # Primera llamada: LLM decide invocar buscar_producto
+        # Segunda llamada: LLM procesa resultado de búsqueda
+        mock_llm.side_effect = [
+            {
+                "output_text": "",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "buscar_producto",
+                            "arguments": '{"categoria": "paneles", "fabricante": "Jinko"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "output_text": "Se encontraron paneles Jinko disponibles: Tiger Pro 460W",
+                "tool_calls": [],
+            },
+        ]
+
+        # Mock catalog_search.search
+        mock_catalog_search.search.return_value = [
+            {
+                "id": "panel-1",
+                "nombre_comercial": "Jinko Tiger Pro 460W",
+                "categoria": "paneles",
+                "fabricante": "Jinko",
+                "ruta_s3": "paneles/jinko-tiger-pro-460w.pdf",
+            }
+        ]
+
+        response = client.post("/chat", json={"message": "¿Tienen paneles Jinko?"})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["escalate"] is False
+        assert (
+            "Se encontraron paneles Jinko disponibles" in data["response"]
+            or "Tiger Pro 460W" in data["response"]
+        )
+        assert data["session_id"] is not None
+
+        # Verify buscar_producto was called with correct arguments
+        mock_catalog_search.search.assert_called_once()
+        call_kwargs = mock_catalog_search.search.call_args.kwargs
+        assert call_kwargs.get("categoria") == "paneles"
+        assert call_kwargs.get("fabricante") == "Jinko"
+
 
 class TestProcessToolCall:
     """Tests for the _process_tool_call function."""
@@ -495,3 +551,51 @@ class TestProcessToolCall:
             )
 
         assert "Unknown tool" in str(exc_info.value)
+
+
+class TestToolArgumentParsing:
+    """Tests for _parse_tool_arguments and _safe_float functions."""
+
+    def test_parse_tool_arguments_with_dict(self) -> None:
+        """Test parsing when arguments are already a dict."""
+        from backend.main import _parse_tool_arguments
+
+        result = _parse_tool_arguments({"categoria": "paneles"})
+        assert result == {"categoria": "paneles"}
+
+    def test_parse_tool_arguments_with_json_string(self) -> None:
+        """Test parsing when arguments are a JSON string."""
+        from backend.main import _parse_tool_arguments
+
+        result = _parse_tool_arguments('{"fabricante": "Jinko"}')
+        assert result == {"fabricante": "Jinko"}
+
+    def test_parse_tool_arguments_with_invalid_json(self) -> None:
+        """Test parsing with invalid JSON returns empty dict."""
+        from backend.main import _parse_tool_arguments
+
+        result = _parse_tool_arguments("invalid json")
+        assert result == {}
+
+    def test_parse_tool_arguments_with_none(self) -> None:
+        """Test parsing with None returns empty dict."""
+        from backend.main import _parse_tool_arguments
+
+        result = _parse_tool_arguments(None)
+        assert result == {}
+
+    def test_safe_float_with_valid_number(self) -> None:
+        """Test _safe_float with valid float."""
+        from backend.main import _safe_float
+
+        assert _safe_float(400.5) == 400.5
+        assert _safe_float("400.5") == 400.5
+        assert _safe_float(400) == 400.0
+
+    def test_safe_float_with_invalid_value(self) -> None:
+        """Test _safe_float with invalid value returns None."""
+        from backend.main import _safe_float
+
+        assert _safe_float(None) is None
+        assert _safe_float("invalid") is None
+        assert _safe_float({}) is None
