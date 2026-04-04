@@ -12,6 +12,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORT=8000
+      - QUEUE_WORKERS=5
+      - MAX_QUEUE_SIZE=100
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
