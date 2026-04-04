@@ -4,16 +4,10 @@ FastAPI server with /health and /chat endpoints.
 """
 
 import asyncio
-import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Optional
-
-from backend.app.logging_config import setup_logging
-
-# Configure logging before anything else (reads LOG_LEVEL from centralized settings)
-setup_logging()
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,21 +16,22 @@ from pydantic import BaseModel, Field
 
 from rag import (
     DEFAULT_ESCALATION_MESSAGE,
-    EscalationDetector,
     default_detector,
 )
 from backend.app.llm_client import (
     LLMClient,
     LLMServiceError,
-    ARTE_SYSTEM_PROMPT,
 )
+from backend.app.logging_config import setup_logging
 from backend.app.auth import verify_api_key
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
-from backend.app.tools import get_tool_definitions
-from backend.app.session import session_manager, SessionManager
+from backend.app.session import session_manager
 from backend.app.queue import MessageQueue, ChatMessage
 from backend.app.config import settings
+
+# Configure logging (reads LOG_LEVEL from centralized settings)
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +239,7 @@ async def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_
             escalate=False,
             session_id=session_id,
         )
-    except Exception as e:
+    except Exception:
         logger.exception(
             "Unexpected error in chat endpoint: request_id=%s, session_id=%s",
             request_id,
