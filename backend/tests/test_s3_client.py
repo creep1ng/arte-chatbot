@@ -93,6 +93,8 @@ class TestS3DownloadPdfSync:
     @patch("backend.app.s3_client.boto3")
     def test_download_pdf_sync_success(self, mock_boto3: MagicMock) -> None:
         """Test _download_pdf_sync returns bytes on success."""
+        from backend.app.s3_client import S3Client
+        
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
 
@@ -113,6 +115,7 @@ class TestS3DownloadPdfSync:
     def test_download_pdf_sync_file_not_found(self, mock_boto3: MagicMock) -> None:
         """Test _download_pdf_sync raises S3DownloadError when file not found."""
         from botocore.exceptions import ClientError
+        from backend.app.s3_client import S3Client
 
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
@@ -132,6 +135,8 @@ class TestS3DownloadPdfSync:
         self, mock_boto3: MagicMock
     ) -> None:
         """Test _download_pdf_sync raises error when bucket not configured."""
+        from backend.app.s3_client import S3Client
+        
         client = S3Client(bucket_name="")
 
         with pytest.raises(S3DownloadError) as exc_info:
@@ -145,6 +150,7 @@ class TestS3DownloadPdfSync:
     ) -> None:
         """Test _download_pdf_sync raises S3DownloadError on generic client error."""
         from botocore.exceptions import ClientError
+        from backend.app.s3_client import S3Client
 
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
@@ -163,6 +169,7 @@ class TestS3DownloadPdfSync:
     def test_download_pdf_sync_no_credentials(self, mock_boto3: MagicMock) -> None:
         """Test _download_pdf_sync raises error when credentials not available."""
         from botocore.exceptions import NoCredentialsError
+        from backend.app.s3_client import S3Client
 
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
