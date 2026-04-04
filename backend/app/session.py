@@ -3,10 +3,10 @@ Servicio de gestión de sesiones para el chatbot.
 Almacena el historial de conversaciones por session_id.
 """
 
+import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime
 from pydantic import BaseModel
-import threading
 
 
 class ChatTurn(BaseModel):
@@ -24,14 +24,14 @@ class SessionManager:
     def __init__(self, max_turns: int = 3):
         self.sessions: Dict[str, List[ChatTurn]] = {}
         self.max_turns = max_turns
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
 
-    def add_turn(
+    async def add_turn(
         self,
         session_id: str,
         question: str,
         answer: str,
-        source_documents: List[str] = None,
+        source_documents: Optional[List[str]] = None,
     ) -> None:
         """
         Añade un turno a la sesión.
@@ -42,7 +42,7 @@ class SessionManager:
             answer: Respuesta del asistente
             source_documents: Lista de documentos fuente utilizados (opcional)
         """
-        with self._lock:
+        async with self._lock:
             if session_id not in self.sessions:
                 self.sessions[session_id] = []
 
@@ -96,14 +96,14 @@ class SessionManager:
 
         return "\n".join(context_parts).strip()
 
-    def clear_session(self, session_id: str) -> None:
+    async def clear_session(self, session_id: str) -> None:
         """
         Elimina una sesión.
 
         Args:
             session_id: Identificador único de la sesión
         """
-        with self._lock:
+        async with self._lock:
             if session_id in self.sessions:
                 del self.sessions[session_id]
 

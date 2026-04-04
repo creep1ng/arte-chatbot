@@ -7,43 +7,89 @@ Tests the File Inputs client for OpenAI Files API integration.
 import os
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from backend.app.file_inputs import FileInputsClient, FileUploadError
 
 
 class TestFileInputsClientInitialization:
-    """Tests for FileInputsClient initialization."""
+    """Tests for FileInputsClient initialization.
+    
+    These tests use patch to mock the settings object in both config and file_inputs modules,
+    and reimport FileInputsClient within the patch context to ensure proper behavior.
+    """
 
-    @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key123"}, clear=True)
     def test_file_inputs_client_default_env_vars(self) -> None:
         """Test FileInputsClient initialization with default env vars."""
-        client = FileInputsClient()
-        assert client.api_key == "sk-test-key123"
+        mock_settings = MagicMock()
+        mock_settings.openai_api_key = "sk-test-key123"
+        
+        with patch("backend.app.config.settings", mock_settings):
+            with patch("backend.app.file_inputs.settings", mock_settings):
+                import importlib
+                import backend.app.file_inputs
+                importlib.reload(backend.app.file_inputs)
+                
+                client = backend.app.file_inputs.FileInputsClient()
+                assert client.api_key == "sk-test-key123"
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_file_inputs_client_explicit_api_key(self) -> None:
         """Test FileInputsClient initialization with explicit API key."""
-        client = FileInputsClient(api_key="sk-explicit-key456")
-        assert client.api_key == "sk-explicit-key456"
+        mock_settings = MagicMock()
+        mock_settings.openai_api_key = None
+        
+        with patch("backend.app.config.settings", mock_settings):
+            with patch("backend.app.file_inputs.settings", mock_settings):
+                import importlib
+                import backend.app.file_inputs
+                importlib.reload(backend.app.file_inputs)
+                
+                client = backend.app.file_inputs.FileInputsClient(api_key="sk-explicit-key456")
+                assert client.api_key == "sk-explicit-key456"
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_file_inputs_client_raises_without_api_key(self) -> None:
         """Test FileInputsClient raises error when no API key available."""
-        with pytest.raises(FileUploadError) as exc_info:
-            FileInputsClient()
+        mock_settings = MagicMock()
+        mock_settings.openai_api_key = None
+        
+        with patch("backend.app.config.settings", mock_settings):
+            with patch("backend.app.file_inputs.settings", mock_settings):
+                import importlib
+                import backend.app.file_inputs
+                importlib.reload(backend.app.file_inputs)
+                
+                # Import FileUploadError from the reloaded module
+                FileUploadError = backend.app.file_inputs.FileUploadError
+                
+                with pytest.raises(FileUploadError) as exc_info:
+                    backend.app.file_inputs.FileInputsClient()
 
-        assert "API key not configured" in str(exc_info.value)
+                assert "API key not configured" in str(exc_info.value)
 
-    @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-env-key"}, clear=True)
     def test_file_inputs_client_uses_env_var(self) -> None:
         """Test FileInputsClient uses OPENAI_API_KEY env var when no explicit key."""
-        client = FileInputsClient()
-        assert client.api_key == "sk-env-key"
+        mock_settings = MagicMock()
+        mock_settings.openai_api_key = "sk-env-key"
+        
+        with patch("backend.app.config.settings", mock_settings):
+            with patch("backend.app.file_inputs.settings", mock_settings):
+                import importlib
+                import backend.app.file_inputs
+                importlib.reload(backend.app.file_inputs)
+                
+                client = backend.app.file_inputs.FileInputsClient()
+                assert client.api_key == "sk-env-key"
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_file_inputs_client_explicit_overrides_env(self) -> None:
         """Test explicit API key overrides env var."""
-        client = FileInputsClient(api_key="sk-explicit")
-        assert client.api_key == "sk-explicit"
+        mock_settings = MagicMock()
+        mock_settings.openai_api_key = "sk-settings-key"
+        
+        with patch("backend.app.config.settings", mock_settings):
+            with patch("backend.app.file_inputs.settings", mock_settings):
+                import importlib
+                import backend.app.file_inputs
+                importlib.reload(backend.app.file_inputs)
+                
+                client = backend.app.file_inputs.FileInputsClient(api_key="sk-explicit")
+                assert client.api_key == "sk-explicit"
 
 
 class TestFileInputsClientUpload:

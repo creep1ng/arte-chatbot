@@ -3,9 +3,11 @@ ARTE Chatbot Backend
 FastAPI server with /health and /chat endpoints.
 """
 
+import asyncio
 import json
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from backend.app.logging_config import setup_logging
@@ -32,19 +34,11 @@ from backend.app.auth import verify_api_key
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.tools import get_tool_definitions
-from backend.app.session import session_manager
+from backend.app.session import session_manager, SessionManager
+from backend.app.queue import MessageQueue, ChatMessage
+from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
-
-app = FastAPI(title="ARTE Chatbot Backend")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Initialize clients
 llm_client = LLMClient()
@@ -68,6 +62,44 @@ class ChatResponse(BaseModel):
     session_id: str
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for app startup and shutdown.
+    
+    Startup: Initialize and start MessageQueue workers
+    Shutdown: Stop workers and clean up
+    """
+    # Startup
+    queue_manager = MessageQueue(
+        max_workers=settings.queue_workers,
+        max_queue_size=settings.max_queue_size,
+        llm_client=llm_client,
+        s3_client=s3_client,
+        file_inputs_client=file_inputs_client,
+        session_manager=session_manager,
+    )
+    await queue_manager.start()
+    app.state.queue_manager = queue_manager
+    logger.info("Message queue started with %d workers", settings.queue_workers)
+    
+    yield
+    
+    # Shutdown
+    await queue_manager.stop()
+    logger.info("Message queue stopped")
+
+
+app = FastAPI(title="ARTE Chatbot Backend", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 @app.get("/health")
 async def health_check() -> JSONResponse:
     """Health check endpoint for CI/CD pipeline."""
@@ -87,89 +119,13 @@ async def root() -> dict[str, str]:
     return {"message": "ARTE Chatbot Backend API", "docs": "/docs"}
 
 
-def _process_tool_call(
-    tool_call: dict[str, Any],
-    user_message: str,
-    session_id: str,
-) -> str:
-    """Process a tool call for reading a technical datasheet.
-
-    Args:
-        tool_call: The tool call dict from OpenAI response.
-        user_message: The original user message.
-        session_id: The session identifier.
-
-    Returns:
-        The LLM response based on the datasheet content.
-
-    Raises:
-        S3DownloadError: If the PDF cannot be downloaded from S3.
-        FileUploadError: If the PDF cannot be uploaded to OpenAI.
-        LLMServiceError: If the LLM call fails.
-    """
-    function_name = tool_call.get("function", {}).get("name")
-    if function_name != "leer_ficha_tecnica":
-        raise ValueError(f"Unknown tool: {function_name}")
-
-    # Parse tool arguments
-    arguments = json.loads(tool_call.get("function", {}).get("arguments", "{}"))
-    ruta_s3 = arguments.get("ruta_s3")
-    categoria = arguments.get("categoria")
-    fabricante = arguments.get("fabricante")
-    modelo = arguments.get("modelo")
-
-    logger.debug(
-        "Tool call parameters: function=%s, ruta_s3=%s, categoria=%s, "
-        "fabricante=%s, modelo=%s, session_id=%s",
-        function_name,
-        ruta_s3,
-        categoria,
-        fabricante,
-        modelo,
-        session_id,
-    )
-
-    if not ruta_s3:
-        raise ValueError("Missing ruta_s3 in tool arguments")
-
-    # Download PDF from S3
-    pdf_bytes = s3_client.download_pdf(ruta_s3)
-
-    # Generate filename from ruta_s3
-    filename = ruta_s3.split("/")[-1] if "/" in ruta_s3 else ruta_s3
-
-    # Upload PDF to OpenAI
-    file_id = file_inputs_client.upload_pdf(pdf_bytes, filename)
-
-    # Second LLM call with file
-    try:
-        response = llm_client.get_llm_response_with_file(
-            message=user_message,
-            file_id=file_id,
-            session_id=session_id,
-        )
-        return response
-    finally:
-        # Clean up: delete the uploaded file
-        try:
-            file_inputs_client.delete_file(file_id)
-        except Exception as e:
-            logger.warning(
-                "Failed to delete file: file_id=%s, session_id=%s, error=%s",
-                file_id,
-                session_id,
-                e,
-            )
-
-
 @app.post("/chat", response_model=ChatResponse)
-def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
+async def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     """
-    Chat endpoint that handles user messages.
+    Chat endpoint that handles user messages asynchronously.
 
-    Implements two-call LLM pattern:
-    1. First call checks if tools need to be invoked
-    2. If tool call present, process it and make second call
+    Enqueues the message for processing by a worker and waits for the result
+    with a 60-second timeout.
     """
     session_id = request.session_id or str(uuid.uuid4())
     request_id = str(uuid.uuid4())
@@ -181,7 +137,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         request.message[:100],
     )
 
-    # Detect escalation
+    # Detect escalation (synchronous, fast check)
     escalation_result = default_detector.detect(request.message)
 
     if escalation_result.escalate:
@@ -191,8 +147,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             session_id,
             escalation_result.reason,
         )
-        # Guardamos la consulta en la sesión aunque vayamos a escalar
-        session_manager.add_turn(
+        # Save escalation in session history
+        await session_manager.add_turn(
             session_id=session_id,
             question=request.message,
             answer=DEFAULT_ESCALATION_MESSAGE,
@@ -206,117 +162,47 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         )
 
     try:
-        # Obtener contexto de la sesión para mejorar el prompt
-        context_string = session_manager.get_context_string(session_id)
+        # Create chat message with asyncio.Future
+        chat_msg = ChatMessage(
+            request_id=request_id,
+            session_id=session_id,
+            message=request.message,
+            future=asyncio.Future(),
+        )
 
-        # First LLM call with tools
+        # Enqueue message for processing
+        queue_manager = app.state.queue_manager
+        await queue_manager.enqueue(chat_msg)
+
         logger.debug(
-            "Calling LLM with tools: request_id=%s, session_id=%s, model=%s",
+            "Message enqueued: request_id=%s, session_id=%s",
             request_id,
             session_id,
-            llm_client.model,
-        )
-        llm_response = llm_client.get_llm_response_with_tools(
-            message=request.message,
-            session_id=session_id,
-            system_prompt=ARTE_SYSTEM_PROMPT,
-            context=context_string,
         )
 
-        # Check if the response contains tool calls
-        tool_calls = llm_response.get("tool_calls")
-
-        if not tool_calls:
-            # No tool call needed - return normal response
-            content = llm_response.get("output_text", "")
-            session_manager.add_turn(
-                session_id=session_id,
-                question=request.message,
-                answer=content,
-                source_documents=[],
+        # Wait for worker to process with 60-second timeout
+        try:
+            result = await asyncio.wait_for(chat_msg.future, timeout=60.0)
+            logger.debug(
+                "Message processed: request_id=%s, session_id=%s",
+                request_id,
+                session_id,
             )
             return ChatResponse(
-                response=content,
-                escalate=False,
+                response=result["response"],
+                escalate=result["escalate"],
                 session_id=session_id,
             )
-
-        # Process tool calls
-        for tool_call in tool_calls:
-            function_name = tool_call.get("function", {}).get("name")
-
-            if function_name == "leer_ficha_tecnica":
-                try:
-                    final_response = _process_tool_call(
-                        tool_call=tool_call,
-                        user_message=request.message,
-                        session_id=session_id,
-                    )
-                    session_manager.add_turn(
-                        session_id=session_id,
-                        question=request.message,
-                        answer=final_response,
-                        source_documents=[],
-                    )
-                    return ChatResponse(
-                        response=final_response,
-                        escalate=False,
-                        session_id=session_id,
-                    )
-                except S3DownloadError as e:
-                    logger.error(
-                        "S3 download error: request_id=%s, session_id=%s, error=%s",
-                        request_id,
-                        session_id,
-                        e,
-                    )
-                    return ChatResponse(
-                        response=(
-                            "Lo siento, no pude acceder a la ficha técnica del "
-                            "producto solicitado. El archivo no está disponible "
-                            "en nuestro catálogo. Por favor, contacta al equipo "
-                            "de ventas para más información."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                    )
-                except FileUploadError as e:
-                    logger.error(
-                        "File upload error: request_id=%s, session_id=%s, error=%s",
-                        request_id,
-                        session_id,
-                        e,
-                    )
-                    return ChatResponse(
-                        response=(
-                            "Lo siento, tuve problemas al procesar la ficha técnica. "
-                            "Por favor, intenta novamente o contacta al equipo de ventas."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                    )
-                except Exception as e:
-                    logger.exception(
-                        "Error processing tool call: request_id=%s, session_id=%s, error=%s",
-                        request_id,
-                        session_id,
-                        e,
-                    )
-                    return ChatResponse(
-                        response=(
-                            "Ocurrió un error al procesar tu solicitud. "
-                            "Por favor, intenta más tarde."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                    )
-
-        # If we get here with tool_calls but none were processed
-        return ChatResponse(
-            response=llm_response.get("output_text", ""),
-            escalate=False,
-            session_id=session_id,
-        )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Message processing timeout: request_id=%s, session_id=%s",
+                request_id,
+                session_id,
+            )
+            raise HTTPException(
+                status_code=504,
+                detail="Request processing timeout. Please try again.",
+            )
 
     except LLMServiceError as e:
         logger.error(
@@ -326,6 +212,38 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             e,
         )
         raise HTTPException(status_code=503, detail=str(e))
+    except S3DownloadError as e:
+        logger.error(
+            "S3 download error: request_id=%s, session_id=%s, error=%s",
+            request_id,
+            session_id,
+            e,
+        )
+        return ChatResponse(
+            response=(
+                "Lo siento, no pude acceder a la ficha técnica del "
+                "producto solicitado. El archivo no está disponible "
+                "en nuestro catálogo. Por favor, contacta al equipo "
+                "de ventas para más información."
+            ),
+            escalate=False,
+            session_id=session_id,
+        )
+    except FileUploadError as e:
+        logger.error(
+            "File upload error: request_id=%s, session_id=%s, error=%s",
+            request_id,
+            session_id,
+            e,
+        )
+        return ChatResponse(
+            response=(
+                "Lo siento, tuve problemas al procesar la ficha técnica. "
+                "Por favor, intenta novamente o contacta al equipo de ventas."
+            ),
+            escalate=False,
+            session_id=session_id,
+        )
     except Exception as e:
         logger.exception(
             "Unexpected error in chat endpoint: request_id=%s, session_id=%s",

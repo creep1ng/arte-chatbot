@@ -7,26 +7,47 @@ Tests the S3 client for downloading technical datasheets from AWS S3.
 import os
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from backend.app.s3_client import S3Client, S3DownloadError
+from backend.app.s3_client import S3DownloadError
 
 
 class TestS3ClientInitialization:
-    """Tests for S3Client initialization."""
+    """Tests for S3Client initialization.
+    
+    These tests use patch to mock the settings object before importing S3Client,
+    ensuring that environment variable changes are reflected during initialization.
+    """
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_s3_client_default_env_vars(self) -> None:
         """Test S3Client initialization with default env vars."""
-        client = S3Client()
-        assert client.bucket_name == ""
+        mock_settings = MagicMock()
+        mock_settings.aws_bucket_name = ""
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.aws_access_key_id = None
+        mock_settings.aws_secret_access_key = None
+        
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("backend.app.s3_client.settings", mock_settings):
+                from backend.app.s3_client import S3Client
+                client = S3Client()
+                assert client.bucket_name == ""
 
-    @patch.dict(os.environ, {"AWS_BUCKET_NAME": "test-bucket"}, clear=True)
     def test_s3_client_with_bucket_env_var(self) -> None:
         """Test S3Client initialization reads bucket from env var."""
-        client = S3Client()
-        assert client.bucket_name == "test-bucket"
+        mock_settings = MagicMock()
+        mock_settings.aws_bucket_name = "default-bucket"
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.aws_access_key_id = None
+        mock_settings.aws_secret_access_key = None
+        
+        with patch.dict(os.environ, {"AWS_BUCKET_NAME": "test-bucket"}, clear=True):
+            with patch("backend.app.s3_client.settings", mock_settings):
+                from backend.app.s3_client import S3Client
+                client = S3Client()
+                assert client.bucket_name == "test-bucket"
 
     def test_s3_client_explicit_parameters(self) -> None:
         """Test S3Client initialization with explicit parameters."""
+        from backend.app.s3_client import S3Client
         client = S3Client(
             bucket_name="my-bucket",
             aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
@@ -37,17 +58,33 @@ class TestS3ClientInitialization:
         assert client.aws_access_key_id == "AKIAIOSFODNN7EXAMPLE"
         assert client.aws_region == "us-west-2"
 
-    @patch.dict(os.environ, {"AWS_REGION": "eu-west-1"}, clear=True)
     def test_s3_client_default_region(self) -> None:
         """Test S3Client uses default region when not specified."""
-        client = S3Client()
-        assert client.aws_region == "eu-west-1"
+        mock_settings = MagicMock()
+        mock_settings.aws_bucket_name = "test-bucket"
+        mock_settings.aws_region = "default-region"
+        mock_settings.aws_access_key_id = None
+        mock_settings.aws_secret_access_key = None
+        
+        with patch.dict(os.environ, {"AWS_REGION": "eu-west-1"}, clear=True):
+            with patch("backend.app.s3_client.settings", mock_settings):
+                from backend.app.s3_client import S3Client
+                client = S3Client()
+                assert client.aws_region == "eu-west-1"
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_s3_client_default_region_fallback(self) -> None:
         """Test S3Client falls back to us-east-1 when no region env var."""
-        client = S3Client()
-        assert client.aws_region == "us-east-1"
+        mock_settings = MagicMock()
+        mock_settings.aws_bucket_name = "test-bucket"
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.aws_access_key_id = None
+        mock_settings.aws_secret_access_key = None
+        
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("backend.app.s3_client.settings", mock_settings):
+                from backend.app.s3_client import S3Client
+                client = S3Client()
+                assert client.aws_region == "us-east-1"
 
 
 class TestS3DownloadPdfSync:

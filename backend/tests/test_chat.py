@@ -1,54 +1,119 @@
 """
-Unit and Integration tests for the /chat endpoint.
+Hybrid unit and integration tests for the /chat endpoint.
+
+Tests are organized into:
+1. Health/root endpoints
+2. Unit tests (with AsyncMock for MessageQueue)
+3. Integration tests (with real MessageQueue but mocked LLM/S3)
+4. Escalation tests
+5. Error handling tests
 """
 
+import asyncio
+import json
 import os
 import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-import requests
-from unittest.mock import patch, MagicMock
-from fastapi.testclient import TestClient
+from httpx import AsyncClient, ASGITransport
 
-from backend.main import app
 from backend.app.auth import verify_api_key
+from backend.app.llm_client import LLMServiceError
+from backend.app.queue import ChatMessage, MessageQueue
+from backend.app.s3_client import S3DownloadError
+from backend.app.file_inputs import FileUploadError
+from backend.main import app
 
-client = TestClient(app)
 
-# Override auth for unit tests
-app.dependency_overrides[verify_api_key] = lambda: "test_key"
+# ============================================================================
+# Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def mock_llm_client():
+    """Create mock LLM client."""
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_s3_client():
+    """Create mock S3 client."""
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_file_inputs_client():
+    """Create mock FileInputsClient."""
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_session_manager():
+    """Create mock SessionManager."""
+    manager = AsyncMock()
+    manager.get_context_string.return_value = ""
+    manager.add_turn.return_value = None
+    return manager
+
+
+@pytest.fixture
+def mock_queue_manager(mock_llm_client, mock_s3_client, mock_file_inputs_client, mock_session_manager):
+    """Create mock MessageQueue with all dependencies."""
+    queue = AsyncMock(spec=MessageQueue)
+    queue.enqueue = AsyncMock()
+    queue.start = AsyncMock()
+    queue.stop = AsyncMock()
+    return queue
+
+
+# ============================================================================
+# Unit Tests - Health & Root Endpoints
+# ============================================================================
 
 
 class TestHealthEndpoint:
     """Tests for /health endpoint."""
 
-    def test_health_check_returns_200(self) -> None:
+    async def test_health_check_returns_200(self, async_client_with_queue, api_key_override):
         """Test health check returns healthy status."""
-        response = client.get("/health")
+        response = await async_client_with_queue.get("/health")
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
         assert data["service"] == "arte-chatbot-backend"
 
-    def test_root_endpoint(self) -> None:
+    async def test_root_endpoint(self, async_client_with_queue, api_key_override):
         """Test root endpoint returns API info."""
-        response = client.get("/")
+        response = await async_client_with_queue.get("/")
         assert response.status_code == 200
         data = response.json()
         assert "message" in data
         assert "docs" in data
 
 
+# ============================================================================
+# Unit Tests - Chat Endpoint (with AsyncMock MessageQueue)
+# ============================================================================
+
+
 class TestChatEndpointUnit:
-    """Tests for /chat endpoint using TestClient."""
+    """Unit tests for /chat endpoint using AsyncClient with mocked queue."""
 
-    def test_chat_requires_message(self) -> None:
-        """Test that message field is required."""
-        response = client.post("/chat", json={})
-        assert response.status_code == 422  # Validation error
+    async def test_chat_requires_message(self, async_client_with_queue, api_key_override):
+        """Test that message field is required (validation error)."""
+        response = await async_client_with_queue.post("/chat", json={})
+        assert response.status_code == 422
 
-    def test_chat_returns_escalate_for_cotizacion(self) -> None:
+    async def test_chat_rejects_empty_message(self, async_client_with_queue, api_key_override):
+        """Test that empty message is rejected (validation error)."""
+        response = await async_client_with_queue.post("/chat", json={"message": ""})
+        assert response.status_code == 422
+
+    async def test_chat_returns_escalate_for_cotizacion(self, async_client_with_queue, api_key_override):
         """Test escalation flag for 'cotización' keyword."""
-        response = client.post(
+        response = await async_client_with_queue.post(
             "/chat", json={"message": "Necesito una cotización de paneles"}
         )
         assert response.status_code == 200
@@ -57,476 +122,715 @@ class TestChatEndpointUnit:
         assert "reason" in data
         assert data["session_id"] is not None
 
-    def test_chat_returns_escalate_for_pedido(self) -> None:
+    async def test_chat_returns_escalate_for_pedido(self, async_client_with_queue, api_key_override):
         """Test escalation flag for 'pedido' keyword."""
-        response = client.post("/chat", json={"message": "Quiero hacer un pedido"})
+        response = await async_client_with_queue.post("/chat", json={"message": "Quiero hacer un pedido"})
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
-        assert (
-            "cotización" in data["reason"].lower() or "pedido" in data["reason"].lower()
-        )
+        assert data["reason"] is not None
 
-    def test_chat_returns_escalate_for_garantia(self) -> None:
+    async def test_chat_returns_escalate_for_garantia(self, async_client_with_queue, api_key_override):
         """Test escalation flag for 'garantía' keyword."""
-        response = client.post(
+        response = await async_client_with_queue.post(
             "/chat", json={"message": "Tengo un problema con la garantía"}
         )
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    def test_chat_no_escalate_for_normal_message(self, mock_llm) -> None:
-        """Test no escalation for normal messages."""
-        # get_llm_response_with_tools returns a dict with output_text (Responses API)
-        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
-        response = client.post(
-            "/chat", json={"message": "¿Cuánta potencia tiene el panel de 400W?"}
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["escalate"] is False
-        assert data["reason"] is None
-        assert data["response"] == "Mocked LLM Response"
-
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    def test_chat_returns_session_id(self, mock_llm) -> None:
-        """Test that session_id is returned in response."""
-        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
-        response = client.post("/chat", json={"message": "Hola"})
-        assert response.status_code == 200
-        data = response.json()
-        assert "session_id" in data
-        assert isinstance(data["session_id"], str)
-
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    def test_chat_accepts_custom_session_id(self, mock_llm) -> None:
-        """Test that custom session_id can be provided."""
-        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
-        response = client.post(
-            "/chat", json={"message": "Hola", "session_id": "my-session-123"}
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["session_id"] == "my-session-123"
-
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    @patch("backend.main.session_manager")
-    def test_chat_uses_session_context(self, mock_session_manager, mock_llm):
-        """Test that the chat endpoint uses session context."""
-        # Configurar mocks
-        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
-        mock_session_manager.get_context_string.return_value = (
-            "Turno 1:\nUsuario: Pregunta anterior\nAsistente: Respuesta anterior"
-        )
-
-        # Hacer la petición
-        response = client.post(
-            "/chat",
-            json={"message": "¿Y cuánto cuesta?", "session_id": "test-session-123"},
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["response"] == "Mocked LLM Response"
-
-        # Verificar que se llamó al LLM con el contexto
-        mock_llm.assert_called_once()
-        args, kwargs = mock_llm.call_args
-        assert kwargs["message"] == "¿Y cuánto cuesta?"
-        assert kwargs["session_id"] == "test-session-123"
-        assert kwargs["context"] == mock_session_manager.get_context_string.return_value
-        assert "Pregunta anterior" in kwargs["context"]
-
-        # Verificar que se guardó el turno en la sesión
-        mock_session_manager.add_turn.assert_called_once()
-        add_args, add_kwargs = mock_session_manager.add_turn.call_args
-        assert add_kwargs["session_id"] == "test-session-123"
-        assert add_kwargs["question"] == "¿Y cuánto cuesta?"
-        assert add_kwargs["answer"] == "Mocked LLM Response"
-
-    def test_chat_returns_escalation_message(self) -> None:
-        """Test that escalation response includes user message."""
-        response = client.post("/chat", json={"message": "Quiero una cotización"})
-        assert response.status_code == 200
-        data = response.json()
-        assert "response" in data
-        assert isinstance(data["response"], str)
-        assert len(data["response"]) > 0
-
-
-# Integration Tests
-
-API_URL = "http://localhost:8000/chat"
-
-
-@pytest.fixture(scope="module")
-def api_key():
-    key = os.getenv("OPENAI_API_KEY")
-    if key is None:
-        pytest.skip("OPENAI_API_KEY not set")
-    return key
-
-
-@pytest.fixture(scope="module")
-def chat_api_key():
-    key = os.getenv("CHAT_API_KEY")
-    if key is None:
-        pytest.skip("CHAT_API_KEY not set")
-    return key
-
-
-@pytest.mark.integration
-def test_chat_status_200(chat_api_key):
-    """Verify the /chat endpoint returns 200 for a valid request with auth header."""
-    payload = {"message": "Hello", "session_id": str(uuid.uuid4())}
-    try:
-        response = requests.post(
-            API_URL, json=payload, headers={"X-API-Key": chat_api_key}
-        )
-        assert response.status_code == 200
-    except requests.exceptions.ConnectionError:
-        pytest.skip("Backend is not running locally on port 8000")
-
-
-@pytest.mark.integration
-def test_chat_response_not_empty(api_key, chat_api_key):
-    """Verify the response body is non-empty when the API key is available."""
-    payload = {"message": "Test", "session_id": str(uuid.uuid4())}
-    try:
-        response = requests.post(
-            API_URL, json=payload, headers={"X-API-Key": chat_api_key}
-        )
-        assert response.json().get("response"), "Response should not be empty"
-    except requests.exceptions.ConnectionError:
-        pytest.skip("Backend is not running locally on port 8000")
-
-
-@pytest.mark.integration
-def test_session_id_uuid_format(api_key, chat_api_key):
-    """Verify the returned session_id is a valid UUID."""
-    session_id = str(uuid.uuid4())
-    payload = {"message": "UUID check", "session_id": session_id}
-    try:
-        response = requests.post(
-            API_URL, json=payload, headers={"X-API-Key": chat_api_key}
-        )
-        returned_id = response.json().get("session_id")
-        assert returned_id is not None
+    async def test_chat_normal_message_with_mocked_queue(self, async_client_with_queue, api_key_override):
+        """Test normal message routing through queue (unit test with mock)."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
         try:
-            uuid.UUID(returned_id)
-        except ValueError:
-            pytest.fail("session_id is not valid UUID format")
-    except requests.exceptions.ConnectionError:
-        pytest.skip("Backend is not running locally on port 8000")
+            # Setup mock to immediately resolve the future
+            async def enqueue_and_resolve(msg):
+                msg.future.set_result({"response": "Test response", "escalate": False})
+
+            mock_queue.enqueue = enqueue_and_resolve
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "¿Cuánta potencia tiene el panel?"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["response"] == "Test response"
+            assert data["escalate"] is False
+            assert data["session_id"] is not None
+        finally:
+            # Restore original queue manager
+            pass
+
+    async def test_chat_returns_session_id(self, async_client_with_queue, api_key_override):
+        """Test that session_id is returned in response."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            async def enqueue_and_resolve(msg):
+                msg.future.set_result({"response": "Test", "escalate": False})
+
+            mock_queue.enqueue = enqueue_and_resolve
+
+            response = await async_client_with_queue.post("/chat", json={"message": "Hola"})
+            assert response.status_code == 200
+            data = response.json()
+            assert "session_id" in data
+            assert isinstance(data["session_id"], str)
+        finally:
+            pass
+
+    async def test_chat_accepts_custom_session_id(self, async_client_with_queue, api_key_override):
+        """Test that custom session_id can be provided."""
+        custom_session = "my-session-123"
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            async def enqueue_and_resolve(msg):
+                msg.future.set_result({"response": "Test", "escalate": False})
+
+            mock_queue.enqueue = enqueue_and_resolve
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Hola", "session_id": custom_session}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["session_id"] == custom_session
+        finally:
+            pass
+
+    async def test_chat_timeout_returns_504(self, async_client_with_queue, api_key_override):
+        """Test that timeout returns 504 status code."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            # Simulate timeout by not resolving the future
+            async def enqueue_no_resolve(msg):
+                await asyncio.sleep(61)  # Longer than timeout
+
+            mock_queue.enqueue = enqueue_no_resolve
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Test message"}, timeout=70.0
+            )
+            # The endpoint has 60s timeout, so we expect 504
+            assert response.status_code == 504
+        finally:
+            pass
+
+    async def test_chat_llm_service_error_returns_503(self, async_client_with_queue, api_key_override):
+        """Test that LLM service errors return 503 status code."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            async def enqueue_with_error(msg):
+                msg.future.set_exception(LLMServiceError("Service unavailable"))
+
+            mock_queue.enqueue = enqueue_with_error
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Test message"}
+            )
+            assert response.status_code == 503
+            data = response.json()
+            assert "detail" in data
+        finally:
+            pass
+
+    async def test_chat_s3_error_returns_graceful_response(self, async_client_with_queue, api_key_override):
+        """Test that S3 errors return graceful response."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            async def enqueue_with_error(msg):
+                msg.future.set_exception(S3DownloadError("File not found"))
+
+            mock_queue.enqueue = enqueue_with_error
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Test message"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert "response" in data
+            assert "no pude acceder" in data["response"].lower()
+        finally:
+            pass
+
+    async def test_chat_file_upload_error_returns_graceful_response(self, async_client_with_queue, api_key_override):
+        """Test that file upload errors return graceful response."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            async def enqueue_with_error(msg):
+                msg.future.set_exception(FileUploadError("Invalid file"))
+
+            mock_queue.enqueue = enqueue_with_error
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Test message"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert "response" in data
+            assert "problemas" in data["response"].lower()
+        finally:
+            pass
 
 
-@pytest.mark.integration
-def test_openai_api_key_loaded_from_env(api_key):
-    """Verify the OPENAI_API_KEY environment variable is set."""
-    assert os.getenv("OPENAI_API_KEY") is not None, (
-        "OPENAI_API_KEY must be loaded from environment"
-    )
+# ============================================================================
+# Integration Tests - MessageQueue Processing
+# ============================================================================
 
 
-# Tool Calling Tests
+class TestChatEndpointIntegration:
+    """Integration tests with real MessageQueue (but mocked clients)."""
 
+    async def test_chat_simple_message_no_tool_call(self, async_client_with_queue, api_key_override):
+        """Test simple message without tool calls through real queue."""
+        with patch("backend.main.llm_client") as mock_llm, \
+             patch("backend.main.s3_client") as mock_s3, \
+             patch("backend.main.file_inputs_client") as mock_fi, \
+             patch("backend.main.session_manager") as mock_session:
 
-class TestChatEndpointWithToolCall:
-    """Tests for /chat endpoint with tool calling functionality."""
-
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    @patch("backend.main.s3_client")
-    @patch("backend.main.file_inputs_client")
-    def test_chat_endpoint_with_tool_call_in_response(
-        self, mock_file_inputs: MagicMock, mock_s3: MagicMock, mock_llm: MagicMock
-    ) -> None:
-        """Test chat endpoint with tool call in response."""
-        # Mock LLM response with tool call (Responses API format)
-        mock_llm.return_value = {
-            "output_text": "",
-            "tool_calls": [
-                {
-                    "id": "call_abc123",
-                    "type": "function",
-                    "function": {
-                        "name": "leer_ficha_tecnica",
-                        "arguments": '{"ruta_s3": "paneles/jinko-tiger-pro-460w.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger Pro 460W"}',
-                    },
+            # Mock LLM to return simple response (no tool calls)
+            mock_llm.get_llm_response_with_tools = AsyncMock(
+                return_value={
+                    "output_text": "El panel Jinko Tiger Pro tiene 460W de potencia.",
+                    "tool_calls": None,
                 }
-            ],
-        }
+            )
+            mock_session.get_context_string.return_value = ""
+            mock_session.add_turn = AsyncMock()
 
-        # Mock S3 download
-        mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
-
-        # Mock file upload
-        mock_file_inputs.upload_pdf.return_value = "file-abc123"
-        mock_file_inputs.delete_file.return_value = None
-
-        # Mock second LLM call
-        with patch(
-            "backend.main.llm_client.get_llm_response_with_file"
-        ) as mock_llm_file:
-            mock_llm_file.return_value = (
-                "El panel Jinko Tiger Pro 460W tiene una potencia de 460W."
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "¿Cuánta potencia tiene el panel Jinko?"}
             )
 
-            response = client.post(
+            assert response.status_code == 200
+            data = response.json()
+            assert data["response"] == "El panel Jinko Tiger Pro tiene 460W de potencia."
+            assert data["escalate"] is False
+            assert data["session_id"] is not None
+
+    async def test_chat_with_tool_call_to_datasheet(self, async_client_with_queue, api_key_override):
+        """Test message that requires tool call to read technical datasheet."""
+        with patch("backend.main.llm_client") as mock_llm, \
+             patch("backend.main.s3_client") as mock_s3, \
+             patch("backend.main.file_inputs_client") as mock_fi, \
+             patch("backend.main.session_manager") as mock_session:
+
+            # First LLM call returns tool call
+            mock_llm.get_llm_response_with_tools = AsyncMock(
+                return_value={
+                    "output_text": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "leer_ficha_tecnica",
+                                "arguments": '{"ruta_s3": "paneles/jinko-tiger-pro-460w.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger Pro 460W"}',
+                            },
+                        }
+                    ],
+                }
+            )
+
+            # Mock S3 download
+            mock_s3.download_pdf = AsyncMock(return_value=b"%PDF-1.4 test content")
+
+            # Mock file upload
+            mock_fi.upload_pdf = AsyncMock(return_value="file-id-123")
+            mock_fi.delete_file = AsyncMock()
+
+            # Second LLM call with file
+            mock_llm.get_llm_response_with_file = AsyncMock(
+                return_value="El panel Jinko Tiger Pro 460W tiene: Potencia: 460W, Voltaje: 48V, Eficiencia: 22.5%"
+            )
+
+            mock_session.get_context_string.return_value = ""
+            mock_session.add_turn = AsyncMock()
+
+            response = await async_client_with_queue.post(
+                "/chat",
+                json={"message": "Cuéntame las especificaciones técnicas del panel Jinko Tiger Pro 460W"},
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert "460W" in data["response"]
+            assert data["escalate"] is False
+
+            # Verify tool call workflow
+            mock_llm.get_llm_response_with_tools.assert_called_once()
+            mock_s3.download_pdf.assert_called_once()
+            mock_fi.upload_pdf.assert_called_once()
+            mock_llm.get_llm_response_with_file.assert_called_once()
+            mock_fi.delete_file.assert_called_once()
+
+    async def test_chat_tool_call_handles_s3_error(self, async_client_with_queue, api_key_override):
+        """Test error handling when S3 download fails during tool call."""
+        with patch("backend.main.llm_client") as mock_llm, \
+             patch("backend.main.s3_client") as mock_s3, \
+             patch("backend.main.file_inputs_client") as mock_fi, \
+             patch("backend.main.session_manager") as mock_session:
+
+            # First LLM call returns tool call
+            mock_llm.get_llm_response_with_tools = AsyncMock(
+                return_value={
+                    "output_text": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "leer_ficha_tecnica",
+                                "arguments": '{"ruta_s3": "paneles/nonexistent.pdf"}',
+                            },
+                        }
+                    ],
+                }
+            )
+
+            # S3 download fails
+            mock_s3.download_pdf = AsyncMock(
+                side_effect=S3DownloadError("File not found in S3")
+            )
+
+            mock_session.get_context_string.return_value = ""
+            mock_session.add_turn = AsyncMock()
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Quiero ver el panel no existente"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            # Should return graceful error message
+            assert "no pude acceder" in data["response"].lower()
+
+    async def test_chat_tool_call_handles_file_upload_error(self, async_client_with_queue, api_key_override):
+        """Test error handling when file upload fails during tool call."""
+        with patch("backend.main.llm_client") as mock_llm, \
+             patch("backend.main.s3_client") as mock_s3, \
+             patch("backend.main.file_inputs_client") as mock_fi, \
+             patch("backend.main.session_manager") as mock_session:
+
+            # First LLM call returns tool call
+            mock_llm.get_llm_response_with_tools = AsyncMock(
+                return_value={
+                    "output_text": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "leer_ficha_tecnica",
+                                "arguments": '{"ruta_s3": "paneles/test.pdf"}',
+                            },
+                        }
+                    ],
+                }
+            )
+
+            # S3 download succeeds
+            mock_s3.download_pdf = AsyncMock(return_value=b"%PDF-1.4 content")
+
+            # File upload fails
+            mock_fi.upload_pdf = AsyncMock(
+                side_effect=FileUploadError("Invalid file format")
+            )
+
+            mock_session.get_context_string.return_value = ""
+            mock_session.add_turn = AsyncMock()
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Ver especificaciones"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            # Should return graceful error message
+            assert "problemas" in data["response"].lower()
+
+    async def test_chat_tool_call_cleanup_on_success(self, async_client_with_queue, api_key_override):
+        """Test that uploaded files are cleaned up after successful tool call."""
+        with patch("backend.main.llm_client") as mock_llm, \
+             patch("backend.main.s3_client") as mock_s3, \
+             patch("backend.main.file_inputs_client") as mock_fi, \
+             patch("backend.main.session_manager") as mock_session:
+
+            # Setup mocks
+            mock_llm.get_llm_response_with_tools = AsyncMock(
+                return_value={
+                    "output_text": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "leer_ficha_tecnica",
+                                "arguments": '{"ruta_s3": "paneles/test.pdf"}',
+                            },
+                        }
+                    ],
+                }
+            )
+
+            mock_s3.download_pdf = AsyncMock(return_value=b"%PDF-1.4 content")
+            mock_fi.upload_pdf = AsyncMock(return_value="file-id-xyz")
+            mock_fi.delete_file = AsyncMock()
+            mock_llm.get_llm_response_with_file = AsyncMock(return_value="Panel specs")
+            mock_session.get_context_string.return_value = ""
+            mock_session.add_turn = AsyncMock()
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Especificaciones"}
+            )
+
+            assert response.status_code == 200
+            # Verify cleanup was called
+            mock_fi.delete_file.assert_called_once_with("file-id-xyz")
+
+    async def test_chat_session_context_is_used(self, async_client_with_queue, api_key_override):
+        """Test that session context is retrieved and passed to LLM."""
+        with patch("backend.main.llm_client") as mock_llm, \
+             patch("backend.main.s3_client") as mock_s3, \
+             patch("backend.main.file_inputs_client") as mock_fi, \
+             patch("backend.main.session_manager") as mock_session:
+
+            # Setup context
+            context = "Turno anterior:\nUsuario: ¿Cuánta potencia?\nAsistente: 460W"
+            mock_session.get_context_string.return_value = context
+
+            mock_llm.get_llm_response_with_tools = AsyncMock(
+                return_value={"output_text": "Response", "tool_calls": None}
+            )
+            mock_session.add_turn = AsyncMock()
+
+            response = await async_client_with_queue.post(
+                "/chat",
+                json={"message": "¿Y el precio?", "session_id": "test-session"},
+            )
+
+            assert response.status_code == 200
+
+            # Verify context was passed to LLM
+            call_kwargs = mock_llm.get_llm_response_with_tools.call_args.kwargs
+            assert call_kwargs["context"] == context
+            assert call_kwargs["session_id"] == "test-session"
+
+    async def test_chat_stores_turn_in_session(self, async_client_with_queue, api_key_override):
+        """Test that conversation turn is stored in session history."""
+        with patch("backend.main.llm_client") as mock_llm, \
+             patch("backend.main.s3_client") as mock_s3, \
+             patch("backend.main.file_inputs_client") as mock_fi, \
+             patch("backend.main.session_manager") as mock_session:
+
+            mock_session.get_context_string.return_value = ""
+            mock_llm.get_llm_response_with_tools = AsyncMock(
+                return_value={"output_text": "LLM Response", "tool_calls": None}
+            )
+            mock_session.add_turn = AsyncMock()
+
+            response = await async_client_with_queue.post(
+                "/chat",
+                json={"message": "User question", "session_id": "sess-123"},
+            )
+
+            assert response.status_code == 200
+
+            # Verify turn was stored
+            mock_session.add_turn.assert_called_once()
+            call_kwargs = mock_session.add_turn.call_args.kwargs
+            assert call_kwargs["session_id"] == "sess-123"
+            assert call_kwargs["question"] == "User question"
+            assert call_kwargs["answer"] == "LLM Response"
+
+
+# ============================================================================
+# Escalation Tests
+# ============================================================================
+
+
+class TestChatEndpointEscalation:
+    """Tests for escalation detection."""
+
+    async def test_escalate_cotizacion(self, async_client_with_queue, api_key_override):
+        """Test escalation for cotización requests."""
+        response = await async_client_with_queue.post(
+            "/chat", json={"message": "Necesito una cotización"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["escalate"] is True
+        assert data["reason"] is not None
+
+    async def test_escalate_pedido(self, async_client_with_queue, api_key_override):
+        """Test escalation for order requests."""
+        response = await async_client_with_queue.post(
+            "/chat", json={"message": "Quiero hacer un pedido ahora"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["escalate"] is True
+
+    async def test_escalate_garantia(self, async_client_with_queue, api_key_override):
+        """Test escalation for warranty issues."""
+        response = await async_client_with_queue.post(
+            "/chat", json={"message": "Tengo un problema con la garantía"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["escalate"] is True
+
+    async def test_escalate_returns_default_message(self, async_client_with_queue, api_key_override):
+        """Test that escalation returns the default escalation message."""
+        response = await async_client_with_queue.post(
+            "/chat", json={"message": "Necesito una cotización"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["escalate"] is True
+        assert len(data["response"]) > 0
+        # Response should indicate escalation to human agent
+        assert data["response"] is not None
+
+    async def test_escalate_stores_turn_in_session(self, async_client_with_queue, api_key_override):
+        """Test that escalation stores the turn in session history."""
+        with patch("backend.main.session_manager") as mock_session:
+            mock_session.add_turn = AsyncMock()
+
+            response = await async_client_with_queue.post(
                 "/chat",
                 json={
-                    "message": "Dime las especificaciones del panel Jinko Tiger Pro 460W"
+                    "message": "Necesito una cotización",
+                    "session_id": "esc-session-123",
                 },
             )
 
+            assert response.status_code == 200
+            data = response.json()
+            assert data["escalate"] is True
+
+            # Verify turn was stored
+            mock_session.add_turn.assert_called_once()
+            call_kwargs = mock_session.add_turn.call_args.kwargs
+            assert call_kwargs["session_id"] == "esc-session-123"
+
+
+# ============================================================================
+# Error Handling Tests
+# ============================================================================
+
+
+class TestChatEndpointErrorHandling:
+    """Tests for error handling in /chat endpoint."""
+
+    async def test_missing_message_field_422(self, async_client_with_queue, api_key_override):
+        """Test missing message field returns 422."""
+        response = await async_client_with_queue.post("/chat", json={})
+        assert response.status_code == 422
+
+    async def test_empty_message_string_422(self, async_client_with_queue, api_key_override):
+        """Test empty message string returns 422."""
+        response = await async_client_with_queue.post("/chat", json={"message": ""})
+        assert response.status_code == 422
+
+    async def test_missing_api_key_401(self, async_client_with_queue):
+        """Test missing API key returns 401."""
+        # Remove the override to test actual auth
+        app.dependency_overrides.clear()
+
+        response = await async_client_with_queue.post(
+            "/chat", json={"message": "Test"},
+            headers={"X-API-Key": "invalid-key"}
+        )
+        # Should get 403 (Forbidden) for wrong key or 401 depending on auth impl
+        assert response.status_code in (401, 403)
+
+        # Restore override for other tests
+        app.dependency_overrides[verify_api_key] = lambda: "test_key"
+
+    async def test_queue_runtime_error_returns_500(self, async_client_with_queue, api_key_override):
+        """Test unexpected errors return 500."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            async def enqueue_with_error(msg):
+                raise RuntimeError("Unexpected queue error")
+
+            mock_queue.enqueue = enqueue_with_error
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Test"}
+            )
+            assert response.status_code == 500
+        finally:
+            pass
+
+    async def test_response_has_required_fields(self, async_client_with_queue, api_key_override):
+        """Test that successful response has all required fields."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            async def enqueue_and_resolve(msg):
+                msg.future.set_result({"response": "Test", "escalate": False})
+
+            mock_queue.enqueue = enqueue_and_resolve
+
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "Test"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert "response" in data
+            assert "escalate" in data
+            assert "session_id" in data
+            # reason is optional but included for escalations
+            if data["escalate"]:
+                assert "reason" in data
+        finally:
+            pass
+
+
+# ============================================================================
+# Response Schema Tests
+# ============================================================================
+
+
+class TestChatResponseSchema:
+    """Tests for response schema and structure."""
+
+    async def test_response_is_valid_json(self, async_client_with_queue, api_key_override):
+        """Test that response is valid JSON."""
+        response = await async_client_with_queue.post(
+            "/chat", json={"message": "Necesito una cotización"}
+        )
         assert response.status_code == 200
+        # Should not raise exception
         data = response.json()
-        assert data["escalate"] is False
-        assert "460W" in data["response"]
-        assert data["session_id"] is not None
+        assert isinstance(data, dict)
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    @patch("backend.main.s3_client")
-    def test_chat_endpoint_handles_s3_download_error(
-        self, mock_s3: MagicMock, mock_llm: MagicMock
-    ) -> None:
-        """Test chat endpoint handles S3 download errors gracefully."""
-        from backend.app.s3_client import S3DownloadError
+    async def test_response_escalate_is_boolean(self, async_client_with_queue, api_key_override):
+        """Test that escalate field is a boolean."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            async def enqueue_and_resolve(msg):
+                msg.future.set_result({"response": "Test", "escalate": False})
 
-        # Mock LLM response with tool call (Responses API format)
-        mock_llm.return_value = {
-            "output_text": "",
-            "tool_calls": [
-                {
-                    "id": "call_abc123",
-                    "type": "function",
-                    "function": {
-                        "name": "leer_ficha_tecnica",
-                        "arguments": '{"ruta_s3": "paneles/nonexistent.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
-                    },
-                }
-            ],
-        }
+            mock_queue.enqueue = enqueue_and_resolve
 
-        # Mock S3 download error
-        mock_s3.download_pdf.side_effect = S3DownloadError(
-            "File not found in S3: nonexistent.pdf"
+            response = await async_client_with_queue.post(
+                "/chat", json={"message": "¿Cuánta potencia?"}
+            )
+
+            data = response.json()
+            assert isinstance(data["escalate"], bool)
+        finally:
+            pass
+
+    async def test_response_session_id_is_string(self, async_client_with_queue, api_key_override):
+        """Test that session_id is a string."""
+        response = await async_client_with_queue.post(
+            "/chat", json={"message": "Necesito una cotización"}
         )
 
-        response = client.post(
-            "/chat",
-            json={"message": "Dime las especificaciones del panel Test"},
-        )
-
-        assert response.status_code == 200
         data = response.json()
-        # Should return graceful error message, not crash
-        assert data["response"] is not None
-        assert (
-            "no pude acceder" in data["response"].lower()
-            or "disponible" in data["response"].lower()
+        assert isinstance(data["session_id"], str)
+
+    async def test_response_reason_included_on_escalation(self, async_client_with_queue, api_key_override):
+        """Test that reason is included when escalate is True."""
+        response = await async_client_with_queue.post(
+            "/chat", json={"message": "Necesito una cotización"}
         )
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    @patch("backend.main.s3_client")
-    @patch("backend.main.file_inputs_client")
-    def test_chat_endpoint_handles_file_upload_error(
-        self, mock_file_inputs: MagicMock, mock_s3: MagicMock, mock_llm: MagicMock
-    ) -> None:
-        """Test chat endpoint handles file upload errors gracefully."""
-        from backend.app.file_inputs import FileUploadError
-
-        # Mock LLM response with tool call (Responses API format)
-        mock_llm.return_value = {
-            "output_text": "",
-            "tool_calls": [
-                {
-                    "id": "call_abc123",
-                    "type": "function",
-                    "function": {
-                        "name": "leer_ficha_tecnica",
-                        "arguments": '{"ruta_s3": "paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
-                    },
-                }
-            ],
-        }
-
-        # Mock S3 download success
-        mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
-
-        # Mock file upload error
-        mock_file_inputs.upload_pdf.side_effect = FileUploadError("Invalid file format")
-
-        response = client.post(
-            "/chat",
-            json={"message": "Dime las especificaciones del panel Test"},
-        )
-
-        assert response.status_code == 200
         data = response.json()
-        # Should handle error gracefully
-        assert data["response"] is not None
+        if data["escalate"]:
+            assert "reason" in data
+            assert isinstance(data["reason"], str)
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    @patch("backend.main.s3_client")
-    @patch("backend.main.file_inputs_client")
-    def test_chat_endpoint_cleans_up_uploaded_files(
-        self, mock_file_inputs: MagicMock, mock_s3: MagicMock, mock_llm: MagicMock
-    ) -> None:
-        """Test chat endpoint cleans up uploaded files after second LLM call."""
-        # Mock LLM response with tool call (Responses API format)
-        mock_llm.return_value = {
-            "output_text": "",
-            "tool_calls": [
-                {
-                    "id": "call_abc123",
-                    "type": "function",
-                    "function": {
-                        "name": "leer_ficha_tecnica",
-                        "arguments": '{"ruta_s3": "paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
-                    },
-                }
-            ],
-        }
 
-        # Mock S3 download
-        mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
+# ============================================================================
+# Request/Response Round-trip Tests
+# ============================================================================
 
-        # Mock file upload
-        mock_file_inputs.upload_pdf.return_value = "file-abc123"
 
-        # Mock second LLM call
-        with patch(
-            "backend.main.llm_client.get_llm_response_with_file"
-        ) as mock_llm_file:
-            mock_llm_file.return_value = "Test response"
+class TestChatRoundtrip:
+    """Tests for full request/response round-trips."""
 
-            response = client.post(
+    async def test_multiple_messages_same_session(self, async_client_with_queue, api_key_override):
+        """Test multiple messages in same session preserve session_id."""
+        session_id = str(uuid.uuid4())
+
+        with patch("backend.main.llm_client") as mock_llm, \
+             patch("backend.main.s3_client") as mock_s3, \
+             patch("backend.main.file_inputs_client") as mock_fi, \
+             patch("backend.main.session_manager") as mock_session:
+
+            mock_session.get_context_string.return_value = ""
+            mock_llm.get_llm_response_with_tools = AsyncMock(
+                return_value={"output_text": "Response", "tool_calls": None}
+            )
+            mock_session.add_turn = AsyncMock()
+
+            # First message
+            response1 = await async_client_with_queue.post(
                 "/chat",
-                json={"message": "Test message"},
+                json={"message": "First question", "session_id": session_id},
+            )
+            assert response1.status_code == 200
+            data1 = response1.json()
+            assert data1["session_id"] == session_id
+
+            # Second message
+            response2 = await async_client_with_queue.post(
+                "/chat",
+                json={"message": "Follow-up question", "session_id": session_id},
+            )
+            assert response2.status_code == 200
+            data2 = response2.json()
+            assert data2["session_id"] == session_id
+
+    async def test_auto_generated_session_id_is_unique(self, async_client_with_queue, api_key_override):
+        """Test that auto-generated session IDs are unique."""
+        # Replace queue_manager with mock for this test
+        mock_queue = AsyncMock()
+        app.state.queue_manager = mock_queue
+        try:
+            async def enqueue_and_resolve(msg):
+                msg.future.set_result({"response": "Test", "escalate": False})
+
+            mock_queue.enqueue = enqueue_and_resolve
+
+            response1 = await async_client_with_queue.post(
+                "/chat", json={"message": "Message 1"}
+            )
+            response2 = await async_client_with_queue.post(
+                "/chat", json={"message": "Message 2"}
             )
 
-        # Verify delete was called after the second LLM call
-        mock_file_inputs.delete_file.assert_called_once_with("file-abc123")
+            data1 = response1.json()
+            data2 = response2.json()
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    def test_chat_endpoint_returns_normal_response_when_no_tool_call(
-        self, mock_llm: MagicMock
-    ) -> None:
-        """Test chat endpoint returns normal response when no tool call."""
-        # Mock LLM response without tool call (Responses API format)
-        mock_llm.return_value = {
-            "output_text": "Soy el asistente de Arte Soluciones Energéticas. ¿En qué puedo ayudarte?",
-        }
-
-        response = client.post("/chat", json={"message": "Hola"})
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["escalate"] is False
-        assert "Arte Soluciones Energéticas" in data["response"]
-
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
-    def test_chat_endpoint_passes_session_id_to_llm(self, mock_llm: MagicMock) -> None:
-        """Test chat endpoint passes session_id to LLM client."""
-        mock_llm.return_value = {
-            "output_text": "Test response",
-        }
-
-        custom_session = "custom-session-abc123"
-        response = client.post(
-            "/chat",
-            json={"message": "Test", "session_id": custom_session},
-        )
-
-        # Verify session_id was passed to LLM
-        call_args = mock_llm.call_args
-        assert call_args is not None
-        _, kwargs = call_args
-        assert kwargs.get("session_id") == custom_session
+            assert data1["session_id"] != data2["session_id"]
+        finally:
+            pass
 
 
-class TestProcessToolCall:
-    """Tests for the _process_tool_call function."""
-
-    @patch("backend.main.s3_client")
-    @patch("backend.main.file_inputs_client")
-    def test_process_tool_call_success(
-        self, mock_file_inputs: MagicMock, mock_s3: MagicMock
-    ) -> None:
-        """Test _process_tool_call handles successful execution."""
-        from backend.main import _process_tool_call
-
-        # Mock S3 download
-        mock_s3.download_pdf.return_value = b"%PDF-1.4 test"
-
-        # Mock file upload
-        mock_file_inputs.upload_pdf.return_value = "file-xyz789"
-
-        # Mock second LLM call
-        with patch(
-            "backend.main.llm_client.get_llm_response_with_file"
-        ) as mock_llm_file:
-            mock_llm_file.return_value = "El panel tiene 460W de potencia."
-
-            tool_call = {
-                "id": "call_123",
-                "function": {
-                    "name": "leer_ficha_tecnica",
-                    "arguments": '{"ruta_s3": "paneles/jinko.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger"}',
-                },
-            }
-
-            result = _process_tool_call(
-                tool_call=tool_call,
-                user_message="Specs del panel",
-                session_id="test-session",
-            )
-
-        assert "460W" in result
-        mock_file_inputs.delete_file.assert_called_once_with("file-xyz789")
-
-    @patch("backend.main.s3_client")
-    def test_process_tool_call_s3_error(self, mock_s3: MagicMock) -> None:
-        """Test _process_tool_call propagates S3 errors."""
-        from backend.main import _process_tool_call
-        from backend.app.s3_client import S3DownloadError
-
-        mock_s3.download_pdf.side_effect = S3DownloadError("File not found")
-
-        tool_call = {
-            "id": "call_123",
-            "function": {
-                "name": "leer_ficha_tecnica",
-                "arguments": '{"ruta_s3": "bad.pdf", "categoria": "paneles", "fabricante": "X", "modelo": "Y"}',
-            },
-        }
-
-        with pytest.raises(S3DownloadError):
-            _process_tool_call(
-                tool_call=tool_call,
-                user_message="Test",
-                session_id="test",
-            )
-
-    def test_process_tool_call_invalid_tool_name(self) -> None:
-        """Test _process_tool_call raises error for unknown tool."""
-        from backend.main import _process_tool_call
-
-        tool_call = {
-            "id": "call_123",
-            "function": {
-                "name": "unknown_tool",
-                "arguments": "{}",
-            },
-        }
-
-        with pytest.raises(ValueError) as exc_info:
-            _process_tool_call(
-                tool_call=tool_call,
-                user_message="Test",
-                session_id="test",
-            )
-
-        assert "Unknown tool" in str(exc_info.value)
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

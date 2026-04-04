@@ -22,7 +22,7 @@ COPY pyproject.toml uv.lock ./
 
 # Create virtual environment and install dependencies using uv sync
 RUN uv venv && \
-    uv sync --frozen --no-install-project --group dev --group lint --group typecheck
+    uv sync --frozen --group dev --group lint --group typecheck
 
 # Add venv to PATH
 ENV PATH="/app/.venv/bin:$PATH"

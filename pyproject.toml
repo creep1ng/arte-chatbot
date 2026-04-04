@@ -31,4 +31,5 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-markers = ["integration: marks tests as integration tests"]
+markers = ["integration: marks tests as integration tests", "asyncio: marks tests as async"]
+asyncio_mode = "auto"
