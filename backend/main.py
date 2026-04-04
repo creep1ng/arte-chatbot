@@ -9,6 +9,11 @@ import os
 import uuid
 from typing import Any, Optional
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from backend.app.logging_config import setup_logging
 
 # Configure logging before anything else (reads LOG_LEVEL from centralized settings)
@@ -302,15 +307,15 @@ def _process_leer_ficha_tecnica(
                     session_id,
                 )
             else:
-                # Multiple products found, return list for LLM to choose
-                product_list = "\n".join(
-                    f"- {p.nombre_comercial} ({p.fabricante}): ruta_s3={p.ruta_s3}"
-                    for p in results
-                )
-                raise ValueError(
-                    f"Multiple products found. Please specify the ruta_s3 "
-                    f"or use buscar_producto first to narrow down.\n\n"
-                    f"Products found:\n{product_list}"
+                # Multiple products found - select first one deterministically
+                ruta_s3 = results[0].ruta_s3
+                logger.warning(
+                    "Multiple products found when resolving ruta_s3, selecting first: "
+                    "ruta_s3=%s, session_id=%s, available=%d, products=%s",
+                    ruta_s3,
+                    session_id,
+                    len(results),
+                    [p.nombre_comercial for p in results],
                 )
         except CatalogError as e:
             logger.error(
@@ -321,7 +326,52 @@ def _process_leer_ficha_tecnica(
             raise ValueError(f"Failed to search catalog: {e}") from e
 
     # Download PDF from S3
-    pdf_bytes = s3_client.download_pdf(ruta_s3)
+    try:
+        pdf_bytes = s3_client.download_pdf(ruta_s3)
+    except S3DownloadError:
+        # Fallback: if direct download fails, search catalog using other parameters
+        logger.info(
+            "Direct download failed for ruta_s3=%s, trying catalog fallback: "
+            "categoria=%s, fabricante=%s, modelo=%s, session_id=%s",
+            ruta_s3,
+            categoria,
+            fabricante,
+            modelo,
+            session_id,
+        )
+
+        if categoria:
+            catalog = get_catalog()
+            modelo_contiene = modelo if modelo else None
+            results = catalog.search(
+                categoria=categoria,
+                fabricante=fabricante,
+                modelo_contiene=modelo_contiene,
+            )
+
+            if len(results) == 1:
+                # Single product found, use its ruta_s3 and retry
+                ruta_s3 = results[0].ruta_s3
+                logger.info(
+                    "Fallback successful, using ruta_s3=%s, session_id=%s",
+                    ruta_s3,
+                    session_id,
+                )
+                pdf_bytes = s3_client.download_pdf(ruta_s3)
+            else:
+                # Multiple products found - pick first one as fallback (deterministic)
+                ruta_s3 = results[0].ruta_s3
+                logger.warning(
+                    "Multiple products found during fallback, selecting first: "
+                    "ruta_s3=%s, session_id=%s, available_products=%d",
+                    ruta_s3,
+                    session_id,
+                    len(results),
+                )
+                pdf_bytes = s3_client.download_pdf(ruta_s3)
+        else:
+            # No categoria to search with, re-raise original error
+            raise
 
     # Generate filename from ruta_s3
     filename = ruta_s3.split("/")[-1] if "/" in ruta_s3 else ruta_s3
