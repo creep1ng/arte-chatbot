@@ -96,6 +96,46 @@ graph TD
 
 **Data Flow**: Las consultas entran al backend (FastAPI), que preserva el contexto de sesión. El chatbot utiliza Tool Calling para invocar `leer_ficha_tecnica(ruta)`, que descarga el PDF desde S3 y lo adjunta como File Input al LLM. El LLM responde utilizando el contenido completo del documento.
 
+### Message Queue & Async Workers
+
+El sistema implementa una arquitectura de cola de mensajes con workers async para procesar las consultas del chatbot en paralelo. Esto permite manejar múltiples sesiones de forma no bloqueante y maximizar la utilización de los recursos de I/O.
+
+**Flujo de procesamiento:**
+
+```
+Cliente (WhatsApp/Web)
+    ↓
+    POST /chat (async endpoint)
+    ↓
+Crear ChatMessage con asyncio.Future
+    ↓
+Enqueue a MessageQueue
+    ↓
+Workers async procesan en paralelo (pool de 5 workers)
+    ↓
+1. Consulta índice en S3
+2. Descarga PDF (File Inputs)
+3. Invoca LLM con Tool Calling
+4. Resuelve Future con resultado
+    ↓
+Endpoint espera resultado (timeout 60s)
+    ↓
+Respuesta al cliente
+```
+
+**Variables de entorno:**
+- `QUEUE_WORKERS` — Número de workers async (por defecto: `5`). Controla la concurrencia máxima en el procesamiento de mensajes.
+- `MAX_QUEUE_SIZE` — Tamaño máximo de la cola (por defecto: `100`). Implementa backpressure: si la cola está llena, el método `enqueue()` espera de forma async hasta que haya espacio disponible.
+
+**Características clave:**
+- **Concurrencia sin bloqueos**: El endpoint `/chat` retorna inmediatamente con una respuesta de confirmación mientras los workers procesan la lógica en background.
+- **Session Management**: `SessionManager` utiliza `asyncio.Lock` en lugar de `threading.Lock` para sincronización de acceso a datos de sesión. Esto permite múltiples operaciones async sobre la misma sesión sin contención.
+- **I/O Async**: Todas las operaciones I/O-bound son async:
+  - Lectura de índice desde S3 (`AsyncS3Client`)
+  - Descarga de PDFs para File Inputs (`AsyncFileLoader`)
+  - Llamadas a LLM con Claude/OpenAI (`AsyncLLMClient`)
+- **Manejo de errores**: Si un worker falla, la excepción se propaga al Future correspondiente, permitiendo que el cliente reciba un error informativo.
+
 ## Testing Strategy
 
 - **Framework**: pytest
