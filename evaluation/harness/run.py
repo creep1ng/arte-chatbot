@@ -9,7 +9,7 @@ import csv
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -97,7 +97,9 @@ def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
                 "error": result.get("error", ""),
                 "timestamp": result.get("timestamp", ""),
                 "num_sources": result.get("num_sources", 0),
-                "source_documents": "; ".join(source_docs) if isinstance(source_docs, list) else source_docs,
+                "source_documents": "; ".join(source_docs)
+                if isinstance(source_docs, list)
+                else source_docs,
             }
             writer.writerow(row)
 
@@ -121,19 +123,19 @@ def run_single_query(
         "latency_ms": 0.0,
         "escalated": False,
         "error": "",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "num_sources": 0,
         "source_documents": [],
     }
 
     try:
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         response = client.post(
             CHAT_ENDPOINT,
             json={"message": query},
             timeout=30.0,
         )
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
 
         if response.status_code == 200:
             data = response.json()
@@ -245,7 +247,7 @@ def run_harness() -> list[dict[str, Any]]:
     print(f"Max latency: {max_latency:.2f}ms")
 
     # Save results
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     json_path = save_results_json(results, timestamp)
     csv_path = save_results_csv(results, timestamp)
