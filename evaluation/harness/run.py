@@ -9,7 +9,7 @@ import csv
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +75,8 @@ def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
         "escalated",
         "error",
         "timestamp",
+        "num_sources",
+        "source_documents",
     ]
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:
@@ -82,6 +84,7 @@ def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
         writer.writeheader()
 
         for result in results:
+            source_docs = result.get("source_documents", [])
             row: dict[str, Any] = {
                 "query_id": result.get("query_id", ""),
                 "query": result.get("query", ""),
@@ -93,6 +96,10 @@ def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
                 "escalated": result.get("escalated", ""),
                 "error": result.get("error", ""),
                 "timestamp": result.get("timestamp", ""),
+                "num_sources": result.get("num_sources", 0),
+                "source_documents": "; ".join(source_docs)
+                if isinstance(source_docs, list)
+                else source_docs,
             }
             writer.writerow(row)
 
@@ -116,17 +123,19 @@ def run_single_query(
         "latency_ms": 0.0,
         "escalated": False,
         "error": "",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "num_sources": 0,
+        "source_documents": [],
     }
 
     try:
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         response = client.post(
             CHAT_ENDPOINT,
             json={"message": query},
             timeout=30.0,
         )
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
 
         if response.status_code == 200:
             data = response.json()
@@ -134,6 +143,8 @@ def run_single_query(
             result["session_id"] = data.get("session_id", "")
             result["latency_ms"] = data.get("latency_ms", 0.0)
             result["escalated"] = data.get("escalated", False)
+            result["source_documents"] = data.get("source_documents", [])
+            result["num_sources"] = data.get("num_sources", 0)
         else:
             result["error"] = f"HTTP {response.status_code}: {response.text}"
 
@@ -236,7 +247,7 @@ def run_harness() -> list[dict[str, Any]]:
     print(f"Max latency: {max_latency:.2f}ms")
 
     # Save results
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     json_path = save_results_json(results, timestamp)
     csv_path = save_results_csv(results, timestamp)

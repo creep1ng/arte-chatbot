@@ -146,6 +146,66 @@ The harness is designed to run as part of the GitHub Actions pipeline. Add this 
 |----------|-------|-----------------|----------------|----------|------------|------------|-----------|-------|-----------|
 | q001 | ... | technical_specs | false | ... | abc-123 | 45.32 | false | | 2024-01-15... |
 
+## Hallucination Check
+
+### Propósito
+Herramienta implementada para cumplir con **US-07 (Precisión técnica verificable)**. Mide la tasa de alucinación del chatbot analizando las respuestas generadas por el harness de evaluación.
+
+El sistema utiliza dos criterios conservadores para detectar información inventada:
+1. **Valores técnicos sin fuentes**: Respuestas que contienen valores numéricos con unidades técnicas (W, V, A, %, °C, kWh) pero `num_sources == 0` (no se consultó ninguna ficha técnica)
+2. **Valores no presentes en fuentes**: Respuestas que contienen valores numéricos técnicos que **no aparecen** en ninguno de los documentos fuente recuperados
+
+### Uso
+
+Ejecutar el script sobre un CSV generado por el harness:
+
+```bash
+python evaluation/hallucination_check.py --run evaluation/harness/output/results_YYYYMMDD_HHMMSS.csv
+```
+
+Opcionalmente subir el reporte a S3:
+
+```bash
+python evaluation/hallucination_check.py --run evaluation/harness/output/results_YYYYMMDD_HHMMSS.csv --upload-s3
+```
+
+### Variables de entorno para subida a S3
+
+| Variable | Descripción |
+|----------|-------------|
+| `AWS_ACCESS_KEY_ID` | Clave de acceso AWS |
+| `AWS_SECRET_ACCESS_KEY` | Clave secreta AWS |
+| `AWS_BUCKET_NAME` | Nombre del bucket S3 (ej: `arte-chatbot-data`) |
+| `AWS_REGION` | Región AWS (por defecto `us-east-1`) |
+
+### Salida del reporte
+
+El reporte se guarda en `evaluation/results/hallucination_<timestamp>.json` con los siguientes campos:
+
+| Campo | Descripción |
+|-------|-------------|
+| `total_queries` | Total de consultas analizadas |
+| `hallucination_count` | Cantidad de alucinaciones detectadas |
+| `hallucination_rate_percent` | Tasa global de alucinación (%) |
+| `average_num_sources` | Promedio de fuentes utilizadas por consulta |
+| `suspicious_queries` | Lista detallada de consultas marcadas, con:
+| | - `query_id`: Identificador de la consulta
+| | - `reason`: Motivo de la marca (`num_sources == 0` o `numerical hallucination detected`)
+| | - `suspicious_values`: Valores numéricos no encontrados en fuentes
+| | - `num_sources`: Cantidad de fuentes recuperadas para esta consulta
+| `criteria` | Criterios de detección utilizados en esta ejecución
+
+### Criterios de aceptación
+
+Un resultado **inferior al 20%** de tasa de alucinación cumple con los criterios de US-07.
+
+### Notas de implementación
+
+- El script utiliza expresiones regulares para extraer valores numéricos con unidades técnicas comunes en el dominio solar
+- **No marca como alucinación** conversaciones normales sin valores técnicos incluso si `num_sources == 0` (evita falsos positivos)
+- Se integra directamente con la salida del harness sin dependencias adicionales del backend
+- Compatible con Python 3.12+ (utiliza `datetime.now(timezone.utc)` en lugar del deprecado `utcnow()`)
+
 ## Troubleshooting
 
 ### Connection Refused
