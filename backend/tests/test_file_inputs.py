@@ -106,6 +106,7 @@ class TestFileInputsClientUpload:
         mock_file.id = "file-abc123xyz"
         mock_client.files.create.return_value = mock_file
 
+        from backend.app.file_inputs import FileInputsClient
         client = FileInputsClient(api_key="sk-test-key")
         result = await client.upload_pdf(b"%PDF-1.4 test", "test-panel.pdf")
 
@@ -122,6 +123,7 @@ class TestFileInputsClientUpload:
     ) -> None:
         """Test upload_pdf raises FileUploadError on authentication error."""
         from openai import AuthenticationError
+        from backend.app.file_inputs import FileInputsClient, FileUploadError
 
         mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
@@ -143,6 +145,7 @@ class TestFileInputsClientUpload:
     ) -> None:
         """Test upload_pdf raises FileUploadError on bad request."""
         from openai import BadRequestError
+        from backend.app.file_inputs import FileInputsClient, FileUploadError
 
         mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
@@ -164,6 +167,7 @@ class TestFileInputsClientUpload:
     ) -> None:
         """Test upload_pdf raises FileUploadError on generic API error."""
         from openai import APIError
+        from backend.app.file_inputs import FileInputsClient, FileUploadError
 
         mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
@@ -189,6 +193,7 @@ class TestFileInputsClientDelete:
         mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
 
+        from backend.app.file_inputs import FileInputsClient
         client = FileInputsClient(api_key="sk-test-key")
         await client.delete_file("file-abc123")
 
@@ -201,6 +206,7 @@ class TestFileInputsClientDelete:
     ) -> None:
         """Test delete_file raises FileUploadError on authentication error."""
         from openai import AuthenticationError
+        from backend.app.file_inputs import FileInputsClient, FileUploadError
 
         mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
@@ -222,6 +228,7 @@ class TestFileInputsClientDelete:
     ) -> None:
         """Test delete_file raises FileUploadError on API error."""
         from openai import APIError
+        from backend.app.file_inputs import FileInputsClient, FileUploadError
 
         mock_client = AsyncMock()
         mock_openai_class.return_value = mock_client
@@ -243,6 +250,7 @@ class TestFileInputsClientLazyInitialization:
     @patch("backend.app.file_inputs.AsyncOpenAI")
     def test_client_property_lazy_init(self, mock_openai_class: MagicMock) -> None:
         """Test that AsyncOpenAI client is not initialized until accessed."""
+        from backend.app.file_inputs import FileInputsClient
         client = FileInputsClient(api_key="sk-test-key")
 
         assert client._client is None
@@ -258,10 +266,12 @@ class TestFileUploadError:
 
     def test_file_upload_error_is_exception(self) -> None:
         """Test FileUploadError inherits from Exception."""
+        from backend.app.file_inputs import FileUploadError
         error = FileUploadError("Test error")
         assert isinstance(error, Exception)
 
     def test_file_upload_error_message(self) -> None:
         """Test FileUploadError preserves error message."""
+        from backend.app.file_inputs import FileUploadError
         error = FileUploadError("Custom error message")
         assert str(error) == "Custom error message"
