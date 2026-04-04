@@ -9,7 +9,7 @@ import os
 import warnings
 
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock
 
 from backend.main import app, llm_client, s3_client, file_inputs_client
@@ -65,7 +65,10 @@ async def async_client_with_queue(app_with_queue):
     This client is connected to an app instance that has queue_manager
     in app.state, so tests can directly manipulate queue_manager.
     """
-    async with AsyncClient(app=app_with_queue, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_queue),
+        base_url="http://test"
+    ) as client:
         yield client
 
 
