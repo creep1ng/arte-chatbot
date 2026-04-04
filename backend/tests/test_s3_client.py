@@ -7,7 +7,7 @@ Tests the S3 client for downloading technical datasheets from AWS S3.
 import os
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from backend.app.s3_client import S3DownloadError
+from backend.app.s3_client import S3Client, S3DownloadError
 
 
 class TestS3ClientInitialization:
