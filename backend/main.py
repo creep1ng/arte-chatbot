@@ -5,6 +5,7 @@ FastAPI server with /health and /chat endpoints.
 
 import json
 import logging
+import os
 import uuid
 from typing import Any, Optional
 
@@ -33,6 +34,7 @@ from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.tools import get_tool_definitions
 from backend.app.session import session_manager
+from backend.app.catalog import CatalogError, get_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,9 @@ app.add_middleware(
 llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
+
+# Maximum agentic loop iterations to prevent infinite loops
+MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
 
 
 class ChatRequest(BaseModel):
@@ -89,7 +94,129 @@ async def root() -> dict[str, str]:
     return {"message": "ARTE Chatbot Backend API", "docs": "/docs"}
 
 
-def _process_tool_call(
+def _parse_tool_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
+    """Parse and validate tool arguments from a tool call.
+
+    Args:
+        tool_call: The tool call dict from LLM response.
+
+    Returns:
+        Dictionary of parsed arguments.
+
+    Raises:
+        ValueError: If arguments cannot be parsed.
+    """
+    try:
+        arguments_str = tool_call.get("function", {}).get("arguments", "{}")
+        return json.loads(arguments_str)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid tool arguments JSON: {e}") from e
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    """Safely convert a value to float.
+
+    Args:
+        value: The value to convert.
+
+    Returns:
+        The float value or None if conversion fails.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _process_buscar_producto(
+    arguments: dict[str, Any],
+    session_id: str,
+) -> str:
+    """Process a buscar_producto tool call.
+
+    Args:
+        arguments: The tool arguments containing search criteria.
+        session_id: The session identifier.
+
+    Returns:
+        A formatted string with search results.
+    """
+    categoria = arguments.get("categoria")
+    fabricante = arguments.get("fabricante")
+    capacidad_min = _safe_float(arguments.get("capacidad_min"))
+    capacidad_max = _safe_float(arguments.get("capacidad_max"))
+    tipo = arguments.get("tipo")
+    modelo_contiene = arguments.get("modelo_contiene")
+
+    logger.debug(
+        "buscar_producto call: categoria=%s, fabricante=%s, capacidad_min=%s, "
+        "capacidad_max=%s, tipo=%s, modelo_contiene=%s, session_id=%s",
+        categoria,
+        fabricante,
+        capacidad_min,
+        capacidad_max,
+        tipo,
+        modelo_contiene,
+        session_id,
+    )
+
+    if not categoria:
+        return "Error: Se requiere especificar una categoría (paneles, inversores, controladores, baterias)."
+
+    try:
+        catalog = get_catalog()
+        results = catalog.search(
+            categoria=categoria,
+            fabricante=fabricante,
+            capacidad_min=capacidad_min,
+            capacidad_max=capacidad_max,
+            tipo=tipo,
+            modelo_contiene=modelo_contiene,
+        )
+
+        if not results:
+            return (
+                "No se encontraron productos que coincidan con los criterios "
+                "de búsqueda especificados. Prueba con otros filtros o contacta "
+                "al equipo de ventas de Arte Soluciones Energéticas."
+            )
+
+        # Format results for the LLM
+        lines = [
+            f"Se encontraron {len(results)} producto(s) en la categoría '{categoria}':\n"
+        ]
+
+        for product in results:
+            lines.append(f"\n## {product.nombre_comercial} ({product.fabricante})")
+            if product.descripcion:
+                lines.append(f"Descripción: {product.descripcion}")
+            lines.append(f"Modelos disponibles:")
+            for variante in product.variantes:
+                modelo = variante.get("modelo", "Sin nombre")
+                params = variante.get("parametros_clave", {})
+                params_str = ", ".join(f"{k}: {v}" for k, v in params.items())
+                lines.append(f"  - {modelo} ({params_str})")
+            lines.append(
+                f"  → Para ver más detalles, usa leer_ficha_tecnica con ruta_s3: {product.ruta_s3}"
+            )
+
+        return "\n".join(lines)
+
+    except CatalogError as e:
+        logger.error(
+            "Catalog error in buscar_producto: session_id=%s, error=%s",
+            session_id,
+            e,
+        )
+        return (
+            "Lo siento, no pude consultar el catálogo de productos. "
+            "Por favor, intenta más tarde o contacta al equipo de ventas."
+        )
+
+
+def _process_leer_ficha_tecnica(
     tool_call: dict[str, Any],
     user_message: str,
     session_id: str,
@@ -108,13 +235,14 @@ def _process_tool_call(
         S3DownloadError: If the PDF cannot be downloaded from S3.
         FileUploadError: If the PDF cannot be uploaded to OpenAI.
         LLMServiceError: If the LLM call fails.
+        ValueError: If ruta_s3 is missing and no products found in catalog.
     """
     function_name = tool_call.get("function", {}).get("name")
     if function_name != "leer_ficha_tecnica":
         raise ValueError(f"Unknown tool: {function_name}")
 
     # Parse tool arguments
-    arguments = json.loads(tool_call.get("function", {}).get("arguments", "{}"))
+    arguments = _parse_tool_arguments(tool_call)
     ruta_s3 = arguments.get("ruta_s3")
     categoria = arguments.get("categoria")
     fabricante = arguments.get("fabricante")
@@ -131,8 +259,66 @@ def _process_tool_call(
         session_id,
     )
 
+    # If ruta_s3 is not provided, try to find it via catalog search
     if not ruta_s3:
-        raise ValueError("Missing ruta_s3 in tool arguments")
+        logger.info(
+            "No ruta_s3 provided, searching catalog: categoria=%s, "
+            "fabricante=%s, modelo=%s, session_id=%s",
+            categoria,
+            fabricante,
+            modelo,
+            session_id,
+        )
+
+        if not categoria:
+            raise ValueError(
+                "Missing ruta_s3 in tool arguments. When ruta_s3 is not "
+                "provided, categoria is required to search the catalog."
+            )
+
+        try:
+            catalog = get_catalog()
+            # Search by categoria and optionally fabricante/modelo
+            modelo_contiene = modelo if modelo else None
+            results = catalog.search(
+                categoria=categoria,
+                fabricante=fabricante,
+                modelo_contiene=modelo_contiene,
+            )
+
+            if not results:
+                raise ValueError(
+                    f"No products found in catalog for categoria='{categoria}'"
+                    + (f", fabricante='{fabricante}'" if fabricante else "")
+                    + (f", modelo containing '{modelo}'" if modelo else "")
+                )
+
+            if len(results) == 1:
+                # Single product found, use its ruta_s3
+                ruta_s3 = results[0].ruta_s3
+                logger.info(
+                    "Found single product, using ruta_s3=%s, session_id=%s",
+                    ruta_s3,
+                    session_id,
+                )
+            else:
+                # Multiple products found, return list for LLM to choose
+                product_list = "\n".join(
+                    f"- {p.nombre_comercial} ({p.fabricante}): ruta_s3={p.ruta_s3}"
+                    for p in results
+                )
+                raise ValueError(
+                    f"Multiple products found. Please specify the ruta_s3 "
+                    f"or use buscar_producto first to narrow down.\n\n"
+                    f"Products found:\n{product_list}"
+                )
+        except CatalogError as e:
+            logger.error(
+                "Catalog error when resolving ruta_s3: session_id=%s, error=%s",
+                session_id,
+                e,
+            )
+            raise ValueError(f"Failed to search catalog: {e}") from e
 
     # Download PDF from S3
     pdf_bytes = s3_client.download_pdf(ruta_s3)
@@ -164,14 +350,20 @@ def _process_tool_call(
             )
 
 
+# Alias for backward compatibility with tests
+_process_tool_call = _process_leer_ficha_tecnica
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     """
     Chat endpoint that handles user messages.
 
-    Implements two-call LLM pattern:
-    1. First call checks if tools need to be invoked
-    2. If tool call present, process it and make second call
+    Implements an agentic loop pattern with tool calling:
+    1. LLM call checks if tools need to be invoked
+    2. Process tool calls (buscar_producto or leer_ficha_tecnica)
+    3. Loop back to LLM with tool results until no more tools called
+    4. Return final response
     """
     session_id = request.session_id or str(uuid.uuid4())
     request_id = str(uuid.uuid4())
@@ -210,124 +402,267 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         )
 
     try:
-        # Obtener contexto de la sesión para mejorar el prompt
-        context_string = session_manager.get_context_string(session_id)
+        # Agentic loop: keep calling LLM until no more tool calls
+        iteration = 0
+        tool_results_summary = ""
 
-        # First LLM call with tools
-        logger.debug(
-            "Calling LLM with tools: request_id=%s, session_id=%s, model=%s",
-            request_id,
-            session_id,
-            llm_client.model,
-        )
-        llm_response = llm_client.get_llm_response_with_tools(
-            message=request.message,
-            session_id=session_id,
-            system_prompt=ARTE_SYSTEM_PROMPT,
-            context=context_string,
-        )
-
-        # Check if the response contains tool calls
-        tool_calls = llm_response.get("tool_calls")
-
-        if not tool_calls:
-            # No tool call needed - return normal response
-            content = llm_response.get("output_text", "")
-            session_manager.add_turn(
-                session_id=session_id,
-                question=request.message,
-                answer=content,
-                source_documents=[],
-            )
-            return ChatResponse(
-                response=content,
-                escalate=False,
-                session_id=session_id,
-                source_documents=[],
-                num_sources=0,
+        while iteration < MAX_AGENTIC_ITERATIONS:
+            iteration += 1
+            logger.debug(
+                "Agentic loop iteration %d: request_id=%s, session_id=%s",
+                iteration,
+                request_id,
+                session_id,
             )
 
-        # Process tool calls
-        for tool_call in tool_calls:
-            function_name = tool_call.get("function", {}).get("name")
+            # Obtener contexto de la sesión para mejorar el prompt
+            context_string = session_manager.get_context_string(session_id)
 
-            if function_name == "leer_ficha_tecnica":
+            # Build user input with context and tool results if available
+            if iteration == 1:
+                # First iteration: use original message with context
+                user_input = request.message
+                if context_string:
+                    user_input = (
+                        f"Contexto de la conversación:\n{context_string}\n\n"
+                        f"Pregunta actual: {request.message}"
+                    )
+            else:
+                # Subsequent iterations: include previous tool results
+                user_input = (
+                    f"Resultados de las herramientas invocadas anteriormente:\n"
+                    f"{tool_results_summary}\n\n"
+                    f"Pregunta original: {request.message}\n"
+                    f"Considera los resultados anteriores y proporciona una respuesta final."
+                )
+
+            # First LLM call with tools
+            logger.debug(
+                "Calling LLM with tools: request_id=%s, session_id=%s, "
+                "model=%s, iteration=%d",
+                request_id,
+                session_id,
+                llm_client.model,
+                iteration,
+            )
+            llm_response = llm_client.get_llm_response_with_tools(
+                message=user_input,
+                session_id=session_id,
+                system_prompt=ARTE_SYSTEM_PROMPT,
+                context=context_string,
+            )
+
+            # Check if the response contains tool calls
+            tool_calls = llm_response.get("tool_calls")
+
+            if not tool_calls:
+                # No tool call needed - return normal response
+                content = llm_response.get("output_text", "")
+                session_manager.add_turn(
+                    session_id=session_id,
+                    question=request.message,
+                    answer=content,
+                    source_documents=[],
+                )
+                return ChatResponse(
+                    response=content,
+                    escalate=False,
+                    session_id=session_id,
+                    source_documents=[],
+                    num_sources=0,
+                )
+
+            # Process tool calls and collect results
+            tool_results: list[dict[str, Any]] = []
+
+            for tool_call in tool_calls:
+                function_name = tool_call.get("function", {}).get("name")
+                tool_call_id = tool_call.get("id", "")
+
+                logger.info(
+                    "Processing tool call: request_id=%s, session_id=%s, "
+                    "function=%s, iteration=%d",
+                    request_id,
+                    session_id,
+                    function_name,
+                    iteration,
+                )
+
                 try:
-                    final_response, source_docs = _process_tool_call(
-                        tool_call=tool_call,
-                        user_message=request.message,
-                        session_id=session_id,
-                    )
-                    session_manager.add_turn(
-                        session_id=session_id,
-                        question=request.message,
-                        answer=final_response,
-                        source_documents=source_docs,
-                    )
-                    return ChatResponse(
-                        response=final_response,
-                        escalate=False,
-                        session_id=session_id,
-                        source_documents=source_docs,
-                        num_sources=len(source_docs),
-                    )
+                    if function_name == "buscar_producto":
+                        arguments = _parse_tool_arguments(tool_call)
+                        result_content = _process_buscar_producto(
+                            arguments=arguments,
+                            session_id=session_id,
+                        )
+                        tool_results.append(
+                            {
+                                "tool_call_id": tool_call_id,
+                                "function_name": function_name,
+                                "content": result_content,
+                                "success": True,
+                            }
+                        )
+
+                    elif function_name == "leer_ficha_tecnica":
+                        final_response, source_docs = _process_leer_ficha_tecnica(
+                            tool_call=tool_call,
+                            user_message=request.message,
+                            session_id=session_id,
+                        )
+                        # leer_ficha_tecnica was successful - return directly
+                        # since we've processed the datasheet and got the response
+                        session_manager.add_turn(
+                            session_id=session_id,
+                            question=request.message,
+                            answer=final_response,
+                            source_documents=source_docs,
+                        )
+                        return ChatResponse(
+                            response=final_response,
+                            escalate=False,
+                            session_id=session_id,
+                            source_documents=source_docs,
+                            num_sources=len(source_docs),
+                        )
+
+                    else:
+                        logger.warning(
+                            "Unknown tool called: %s, request_id=%s, session_id=%s",
+                            function_name,
+                            request_id,
+                            session_id,
+                        )
+                        tool_results.append(
+                            {
+                                "tool_call_id": tool_call_id,
+                                "function_name": function_name,
+                                "content": f"Error: Herramienta desconocida '{function_name}'",
+                                "success": False,
+                            }
+                        )
                 except S3DownloadError as e:
                     logger.error(
-                        "S3 download error: request_id=%s, session_id=%s, error=%s",
+                        "S3 download error in tool call: request_id=%s, "
+                        "session_id=%s, function=%s, error=%s",
                         request_id,
                         session_id,
+                        function_name,
                         e,
                     )
-                    return ChatResponse(
-                        response=(
-                            "Lo siento, no pude acceder a la ficha técnica del "
-                            "producto solicitado. El archivo no está disponible "
-                            "en nuestro catálogo. Por favor, contacta al equipo "
-                            "de ventas para más información."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                        source_documents=[],
-                        num_sources=0,
+                    tool_results.append(
+                        {
+                            "tool_call_id": tool_call_id,
+                            "function_name": function_name,
+                            "content": (
+                                "Lo siento, no pude acceder a la ficha técnica del "
+                                "producto solicitado. El archivo no está disponible "
+                                "en nuestro catálogo. Por favor, contacta al equipo "
+                                "de ventas para más información."
+                            ),
+                            "success": False,
+                        }
                     )
                 except FileUploadError as e:
                     logger.error(
-                        "File upload error: request_id=%s, session_id=%s, error=%s",
+                        "File upload error in tool call: request_id=%s, "
+                        "session_id=%s, function=%s, error=%s",
                         request_id,
                         session_id,
+                        function_name,
                         e,
                     )
-                    return ChatResponse(
-                        response=(
-                            "Lo siento, tuve problemas al procesar la ficha técnica. "
-                            "Por favor, intenta novamente o contacta al equipo de ventas."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                        source_documents=[],
-                        num_sources=0,
+                    tool_results.append(
+                        {
+                            "tool_call_id": tool_call_id,
+                            "function_name": function_name,
+                            "content": (
+                                "Lo siento, tuve problemas al procesar la ficha técnica. "
+                                "Por favor, intenta novamente o contacta al equipo de ventas."
+                            ),
+                            "success": False,
+                        }
+                    )
+                except ValueError as e:
+                    # ValueError includes cases like missing ruta_s3 with catalog fallback
+                    logger.warning(
+                        "ValueError in tool call: request_id=%s, session_id=%s, "
+                        "function=%s, error=%s",
+                        request_id,
+                        session_id,
+                        function_name,
+                        e,
+                    )
+                    tool_results.append(
+                        {
+                            "tool_call_id": tool_call_id,
+                            "function_name": function_name,
+                            "content": str(e),
+                            "success": False,
+                        }
                     )
                 except Exception as e:
                     logger.exception(
-                        "Error processing tool call: request_id=%s, session_id=%s, error=%s",
+                        "Error processing tool call: request_id=%s, session_id=%s, "
+                        "function=%s, error=%s",
                         request_id,
                         session_id,
+                        function_name,
                         e,
                     )
-                    return ChatResponse(
-                        response=(
-                            "Ocurrió un error al procesar tu solicitud. "
-                            "Por favor, intenta más tarde."
-                        ),
-                        escalate=False,
-                        session_id=session_id,
-                        source_documents=[],
-                        num_sources=0,
+                    tool_results.append(
+                        {
+                            "tool_call_id": tool_call_id,
+                            "function_name": function_name,
+                            "content": (
+                                "Ocurrió un error al procesar tu solicitud. "
+                                "Por favor, intenta más tarde."
+                            ),
+                            "success": False,
+                        }
                     )
 
-        # If we get here with tool_calls but none were processed
+            # Check if all tools failed - if so, return error response
+            if all(not r["success"] for r in tool_results):
+                error_content = "\n".join(
+                    f"- {r['function_name']}: {r['content']}" for r in tool_results
+                )
+                session_manager.add_turn(
+                    session_id=session_id,
+                    question=request.message,
+                    answer=error_content,
+                    source_documents=[],
+                )
+                return ChatResponse(
+                    response=error_content,
+                    escalate=False,
+                    session_id=session_id,
+                )
+
+            # Build tool results summary for next iteration
+            tool_results_summary = "\n\n".join(
+                f"## Resultado de {r['function_name']}:\n{r['content']}"
+                for r in tool_results
+            )
+            logger.debug(
+                "Tool results collected: num_results=%d, iteration=%d",
+                len(tool_results),
+                iteration,
+            )
+
+        # Max iterations reached
+        logger.warning(
+            "Max agentic iterations reached: request_id=%s, session_id=%s, "
+            "iterations=%d",
+            request_id,
+            session_id,
+            iteration,
+        )
         return ChatResponse(
-            response=llm_response.get("output_text", ""),
+            response=(
+                "Se alcanzó el límite de iteraciones. Por favor, reformula "
+                "tu pregunta o contacta al equipo de ventas."
+            ),
             escalate=False,
             session_id=session_id,
             source_documents=[],

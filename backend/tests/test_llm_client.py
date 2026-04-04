@@ -139,8 +139,10 @@ class TestLLMClientWithTools:
         # Verify tools parameter was passed
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "tools" in call_kwargs
-        assert len(call_kwargs["tools"]) == 1
-        assert call_kwargs["tools"][0]["name"] == "leer_ficha_tecnica"
+        assert len(call_kwargs["tools"]) == 2
+        tool_names = [t["name"] for t in call_kwargs["tools"]]
+        assert "leer_ficha_tecnica" in tool_names
+        assert "buscar_producto" in tool_names
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_tools_uses_instructions(

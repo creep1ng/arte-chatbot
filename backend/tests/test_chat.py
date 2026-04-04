@@ -134,7 +134,8 @@ class TestChatEndpointUnit:
         # Verificar que se llamó al LLM con el contexto
         mock_llm.assert_called_once()
         args, kwargs = mock_llm.call_args
-        assert kwargs["message"] == "¿Y cuánto cuesta?"
+        # Message includes context when session context exists
+        assert "¿Y cuánto cuesta?" in kwargs["message"]
         assert kwargs["session_id"] == "test-session-123"
         assert kwargs["context"] == mock_session_manager.get_context_string.return_value
         assert "Pregunta anterior" in kwargs["context"]
