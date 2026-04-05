@@ -50,23 +50,22 @@ class TestLLMClientWithTools:
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools returns dict with tool_calls when LLM invokes tool."""
+        # Setup mock
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
+        # Mock Chat Completions API output with tool_calls
         tool_call = MagicMock()
         tool_call.id = "call_abc123"
         tool_call.function.name = "leer_ficha_tecnica"
-        tool_call.function.arguments = {
-            "ruta_s3": "paneles/jinko-tiger-pro-460w.pdf",
-            "categoria": "paneles",
-        }
+        tool_call.function.arguments = '{"ruta_s3": "paneles/jinko-tiger-pro-460w.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger Pro 460W"}'
 
-        message = MagicMock()
-        message.content = ""
-        message.tool_calls = [tool_call]
+        mock_message = MagicMock()
+        mock_message.content = ""
+        mock_message.tool_calls = [tool_call]
 
         mock_choice = MagicMock()
-        mock_choice.message = message
+        mock_choice.message = mock_message
 
         mock_response = MagicMock()
         mock_response.choices = [mock_choice]
@@ -88,15 +87,17 @@ class TestLLMClientWithTools:
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools returns dict without tool_calls for normal messages."""
+        # Setup mock
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
-        message = MagicMock()
-        message.content = "Hola, soy el asistente de Arte Soluciones Energéticas."
-        message.tool_calls = None
+        # Mock response without tool call (only message output)
+        mock_message = MagicMock()
+        mock_message.content = "Hola, soy el asistente de Arte Soluciones Energéticas."
+        mock_message.tool_calls = None
 
         mock_choice = MagicMock()
-        mock_choice.message = message
+        mock_choice.message = mock_message
 
         mock_response = MagicMock()
         mock_response.choices = [mock_choice]
@@ -119,15 +120,16 @@ class TestLLMClientWithTools:
     def test_get_llm_response_with_tools_uses_tools_parameter(
         self, mock_openai_class: MagicMock
     ) -> None:
+        """Test get_llm_response_with_tools passes tools to OpenAI API."""
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
-        message = MagicMock()
-        message.content = "Test"
-        message.tool_calls = None
+        mock_message = MagicMock()
+        mock_message.content = "Test"
+        mock_message.tool_calls = None
 
         mock_choice = MagicMock()
-        mock_choice.message = message
+        mock_choice.message = mock_message
 
         mock_response = MagicMock()
         mock_response.choices = [mock_choice]
@@ -151,15 +153,16 @@ class TestLLMClientWithTools:
     def test_get_llm_response_with_tools_uses_instructions(
         self, mock_openai_class: MagicMock
     ) -> None:
+        """Test get_llm_response_with_tools passes instructions parameter."""
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
-        message = MagicMock()
-        message.content = "Test"
-        message.tool_calls = None
+        mock_message = MagicMock()
+        mock_message.content = "Test"
+        mock_message.tool_calls = None
 
         mock_choice = MagicMock()
-        mock_choice.message = message
+        mock_choice.message = mock_message
 
         mock_response = MagicMock()
         mock_response.choices = [mock_choice]
