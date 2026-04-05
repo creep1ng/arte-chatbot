@@ -7,29 +7,29 @@ against the /chat endpoint and record the results.
 
 import csv
 import json
-import os
+import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
-from dotenv import load_dotenv
 
-# Load environment variables from .env file if present
-load_dotenv()
+from evaluation.harness.config import harness_settings
 
-# Configuration with environment variable support
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+logger = logging.getLogger(__name__)
+
+# Configuration from centralized settings
+API_BASE_URL = harness_settings.api_base_url
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
-DATASET_PATH = Path(os.getenv("DATASET_PATH", Path(__file__).parent / "dataset.json"))
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", Path(__file__).parent / "output"))
+DATASET_PATH = harness_settings.dataset_path
+OUTPUT_DIR = harness_settings.output_dir
 
 
 def load_dataset() -> list[dict[str, Any]]:
     """Load the test dataset from JSON file."""
     if not DATASET_PATH.exists():
-        print(f"Error: Dataset not found at {DATASET_PATH}")
+        logger.error("Dataset not found at %s", DATASET_PATH)
         sys.exit(1)
 
     with open(DATASET_PATH, encoding="utf-8") as f:
@@ -75,6 +75,8 @@ def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
         "escalated",
         "error",
         "timestamp",
+        "num_sources",
+        "source_documents",
     ]
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:
@@ -82,6 +84,7 @@ def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
         writer.writeheader()
 
         for result in results:
+            source_docs = result.get("source_documents", [])
             row: dict[str, Any] = {
                 "query_id": result.get("query_id", ""),
                 "query": result.get("query", ""),
@@ -93,6 +96,10 @@ def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
                 "escalated": result.get("escalated", ""),
                 "error": result.get("error", ""),
                 "timestamp": result.get("timestamp", ""),
+                "num_sources": result.get("num_sources", 0),
+                "source_documents": "; ".join(source_docs)
+                if isinstance(source_docs, list)
+                else source_docs,
             }
             writer.writerow(row)
 
@@ -116,17 +123,19 @@ def run_single_query(
         "latency_ms": 0.0,
         "escalated": False,
         "error": "",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "num_sources": 0,
+        "source_documents": [],
     }
 
     try:
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         response = client.post(
             CHAT_ENDPOINT,
             json={"message": query},
             timeout=30.0,
         )
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
 
         if response.status_code == 200:
             data = response.json()
@@ -134,6 +143,8 @@ def run_single_query(
             result["session_id"] = data.get("session_id", "")
             result["latency_ms"] = data.get("latency_ms", 0.0)
             result["escalated"] = data.get("escalated", False)
+            result["source_documents"] = data.get("source_documents", [])
+            result["num_sources"] = data.get("num_sources", 0)
         else:
             result["error"] = f"HTTP {response.status_code}: {response.text}"
 
@@ -158,6 +169,7 @@ def run_harness() -> list[dict[str, Any]]:
 
     # Load dataset
     dataset = load_dataset()
+    logger.info("Loaded %d test queries", len(dataset))
     print(f"Loaded {len(dataset)} test queries")
     print()
 
@@ -166,10 +178,16 @@ def run_harness() -> list[dict[str, Any]]:
         with httpx.Client() as client:
             health_response = client.get(f"{API_BASE_URL}/health", timeout=5.0)
             if health_response.status_code == 200:
+                logger.info("API health check passed")
                 print("✓ API is healthy")
             else:
+                logger.warning(
+                    "API health check returned status %d",
+                    health_response.status_code,
+                )
                 print(f"⚠ API returned status {health_response.status_code}")
     except httpx.ConnectError:
+        logger.error("Cannot connect to API at %s", API_BASE_URL)
         print(f"✗ Error: Cannot connect to API at {API_BASE_URL}")
         print("  Make sure the backend is running (docker compose up)")
         sys.exit(1)
@@ -185,14 +203,21 @@ def run_harness() -> list[dict[str, Any]]:
             query_id = query_data.get("id", f"q{i:03d}")
             query_preview = query_data.get("query", "")[:50]
 
+            logger.debug("Running query %d/%d: %s", i, len(dataset), query_id)
             print(f"[{i}/{len(dataset)}] {query_id}: {query_preview}...")
 
             result = run_single_query(client, query_data)
             results.append(result)
 
             if result["error"]:
+                logger.error("Query %s failed: %s", query_id, result["error"])
                 print(f"    ✗ Error: {result['error']}")
             else:
+                logger.debug(
+                    "Query %s completed: %.2fms",
+                    query_id,
+                    result["latency_ms"],
+                )
                 print(f"    ✓ Latency: {result['latency_ms']:.2f}ms")
 
     print()
@@ -208,6 +233,13 @@ def run_harness() -> list[dict[str, Any]]:
     min_latency = min(latencies) if latencies else 0
     max_latency = max(latencies) if latencies else 0
 
+    logger.info(
+        "Evaluation complete: successful=%d, failed=%d, avg_latency=%.2fms",
+        successful,
+        failed,
+        avg_latency,
+    )
+
     print(f"Successful: {successful}")
     print(f"Failed: {failed}")
     print(f"Avg latency: {avg_latency:.2f}ms")
@@ -215,7 +247,7 @@ def run_harness() -> list[dict[str, Any]]:
     print(f"Max latency: {max_latency:.2f}ms")
 
     # Save results
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     json_path = save_results_json(results, timestamp)
     csv_path = save_results_csv(results, timestamp)

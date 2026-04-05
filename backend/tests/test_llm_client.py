@@ -142,13 +142,8 @@ class TestLLMClientWithTools:
         # Verify tools parameter was passed
         call_kwargs = mock_client.chat.completions.create.call_args.kwargs
         assert "tools" in call_kwargs
-        tools = call_kwargs["tools"]
-        assert len(tools) >= 2
-        tool_names = {
-            tool.get("function", {}).get("name")
-            for tool in tools
-            if isinstance(tool.get("function"), dict)
-        }
+        assert len(call_kwargs["tools"]) == 2
+        tool_names = [t["function"]["name"] for t in call_kwargs["tools"]]
         assert "leer_ficha_tecnica" in tool_names
         assert "buscar_producto" in tool_names
 

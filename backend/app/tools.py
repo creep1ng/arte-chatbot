@@ -61,8 +61,69 @@ LEER_FICHA_TECNICA_TOOL: dict[str, Any] = {
     "strict": False,
 }
 
+# Tool definition for searching products in the catalog
+BUSCAR_PRODUCTO_TOOL: dict[str, Any] = {
+    "type": "function",
+    "name": "buscar_producto",
+    "description": (
+        "Busca productos en el catálogo de Arte Soluciones Energéticas por "
+        "categoría, fabricante, capacidad u otras características. Devuelve "
+        "una lista de productos coincidentes con sus rutas S3 para poder "
+        "leer sus fichas técnicas con la herramienta leer_ficha_tecnica."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "categoria": {
+                "type": "string",
+                "enum": DATASHEET_CATEGORIES,
+                "description": "Categoría del producto a buscar.",
+            },
+            "fabricante": {
+                "type": "string",
+                "description": (
+                    "Nombre del fabricante o marca. Búsqueda parcial "
+                    "(case-insensitive). Opcional."
+                ),
+            },
+            "capacidad_min": {
+                "type": "number",
+                "description": (
+                    "Capacidad o potencia mínima (W para paneles/inversores, "
+                    "Ah para baterías). Opcional."
+                ),
+            },
+            "capacidad_max": {
+                "type": "number",
+                "description": ("Capacidad o potencia máxima. Opcional."),
+            },
+            "tipo": {
+                "type": "string",
+                "description": (
+                    "Tipo de producto (mppt, pwm, onda_pura, multifuncional, "
+                    "gel, litio, monocristalino, etc.). Opcional."
+                ),
+            },
+            "modelo_contiene": {
+                "type": "string",
+                "description": (
+                    "Texto que debe contener el nombre del modelo. "
+                    "Búsqueda parcial (case-insensitive). Opcional."
+                ),
+            },
+        },
+        "required": ["categoria"],
+        "additionalProperties": False,
+    },
+    "strict": False,
+}
+
+
 # List of all available tools
-AVAILABLE_TOOLS: list[dict[str, Any]] = [LEER_FICHA_TECNICA_TOOL]
+AVAILABLE_TOOLS: list[dict[str, Any]] = [
+    LEER_FICHA_TECNICA_TOOL,
+    BUSCAR_PRODUCTO_TOOL,
+]
 
 
 def get_tool_definitions() -> list[dict[str, Any]]:

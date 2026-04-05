@@ -11,11 +11,12 @@ from typing import Any, Optional
 
 from openai import APIError, AuthenticationError, OpenAI
 
+from backend.app.config import settings
 from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-4o"
+DEFAULT_MODEL = settings.llm_model
 
 ARTE_SYSTEM_PROMPT = (
     "Eres un asistente técnico de Arte Soluciones Energéticas, una empresa B2B "
@@ -41,11 +42,9 @@ ARTE_SYSTEM_PROMPT = (
     "- No bloquees la tool call por falta de información. Es mejor intentar "
     "la búsqueda con datos parciales que pedir todos los campos al usuario.\n\n"
     "## Convención para rutas S3\n"
-    "- Cuando llames a leer_ficha_tecnica, construye la ruta S3 usando: "
-    "{categoria}/{fabricante}-{modelo}.pdf (todo en minúsculas, espacios "
-    "reemplazados por guiones).\n"
-    "- Ejemplo: para un panel Jinko Tiger Pro 460W, la ruta sería: "
-    "paneles/jinko-tiger-pro-460w.pdf\n\n"
+    "- NO intentes construir la ruta S3 manualmente. Deja el campo `ruta_s3` VACÍO cuando llames a leer_ficha_tecnica.\n"
+    "- Proporciona solo `categoria`, `fabricante` y `modelo`. El sistema buscará automáticamente la ruta correcta en el catálogo.\n"
+    "- Si necesitas ver qué productos existen, usa primero la herramienta `buscar_producto`.\n\n"
     "## Cuando uses datos de una ficha técnica\n"
     "- Cita los valores exactos del documento (potencia, voltaje, eficiencia, "
     "dimensiones, peso, etc.).\n"
@@ -134,6 +133,7 @@ class LLMClient:
         messages: Optional[list[dict[str, Any]]] = None,
         session_id: str,
         system_prompt: Optional[str] = None,
+        context: str = "",
     ) -> dict[str, Any]:
         """Send messages to the LLM with tool definitions using Chat Completions.
 
@@ -142,6 +142,7 @@ class LLMClient:
             messages: Full message list to send to the Responses API.
             session_id: The session identifier for context.
             system_prompt: Optional system prompt override.
+            context: Optional session context string with conversation history.
 
         Returns:
             A dict with 'output_text' and optionally 'tool_calls'.
@@ -155,41 +156,36 @@ class LLMClient:
         instructions = system_prompt or self.default_system_prompt
         tools = get_tool_definitions()
 
-        if messages is None and message is None:
-            raise ValueError("Either 'message' or 'messages' must be provided.")
-
-        if messages is None:
-            messages_payload: list[dict[str, Any]] = [
-                {"role": "system", "content": instructions},
-                {"role": "user", "content": message},
-            ]
-        else:
-            messages_payload = list(messages)
-            has_system_message = any(
-                msg.get("role") == "system" for msg in messages_payload
+        # Construir el input con contexto si está disponible
+        user_input = message
+        if context:
+            user_input = (
+                f"Contexto de la conversación:\n{context}\n\nPregunta actual: {message}"
             )
-            if not has_system_message:
-                messages_payload = [
-                    {"role": "system", "content": instructions},
-                    *messages_payload,
-                ]
+
+        logger.debug(
+            "LLM call with tools: model=%s, session_id=%s, message_preview=%s, "
+            "num_tools=%d",
+            self.model,
+            session_id,
+            message[:100],
+            len(tools),
+        )
 
         try:
-            logger.info(
-                "Tool payload: %s", json.dumps(tools, ensure_ascii=False, indent=2)
-            )
-            response = self.openai_client.chat.completions.create(
+            response = self.openai_client.responses.create(
                 model=self.model,
-                messages=messages_payload,
+                instructions=instructions,
+                input=user_input,
                 tools=tools,
-                max_tokens=2000,
-                user=session_id,
+                max_output_tokens=2000,
+                reasoning={"effort": "medium"},
+                prompt_cache_key=session_id,
             )
-            choice = response.choices[0]
-            message_content = self._extract_text_from_content(choice.message.content)
+            message_content = self._extract_text_from_content(response.output)
             tool_calls_payload: list[dict[str, Any]] = []
 
-            tool_calls = getattr(choice.message, "tool_calls", None) or []
+            tool_calls = getattr(response, "tool_calls", None) or []
             for tool_call in tool_calls:
                 arguments = tool_call.function.arguments
                 parsed_args: Any = arguments
@@ -211,13 +207,13 @@ class LLMClient:
             }
 
         except AuthenticationError as e:
-            logger.error(f"OpenAI authentication error: {e}")
+            logger.error("OpenAI authentication error: %s", e)
             raise LLMServiceError("Invalid OpenAI API key") from e
         except APIError as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error("OpenAI API error: %s", e)
             raise LLMServiceError(f"OpenAI API error: {e}") from e
         except Exception as e:
-            logger.exception(f"Unexpected error calling OpenAI API: {e}")
+            logger.exception("Unexpected error calling OpenAI API: %s", e)
             raise LLMServiceError(f"LLM service error: {e}") from e
 
     def get_llm_response_with_file(
@@ -246,6 +242,15 @@ class LLMClient:
 
         instructions = system_prompt or DATASHEET_SYSTEM_PROMPT
 
+        logger.debug(
+            "LLM call with file: model=%s, session_id=%s, file_id=%s, "
+            "message_preview=%s",
+            self.model,
+            session_id,
+            file_id,
+            message[:100],
+        )
+
         try:
             response = self.openai_client.chat.completions.create(
                 model=self.model,
@@ -268,11 +273,11 @@ class LLMClient:
             )
 
         except AuthenticationError as e:
-            logger.error(f"OpenAI authentication error: {e}")
+            logger.error("OpenAI authentication error (file): %s", e)
             raise LLMServiceError("Invalid OpenAI API key") from e
         except APIError as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error("OpenAI API error (file): %s", e)
             raise LLMServiceError(f"OpenAI API error: {e}") from e
         except Exception as e:
-            logger.exception(f"Unexpected error calling OpenAI API: {e}")
+            logger.exception("Unexpected error calling OpenAI API (file): %s", e)
             raise LLMServiceError(f"LLM service error: {e}") from e
