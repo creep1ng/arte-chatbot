@@ -182,29 +182,33 @@ class LLMClient:
                 reasoning={"effort": "medium"},
                 prompt_cache_key=session_id,
             )
-            message_content = self._extract_text_from_content(response.output)
-            tool_calls_payload: list[dict[str, Any]] = []
 
-            tool_calls = getattr(response, "tool_calls", None) or []
-            for tool_call in tool_calls:
-                arguments = tool_call.function.arguments
-                parsed_args: Any = arguments
+            # Extract output text
+            output_text = response.output_text
 
-                tool_calls_payload.append(
-                    {
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": parsed_args,
-                        },
-                    }
-                )
+            # Extract tool calls from output
+            tool_calls = []
+            for item in response.output:
+                if item.type == "function_call":
+                    tool_calls.append(
+                        {
+                            "id": item.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": item.name,
+                                "arguments": item.arguments,
+                            },
+                        }
+                    )
 
-            return {
-                "output_text": message_content,
-                "tool_calls": tool_calls_payload,
+            result: dict[str, Any] = {
+                "output_text": output_text,
             }
+
+            if tool_calls:
+                result["tool_calls"] = tool_calls
+
+            return result
 
         except AuthenticationError as e:
             logger.error("OpenAI authentication error: %s", e)
@@ -223,7 +227,7 @@ class LLMClient:
         session_id: str,
         system_prompt: Optional[str] = None,
     ) -> str:
-        """Send a message to the LLM with a file attached using Chat Completions.
+        """Send a message to the LLM with a file attached using Responses API.
 
         Args:
             message: The user's message.
@@ -252,25 +256,24 @@ class LLMClient:
         )
 
         try:
-            response = self.openai_client.chat.completions.create(
+            response = self.openai_client.responses.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": instructions},
+                instructions=instructions,
+                input=[
                     {
                         "role": "user",
                         "content": [
                             {"type": "input_file", "file_id": file_id},
                             {"type": "input_text", "text": message},
                         ],
-                    },
+                    }
                 ],
-                max_tokens=2000,
-                user=session_id,
+                max_output_tokens=2000,
+                reasoning={"effort": "medium"},
+                prompt_cache_key=session_id,
             )
 
-            return self._extract_text_from_content(
-                response.choices[0].message.content
-            )
+            return response.output_text
 
         except AuthenticationError as e:
             logger.error("OpenAI authentication error (file): %s", e)
