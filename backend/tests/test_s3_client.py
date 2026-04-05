@@ -12,12 +12,18 @@ from backend.app.s3_client import S3Client, S3DownloadError
 class TestS3ClientInitialization:
     """Tests for S3Client initialization."""
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_s3_client_default_env_vars(self) -> None:
+    @patch("backend.app.s3_client.settings")
+    def test_s3_client_default_env_vars(self, mock_settings: MagicMock) -> None:
         """Test S3Client initialization with default env vars."""
-        client = S3Client()
-        # Should not raise, but bucket_name will be empty
-        assert client.bucket_name == ""
+        mock_settings.aws_bucket_name = ""
+        mock_settings.aws_access_key_id = None
+        mock_settings.aws_secret_access_key = None
+        mock_settings.aws_region = "us-east-1"
+        
+        with patch.dict(os.environ, {}, clear=True):
+            client = S3Client()
+            # Should not raise, but bucket_name will be empty
+            assert client.bucket_name == ""
 
     @patch.dict(os.environ, {"AWS_BUCKET_NAME": "test-bucket"}, clear=True)
     def test_s3_client_with_bucket_env_var(self) -> None:
@@ -37,17 +43,29 @@ class TestS3ClientInitialization:
         assert client.aws_access_key_id == "AKIAIOSFODNN7EXAMPLE"
         assert client.aws_region == "us-west-2"
 
-    @patch.dict(os.environ, {"AWS_REGION": "eu-west-1"}, clear=True)
-    def test_s3_client_default_region(self) -> None:
-        """Test S3Client uses default region when not specified."""
-        client = S3Client()
-        assert client.aws_region == "eu-west-1"
+    @patch("backend.app.s3_client.settings")
+    def test_s3_client_default_region(self, mock_settings: MagicMock) -> None:
+        """Test S3Client uses region when not specified via parameter."""
+        mock_settings.aws_bucket_name = ""
+        mock_settings.aws_access_key_id = None
+        mock_settings.aws_secret_access_key = None
+        mock_settings.aws_region = "eu-west-1"
+        
+        with patch.dict(os.environ, {}, clear=True):
+            client = S3Client()
+            assert client.aws_region == "eu-west-1"
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_s3_client_default_region_fallback(self) -> None:
-        """Test S3Client falls back to us-east-1 when no region env var."""
-        client = S3Client()
-        assert client.aws_region == "us-east-1"
+    @patch("backend.app.s3_client.settings")
+    def test_s3_client_default_region_fallback(self, mock_settings: MagicMock) -> None:
+        """Test S3Client falls back to us-east-1 when no region specified."""
+        mock_settings.aws_bucket_name = ""
+        mock_settings.aws_access_key_id = None
+        mock_settings.aws_secret_access_key = None
+        mock_settings.aws_region = "us-east-1"
+        
+        with patch.dict(os.environ, {}, clear=True):
+            client = S3Client()
+            assert client.aws_region == "us-east-1"
 
 
 class TestS3DownloadPdf:

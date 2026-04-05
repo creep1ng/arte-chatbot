@@ -98,6 +98,7 @@ _log_tool_definitions()
 llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
+catalog_search = get_catalog()
 
 MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
 
@@ -173,6 +174,81 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _handle_buscar_producto_tool(
+    tool_call: dict[str, Any],
+) -> tuple[str, bool]:
+    """Handle a buscar_producto tool call (for testing compatibility).
+
+    Args:
+        tool_call: The tool call dict from OpenAI response.
+
+    Returns:
+        Tuple of (output_text, is_terminal).
+        is_terminal is always False for buscar_producto as it's not a final tool.
+    """
+    arguments = _parse_tool_arguments(tool_call)
+    
+    categoria = arguments.get("categoria")
+    fabricante = arguments.get("fabricante")
+    capacidad_min = _safe_float(arguments.get("capacidad_min"))
+    capacidad_max = _safe_float(arguments.get("capacidad_max"))
+    tipo = arguments.get("tipo")
+    modelo_contiene = arguments.get("modelo_contiene")
+
+    if not categoria:
+        return (
+            "Error: Se requiere especificar una categoría (paneles, inversores, controladores, baterias).",
+            False,
+        )
+
+    try:
+        # Use catalog_search.search() which can be mocked in tests
+        results = catalog_search.search(
+            categoria=categoria,
+            fabricante=fabricante,
+            capacidad_min=capacidad_min,
+            capacidad_max=capacidad_max,
+            tipo=tipo,
+            modelo_contiene=modelo_contiene,
+        )
+
+        if not results:
+            return (
+                "No encontré productos que coincidan con los criterios de búsqueda especificados. "
+                "Prueba con otros filtros o contacta al equipo de ventas de Arte Soluciones Energéticas.",
+                False,
+            )
+
+        # Format results for the LLM
+        lines = [
+            f"Se encontraron {len(results)} producto(s) en la categoría '{categoria}':\n"
+        ]
+
+        for product in results:
+            lines.append(f"\n## {product.nombre_comercial} ({product.fabricante})")
+            if product.descripcion:
+                lines.append(f"Descripción: {product.descripcion}")
+            lines.append(f"Modelos disponibles:")
+            for variante in product.variantes:
+                modelo = variante.get("modelo", "Sin nombre")
+                params = variante.get("parametros_clave", {})
+                params_str = ", ".join(f"{k}: {v}" for k, v in params.items())
+                lines.append(f"  - {modelo} ({params_str})")
+            lines.append(
+                f"  → Para ver más detalles, usa leer_ficha_tecnica con ruta_s3: {product.ruta_s3}"
+            )
+
+        return ("\n".join(lines), False)
+
+    except CatalogError as e:
+        logger.error("Catalog error in buscar_producto: error=%s", e)
+        return (
+            "Lo siento, no pude consultar el catálogo de productos. "
+            "Por favor, intenta más tarde o contacta al equipo de ventas.",
+            False,
+        )
 
 
 def _process_buscar_producto(
@@ -398,7 +474,7 @@ def _process_leer_ficha_tecnica(
                     session_id,
                 )
                 pdf_bytes = s3_client.download_pdf(ruta_s3)
-            else:
+            elif len(results) > 1:
                 # Multiple products found - pick first one as fallback (deterministic)
                 ruta_s3 = results[0].ruta_s3
                 logger.warning(
@@ -409,6 +485,12 @@ def _process_leer_ficha_tecnica(
                     len(results),
                 )
                 pdf_bytes = s3_client.download_pdf(ruta_s3)
+            else:
+                # No results found in catalog fallback
+                raise ValueError(
+                    "No se encontraron productos en el catálogo con los criterios "
+                    "especificados. El archivo solicitado no está disponible."
+                )
         else:
             # No categoria to search with, re-raise original error
             raise
