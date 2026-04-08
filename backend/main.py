@@ -60,6 +60,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Diagnostic logging for environment configuration
 def _log_environment_configuration() -> None:
     required_env_vars = [
@@ -119,6 +120,7 @@ class ChatResponse(BaseModel):
     session_id: str
     source_documents: list[SourceDocument] = Field(default_factory=list)
     num_sources: int = 0
+    intent_type: Optional[str] = None
 
 
 @app.get("/health")
@@ -189,7 +191,7 @@ def _handle_buscar_producto_tool(
         is_terminal is always False for buscar_producto as it's not a final tool.
     """
     arguments = _parse_tool_arguments(tool_call)
-    
+
     categoria = arguments.get("categoria")
     fabricante = arguments.get("fabricante")
     capacidad_min = _safe_float(arguments.get("capacidad_min"))
@@ -594,7 +596,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 request_id,
                 session_id,
             )
-            
+
             # Obtener contexto de la sesión para mejorar el prompt
             context_string = session_manager.get_context_string(session_id)
 
@@ -691,8 +693,10 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                             session_id=session_id,
                         )
                         # Track source documents
-                        source_docs.extend([SourceDocument(ruta=ruta) for ruta in new_source_docs])
-                        
+                        source_docs.extend(
+                            [SourceDocument(ruta=ruta) for ruta in new_source_docs]
+                        )
+
                         tool_results.append(
                             {
                                 "tool_call_id": tool_call_id,

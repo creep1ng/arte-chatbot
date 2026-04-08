@@ -140,7 +140,7 @@ class TestLLMClientWithTools:
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "tools" in call_kwargs
         assert len(call_kwargs["tools"]) == 2
-        tool_names = [t["function"]["name"] for t in call_kwargs["tools"]]
+        tool_names = [t["name"] for t in call_kwargs["tools"]]
         assert "leer_ficha_tecnica" in tool_names
         assert "buscar_producto" in tool_names
 
