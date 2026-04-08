@@ -64,6 +64,7 @@ def _extract_intent_type(text: str) -> tuple[str, str]:
             return intent, cleaned
     return "FAQ", text
 
+
 app = FastAPI(title="ARTE Chatbot Backend")
 
 app.add_middleware(
@@ -238,7 +239,11 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             # No tool call needed - return normal response
             content = llm_response.get("output_text", "")
             intent_type, cleaned_content = _extract_intent_type(content)
-            escalate_intents = ["escalate_quote", "escalate_technical", "escalate_order"]
+            escalate_intents = [
+                "escalate_quote",
+                "escalate_technical",
+                "escalate_order",
+            ]
             should_escalate = intent_type in escalate_intents
             if should_escalate:
                 session_manager.add_turn(
@@ -279,7 +284,11 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         session_id=session_id,
                     )
                     intent_type, cleaned_response = _extract_intent_type(final_response)
-                    escalate_intents = ["escalate_quote", "escalate_technical", "escalate_order"]
+                    escalate_intents = [
+                        "escalate_quote",
+                        "escalate_technical",
+                        "escalate_order",
+                    ]
                     should_escalate = intent_type in escalate_intents
                     if should_escalate:
                         session_manager.add_turn(
@@ -359,7 +368,9 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                     )
 
         # If we get here with tool_calls but none were processed
-        intent_type, cleaned_text = _extract_intent_type(llm_response.get("output_text", ""))
+        intent_type, cleaned_text = _extract_intent_type(
+            llm_response.get("output_text", "")
+        )
         return ChatResponse(
             response=cleaned_text,
             escalate=False,
