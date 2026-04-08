@@ -50,6 +50,40 @@ from backend.app.catalog import CatalogError, get_catalog
 
 logger = logging.getLogger(__name__)
 
+INTENT_TYPES = [
+    "FAQ",
+    "product_info",
+    "escalate_quote",
+    "escalate_technical",
+    "escalate_order",
+]
+
+import re
+
+INTENT_MARKER_RE = re.compile(r"\[INTENT:\s*(\w+)\]")
+
+
+def _extract_intent_type(text: str) -> tuple[str, str]:
+    """Extract intent_type from LLM output text.
+
+    The LLM is instructed to prefix responses with [INTENT: <type>].
+    This function parses the marker and returns the cleaned response.
+
+    Args:
+        text: Raw LLM output text.
+
+    Returns:
+        Tuple of (intent_type, cleaned_response_text).
+    """
+    match = INTENT_MARKER_RE.search(text)
+    if match:
+        intent = match.group(1)
+        if intent in INTENT_TYPES:
+            cleaned = INTENT_MARKER_RE.sub("", text).strip()
+            return intent, cleaned
+    return "FAQ", text
+
+
 app = FastAPI(title="ARTE Chatbot Backend")
 
 app.add_middleware(
@@ -59,6 +93,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Diagnostic logging for environment configuration
 def _log_environment_configuration() -> None:
@@ -115,6 +150,7 @@ class ChatResponse(BaseModel):
 
     response: str
     escalate: bool = False
+    intent_type: str = "FAQ"
     reason: Optional[str] = None
     session_id: str
     source_documents: list[SourceDocument] = Field(default_factory=list)
@@ -189,7 +225,7 @@ def _handle_buscar_producto_tool(
         is_terminal is always False for buscar_producto as it's not a final tool.
     """
     arguments = _parse_tool_arguments(tool_call)
-    
+
     categoria = arguments.get("categoria")
     fabricante = arguments.get("fabricante")
     capacidad_min = _safe_float(arguments.get("capacidad_min"))
@@ -547,31 +583,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         request.message[:100],
     )
 
-    # Detect escalation
-    escalation_result = default_detector.detect(request.message)
-
-    if escalation_result.escalate:
-        logger.info(
-            "Escalation detected: request_id=%s, session_id=%s, reason=%s",
-            request_id,
-            session_id,
-            escalation_result.reason,
-        )
-        # Guardamos la consulta en la sesión aunque vayamos a escalar
-        session_manager.add_turn(
-            session_id=session_id,
-            question=request.message,
-            answer=DEFAULT_ESCALATION_MESSAGE,
-            source_documents=[],
-        )
-        return ChatResponse(
-            response=DEFAULT_ESCALATION_MESSAGE,
-            escalate=True,
-            reason=escalation_result.reason,
-            session_id=session_id,
-            source_documents=[],
-            num_sources=0,
-        )
+    # Escalation is now determined by LLM intent_type classification (US-05)
+    # No keyword-based detection. The LLM prefixes responses with [INTENT: <type>].
 
     system_message = {"role": "system", "content": ARTE_SYSTEM_PROMPT}
     conversation_history: list[dict[str, Any]] = [
@@ -594,7 +607,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 request_id,
                 session_id,
             )
-            
+
             # Obtener contexto de la sesión para mejorar el prompt
             context_string = session_manager.get_context_string(session_id)
 
@@ -691,8 +704,10 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                             session_id=session_id,
                         )
                         # Track source documents
-                        source_docs.extend([SourceDocument(ruta=ruta) for ruta in new_source_docs])
-                        
+                        source_docs.extend(
+                            [SourceDocument(ruta=ruta) for ruta in new_source_docs]
+                        )
+
                         tool_results.append(
                             {
                                 "tool_call_id": tool_call_id,

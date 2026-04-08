@@ -12,6 +12,7 @@ DATASHEET_CATEGORIES = ["paneles", "inversores", "controladores", "baterias"]
 # Tool definition for reading technical datasheets (Chat Completions API format)
 LEER_FICHA_TECNICA_TOOL: dict[str, Any] = {
     "type": "function",
+    "name": "leer_ficha_tecnica",
     "function": {
         "name": "leer_ficha_tecnica",
         "description": (
@@ -66,6 +67,7 @@ LEER_FICHA_TECNICA_TOOL: dict[str, Any] = {
 # Tool definition for searching products in the catalog
 BUSCAR_PRODUCTO_TOOL: dict[str, Any] = {
     "type": "function",
+    "name": "buscar_producto",
     "function": {
         "name": "buscar_producto",
         "description": (

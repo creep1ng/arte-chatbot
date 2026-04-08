@@ -48,41 +48,52 @@ class TestChatEndpointUnit:
         response = client.post("/chat", json={})
         assert response.status_code == 422  # Validation error
 
-    def test_chat_returns_escalate_for_cotizacion(self) -> None:
-        """Test escalation flag for 'cotización' keyword."""
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_returns_escalate_for_cotizacion(self, mock_llm) -> None:
+        """Test escalation flag for cotización via intent classification."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: escalate_quote] Un agente de ventas te contactará pronto.",
+        }
         response = client.post(
             "/chat", json={"message": "Necesito una cotización de paneles"}
         )
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
-        assert "reason" in data
+        assert data["intent_type"] == "escalate_quote"
         assert data["session_id"] is not None
 
-    def test_chat_returns_escalate_for_pedido(self) -> None:
-        """Test escalation flag for 'pedido' keyword."""
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_returns_escalate_for_pedido(self, mock_llm) -> None:
+        """Test escalation flag for pedido via intent classification."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: escalate_order] Procesaremos tu pedido.",
+        }
         response = client.post("/chat", json={"message": "Quiero hacer un pedido"})
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
-        assert (
-            "cotización" in data["reason"].lower() or "pedido" in data["reason"].lower()
-        )
+        assert data["intent_type"] == "escalate_order"
+        assert data["reason"] is not None
 
-    def test_chat_returns_escalate_for_garantia(self) -> None:
-        """Test escalation flag for 'garantía' keyword."""
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_returns_escalate_for_garantia(self, mock_llm) -> None:
+        """Test escalation flag for technical issue via intent classification."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: escalate_technical] Un técnico revisará tu caso.",
+        }
         response = client.post(
             "/chat", json={"message": "Tengo un problema con la garantía"}
         )
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
+        assert data["intent_type"] == "escalate_technical"
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_no_escalate_for_normal_message(self, mock_llm) -> None:
         """Test no escalation for normal messages."""
-        # get_llm_response_with_tools returns a dict with output_text (Responses API)
-        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
+        mock_llm.return_value = {"output_text": "[INTENT: FAQ] Mocked LLM Response"}
         response = client.post(
             "/chat", json={"message": "¿Cuánta potencia tiene el panel de 400W?"}
         )
@@ -149,14 +160,80 @@ class TestChatEndpointUnit:
         assert add_kwargs["question"] == "¿Y cuánto cuesta?"
         assert add_kwargs["answer"] == "Mocked LLM Response"
 
-    def test_chat_returns_escalation_message(self) -> None:
-        """Test that escalation response includes user message."""
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_returns_escalation_message(self, mock_llm) -> None:
+        """Test that escalation response includes the escalation message."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: escalate_quote] Un agente te contactará.",
+        }
         response = client.post("/chat", json={"message": "Quiero una cotización"})
         assert response.status_code == 200
         data = response.json()
         assert "response" in data
         assert isinstance(data["response"], str)
         assert len(data["response"]) > 0
+        assert data["intent_type"] == "escalate_quote"
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_returns_intent_type_product_info(self, mock_llm) -> None:
+        """Test intent_type 'product_info' for product queries."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: product_info] El panel tiene 400W de potencia.",
+        }
+        response = client.post(
+            "/chat", json={"message": "¿Qué potencia tiene el panel de 400W?"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["intent_type"] == "product_info"
+        assert data["escalate"] is False
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_returns_intent_type_escalate_quote(self, mock_llm) -> None:
+        """Test intent_type 'escalate_quote' triggers escalation."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: escalate_quote] Te contactará un agente.",
+        }
+        response = client.post(
+            "/chat", json={"message": "Necesito un presupuesto"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["intent_type"] == "escalate_quote"
+        assert data["escalate"] is True
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_returns_intent_type_escalate_order(self, mock_llm) -> None:
+        """Test intent_type 'escalate_order' triggers escalation."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: escalate_order] Procesaremos tu pedido.",
+        }
+        response = client.post(
+            "/chat", json={"message": "Quiero comprar paneles"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["intent_type"] == "escalate_order"
+        assert data["escalate"] is True
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_intent_marker_stripped_from_response(self, mock_llm) -> None:
+        """Test that [INTENT: ...] marker is stripped from response text."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: FAQ] Los paneles monocristalinos son más eficientes.",
+        }
+        response = client.post(
+            "/chat", json={"message": "¿Qué tipo de panel me conviene?"}
+        )
+        data = response.json()
+        assert "[INTENT:" not in data["response"]
+        assert "monocristalinos" in data["response"]
+
+    def test_chat_response_schema_includes_intent_type(self) -> None:
+        """Test that ChatResponse schema includes intent_type field."""
+        from backend.main import ChatResponse
+        schema = ChatResponse.model_json_schema()
+        assert "intent_type" in schema["properties"]
 
 
 # Integration Tests
