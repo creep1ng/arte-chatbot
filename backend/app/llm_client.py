@@ -1,9 +1,10 @@
 """LLM client module for Arte Chatbot.
 
-Provides a client to interact with OpenAI Responses API
+Provides a client to interact with OpenAI Chat Completions API
 for generating chatbot responses with tool calling support.
 """
 
+import json
 import logging
 import os
 from typing import Any, Optional
@@ -41,11 +42,9 @@ ARTE_SYSTEM_PROMPT = (
     "- No bloquees la tool call por falta de información. Es mejor intentar "
     "la búsqueda con datos parciales que pedir todos los campos al usuario.\n\n"
     "## Convención para rutas S3\n"
-    "- Cuando llames a leer_ficha_tecnica, construye la ruta S3 usando: "
-    "{categoria}/{fabricante}-{modelo}.pdf (todo en minúsculas, espacios "
-    "reemplazados por guiones).\n"
-    "- Ejemplo: para un panel Jinko Tiger Pro 460W, la ruta sería: "
-    "paneles/jinko-tiger-pro-460w.pdf\n\n"
+    "- NO intentes construir la ruta S3 manualmente. Deja el campo `ruta_s3` VACÍO cuando llames a leer_ficha_tecnica.\n"
+    "- Proporciona solo `categoria`, `fabricante` y `modelo`. El sistema buscará automáticamente la ruta correcta en el catálogo.\n"
+    "- Si necesitas ver qué productos existen, usa primero la herramienta `buscar_producto`.\n\n"
     "## Cuando uses datos de una ficha técnica\n"
     "- Cita los valores exactos del documento (potencia, voltaje, eficiencia, "
     "dimensiones, peso, etc.).\n"
@@ -73,7 +72,15 @@ ARTE_SYSTEM_PROMPT = (
     "- escalate_order: pedidos, compras, adquisición de productos\n"
     "- Ejemplo: [INTENT: FAQ] Los paneles monocristalinos tienen mayor eficiencia...\n"
     "- Ejemplo: [INTENT: product_info] El panel JA Solar JAM72S30-545 tiene...\n"
-    "- Ejemplo: [INTENT: escalate_quote] Un agente de ventas te contactará..."
+    "- Ejemplo: [INTENT: escalate_quote] Un agente de ventas te contactará...\n\n"
+    "## Herramientas\n"
+    "- Usa la herramienta buscar_producto cuando el usuario pregunte por una "
+    "categoría o tipo de producto sin especificar modelo exacto.\n"
+    "- Usa la herramienta leer_ficha_tecnica únicamente cuando ya tengas la "
+    "ruta_s3 del producto específico.\n"
+    "- Si no hay un producto concreto y la pregunta es general, responde directamente.\n"
+    "- Si buscar_producto no encuentra resultados, informa al usuario y sugiere "
+    "contactar al equipo de ventas."
 )
 
 DATASHEET_SYSTEM_PROMPT = (
@@ -93,7 +100,7 @@ class LLMServiceError(Exception):
 
 
 class LLMClient:
-    """Client for interacting with OpenAI Responses API."""
+    """Client for interacting with OpenAI Chat Completions API."""
 
     def __init__(
         self,
@@ -116,17 +123,39 @@ class LLMClient:
             self._openai_client = OpenAI(api_key=self.api_key)
         return self._openai_client
 
+    @staticmethod
+    def _extract_text_from_content(content: Any) -> str:
+        """Convert chat completion message content into a plain string."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    block_text = block.get("text")
+                    if block_text:
+                        text_parts.append(str(block_text))
+                else:
+                    text_parts.append(str(block))
+            return "\n".join(text_parts)
+        return str(content)
+
     def get_llm_response_with_tools(
         self,
-        message: str,
+        message: Optional[str] = None,
+        *,
+        messages: Optional[list[dict[str, Any]]] = None,
         session_id: str,
         system_prompt: Optional[str] = None,
         context: str = "",
     ) -> dict[str, Any]:
-        """Send a message to the LLM with tool definitions using Responses API.
+        """Send messages to the LLM with tool definitions using Chat Completions.
 
         Args:
-            message: The user's message.
+            message: Single-turn user input (legacy usage).
+            messages: Full message list to send to the Responses API.
             session_id: The session identifier for context.
             system_prompt: Optional system prompt override.
             context: Optional session context string with conversation history.
