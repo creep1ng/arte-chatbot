@@ -59,16 +59,17 @@ ARTE_SYSTEM_PROMPT = (
     "cualquier consulta conceptual se responden directamente sin usar "
     "herramientas. Usa tu conocimiento general sobre energía solar.\n\n"
     "## Clasificación de intención\n"
-    "- Al INICIO de cada respuesta, incluye un marcador de clasificación.\n"
-    "- Usa EXACTAMENTE este formato: [INTENT: <tipo>]\n"
+    "- Al INICIO de cada respuesta, incluye UN markers de clasificación:\n"
+    "  - [INTENT: <tipo>] - clasificación de intención\n"
+    "  - [CONFIDENCE: 0.XX] - confianza de tu clasificación (entre 0.00 y 1.00)\n"
     "- Tipos válidos: FAQ, product_info, escalate_quote, escalate_technical, escalate_order\n"
     "- FAQ: preguntas generales sobre energía solar, conceptos, diferencias entre tecnologías\n"
     "- product_info: consultas sobre especificaciones, modelos, características de productos\n"
     "- escalate_quote: solicitudes de cotización, presupuesto, precio de proyectos completos\n"
     "- escalate_technical: problemas técnicos que requieren revisión, errores en equipos\n"
     "- escalate_order: pedidos, compras, adquisición de productos\n"
-    "- Ejemplo: [INTENT: FAQ] Los paneles monocristalinos tienen mayor eficiencia...\n"
-    "- Ejemplo: [INTENT: escalate_quote] Un agente de ventas te contactará..."
+    "- Ejemplo: [INTENT: FAQ][CONFIDENCE: 0.95] Los paneles monocristalinos tienen mayor eficiencia...\n"
+    "- Ejemplo: [INTENT: escalate_quote][CONFIDENCE: 0.98] Un agente de ventas te contactará..."
 )
 
 DATASHEET_SYSTEM_PROMPT = (

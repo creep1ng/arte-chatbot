@@ -30,6 +30,10 @@ from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.tools import get_tool_definitions
 from backend.app.session import session_manager
+from backend.app.escalation_tree import (
+    EscalationDecisionTree,
+    default_escalation_tree,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +46,50 @@ INTENT_TYPES = [
 ]
 
 INTENT_MARKER_RE = re.compile(r"\[INTENT:\s*(\w+)\]")
+CONFIDENCE_MARKER_RE = re.compile(r"\[CONFIDENCE:\s*(0?\.\d+)\]")
+
+
+def _extract_intent_and_confidence(text: str) -> tuple[str, float, str]:
+    """Extract intent_type and confidence from LLM output text.
+
+    The LLM is instructed to prefix responses with:
+    - [INTENT: <type>]
+    - [CONFIDENCE: 0.XX]
+
+    This function parses both markers and returns the cleaned response.
+
+    Args:
+        text: Raw LLM output text.
+
+    Returns:
+        Tuple of (intent_type, confidence, cleaned_response_text).
+    """
+    intent_match = INTENT_MARKER_RE.search(text)
+    confidence_match = CONFIDENCE_MARKER_RE.search(text)
+
+    intent_type = "FAQ"
+    confidence = 0.5
+
+    if intent_match:
+        intent = intent_match.group(1)
+        if intent in INTENT_TYPES:
+            intent_type = intent
+
+    if confidence_match:
+        try:
+            confidence = float(confidence_match.group(1))
+            confidence = max(0.0, min(1.0, confidence))
+        except ValueError:
+            confidence = 0.5
+
+    cleaned = INTENT_MARKER_RE.sub("", text)
+    cleaned = CONFIDENCE_MARKER_RE.sub("", cleaned).strip()
+
+    return intent_type, confidence, cleaned
 
 
 def _extract_intent_type(text: str) -> tuple[str, str]:
-    """Extract intent_type from LLM output text.
-
-    The LLM is instructed to prefix responses with [INTENT: <type>].
-    This function parses the marker and returns the cleaned response.
+    """Extract intent_type from LLM output text (legacy compatibility).
 
     Args:
         text: Raw LLM output text.
@@ -56,13 +97,8 @@ def _extract_intent_type(text: str) -> tuple[str, str]:
     Returns:
         Tuple of (intent_type, cleaned_response_text).
     """
-    match = INTENT_MARKER_RE.search(text)
-    if match:
-        intent = match.group(1)
-        if intent in INTENT_TYPES:
-            cleaned = INTENT_MARKER_RE.sub("", text).strip()
-            return intent, cleaned
-    return "FAQ", text
+    intent_type, _, cleaned = _extract_intent_and_confidence(text)
+    return intent_type, cleaned
 
 app = FastAPI(title="ARTE Chatbot Backend")
 
@@ -237,10 +273,16 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         if not tool_calls:
             # No tool call needed - return normal response
             content = llm_response.get("output_text", "")
-            intent_type, cleaned_content = _extract_intent_type(content)
-            escalate_intents = ["escalate_quote", "escalate_technical", "escalate_order"]
-            should_escalate = intent_type in escalate_intents
-            if should_escalate:
+            intent_type, confidence, cleaned_content = _extract_intent_and_confidence(content)
+            
+            # Use escalation decision tree for precise escalation
+            decision = default_escalation_tree.decide(
+                intent_type=intent_type,
+                confidence=confidence,
+                user_message=request.message,
+            )
+            
+            if decision.escalate:
                 session_manager.add_turn(
                     session_id=session_id,
                     question=request.message,
@@ -251,7 +293,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                     response=DEFAULT_ESCALATION_MESSAGE,
                     escalate=True,
                     intent_type=intent_type,
-                    reason=f"Intent classified as {intent_type}",
+                    reason=decision.reason,
                     session_id=session_id,
                 )
             session_manager.add_turn(
@@ -278,10 +320,16 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         user_message=request.message,
                         session_id=session_id,
                     )
-                    intent_type, cleaned_response = _extract_intent_type(final_response)
-                    escalate_intents = ["escalate_quote", "escalate_technical", "escalate_order"]
-                    should_escalate = intent_type in escalate_intents
-                    if should_escalate:
+                    intent_type, confidence, cleaned_response = _extract_intent_and_confidence(final_response)
+                    
+                    # Use escalation decision tree for precise escalation
+                    decision = default_escalation_tree.decide(
+                        intent_type=intent_type,
+                        confidence=confidence,
+                        user_message=request.message,
+                    )
+                    
+                    if decision.escalate:
                         session_manager.add_turn(
                             session_id=session_id,
                             question=request.message,
@@ -292,7 +340,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                             response=DEFAULT_ESCALATION_MESSAGE,
                             escalate=True,
                             intent_type=intent_type,
-                            reason=f"Intent classified as {intent_type}",
+                            reason=decision.reason,
                             session_id=session_id,
                         )
                     session_manager.add_turn(

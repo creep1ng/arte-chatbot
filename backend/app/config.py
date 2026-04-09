@@ -57,6 +57,20 @@ class Settings(BaseSettings):
     # App
     log_level: str = Field(default="INFO", description="Logging level")
 
+    # Escalation thresholds
+    escalation_confidence_threshold: float = Field(
+        default=0.4,
+        description="Minimum confidence to trust LLM intent classification",
+    )
+    false_positive_limit: float = Field(
+        default=0.15,
+        description="Maximum acceptable false positive rate (15%)",
+    )
+    false_negative_limit: float = Field(
+        default=0.10,
+        description="Maximum acceptable false negative rate (10%)",
+    )
+
 
 class _SettingsProxy:
     """Lazy proxy that defers Settings() instantiation to first attribute access.
