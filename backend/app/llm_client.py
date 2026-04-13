@@ -13,6 +13,7 @@ from openai import APIError, AuthenticationError, OpenAI
 
 from backend.app.config import settings
 from backend.app.tools import get_tool_definitions
+from backend.app.session import ChatTurn
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,64 @@ class LLMServiceError(Exception):
     """Raised when the LLM service returns an error."""
 
     pass
+
+
+REWRITE_PROMPT = """
+Dada la siguiente conversación y la pregunta del usuario, reescribe la pregunta
+para que sea autocontenida (sin referencias pronominales). 
+Si la pregunta ya es autocontenida, devuélvela sin cambios.
+
+Historial: {history}
+Pregunta actual: {query}
+Pregunta reescrita:
+""".strip()
+
+
+def expand_query_with_context(query: str, history: list[ChatTurn]) -> str:
+    """
+    Reescribe la query del usuario para que sea autocontenida usando el historial de la conversación.
+
+    Args:
+        query: Pregunta actual del usuario
+        history: Lista de turnos de la conversación (ChatTurn objects)
+
+    Returns:
+        Pregunta reescrita y autocontenida, o la original en caso de fallo
+    """
+    if not history:
+        return query
+
+    # Formatear historial para el prompt
+    history_parts = []
+    for i, turn in enumerate(history, 1):
+        history_parts.append(f"Turno {i}:")
+        history_parts.append(f"Usuario: {turn.question}")
+        history_parts.append(f"Asistente: {turn.answer}")
+        history_parts.append("")
+
+    history_str = "\n".join(history_parts).strip()
+
+    # Crear el prompt completo
+    prompt = REWRITE_PROMPT.format(history=history_str, query=query)
+
+    try:
+        # Usar el cliente OpenAI directamente para esta llamada simple
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=200,
+        )
+
+        rewritten = response.choices[0].message.content.strip()
+        logger.debug("Query expandida: '%s' → '%s'", query, rewritten)
+
+        return rewritten if rewritten else query
+
+    except Exception as e:
+        logger.warning("Fallo al expandir query, usando original: %s", e)
+        return query
 
 
 class LLMClient:
