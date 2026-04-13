@@ -39,6 +39,7 @@ from backend.app.llm_client import (
     LLMClient,
     LLMServiceError,
     ARTE_SYSTEM_PROMPT,
+    expand_query_with_context,
 )
 from backend.app.schemas import SourceDocument
 from backend.app.auth import verify_api_key
@@ -583,13 +584,24 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         request.message[:100],
     )
 
+    # Expandir query con contexto anafórico
+    history = session_manager.get_history(session_id)
+    expanded_query = expand_query_with_context(request.message, history)
+
+    logger.debug(
+        "Query expandida: original='%s', expandida='%s', session_id=%s",
+        request.message[:100],
+        expanded_query[:100],
+        session_id,
+    )
+
     # Escalation is now determined by LLM intent_type classification (US-05)
     # No keyword-based detection. The LLM prefixes responses with [INTENT: <type>].
 
     system_message = {"role": "system", "content": ARTE_SYSTEM_PROMPT}
     conversation_history: list[dict[str, Any]] = [
         system_message,
-        {"role": "user", "content": request.message},
+        {"role": "user", "content": expanded_query},
     ]
     source_docs: list[SourceDocument] = []
 
@@ -613,19 +625,19 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
             # Build user input with context and tool results if available
             if iteration == 1:
-                # First iteration: use original message with context
-                user_input = request.message
+                # First iteration: use expanded message with context
+                user_input = expanded_query
                 if context_string:
                     user_input = (
                         f"Contexto de la conversación:\n{context_string}\n\n"
-                        f"Pregunta actual: {request.message}"
+                        f"Pregunta actual: {expanded_query}"
                     )
             else:
                 # Subsequent iterations: include previous tool results
                 user_input = (
                     f"Resultados de las herramientas invocadas anteriormente:\n"
                     f"{tool_results_summary}\n\n"
-                    f"Pregunta original: {request.message}\n"
+                    f"Pregunta original: {expanded_query}\n"
                     f"Considera los resultados anteriores y proporciona una respuesta final."
                 )
 
@@ -700,7 +712,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                     elif function_name == "leer_ficha_tecnica":
                         final_response, new_source_docs = _process_leer_ficha_tecnica(
                             tool_call=tool_call,
-                            user_message=request.message,
+                            user_message=expanded_query,
                             session_id=session_id,
                         )
                         # Track source documents
