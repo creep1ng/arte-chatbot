@@ -62,15 +62,27 @@ class TestEscalationDecisionTree:
         assert decision.escalate is True
 
     def test_low_confidence_prevents_escalation(self) -> None:
-        """Test that low confidence prevents escalation for escalate_ intents."""
+        """Test that low confidence prevents escalation for product_info intents."""
         tree = EscalationDecisionTree(confidence_threshold=0.7)
         decision = tree.decide(
-            intent_type="escalate_quote",
+            intent_type="product_info",
             confidence=0.3,
-            user_message="¿Cuánto cuesta?",
+            user_message="¿Qué potencia tiene el panel?",
         )
 
         assert decision.escalate is False
+
+    def test_explicit_escalate_intent_always_escalates(self) -> None:
+        """Test that explicit escalate_ intents always escalate regardless of confidence."""
+        tree = EscalationDecisionTree(confidence_threshold=0.9)
+
+        for intent in ["escalate_quote", "escalate_technical", "escalate_order"]:
+            decision = tree.decide(
+                intent_type=intent,
+                confidence=0.3,
+                user_message="Test message",
+            )
+            assert decision.escalate is True, f"{intent} should always escalate"
 
     def test_product_info_simple_query_no_escalation(self) -> None:
         """Test that simple product_info queries don't escalate."""

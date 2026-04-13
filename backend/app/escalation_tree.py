@@ -107,25 +107,32 @@ class EscalationDecisionTree:
 
     def __init__(
         self,
-            confidence_threshold: Optional[float] = None,
-            fp_limit: float = 0.15,
-            fn_limit: float = 0.10,
-        ) -> None:
-            """
-            Initialize the escalation decision tree.
+        confidence_threshold: Optional[float] = None,
+        fp_limit: float = 0.15,
+        fn_limit: float = 0.10,
+    ) -> None:
+        """
+        Initialize the escalation decision tree.
 
-            Args:
-                confidence_threshold: Minimum confidence to trust LLM classification.
-                                     Defaults to settings.escalation_confidence_threshold.
-                fp_limit: Maximum acceptable false positive rate (default 15%).
-                fn_limit: Maximum acceptable false negative rate (default 10%).
-            """
-            self._confidence_threshold = (
-                confidence_threshold
-                or settings.escalation_confidence_threshold
-            )
-            self._fp_limit = fp_limit
-            self._fn_limit = fn_limit
+        Args:
+            confidence_threshold: Minimum confidence to trust LLM classification.
+                                 Defaults to settings.escalation_confidence_threshold.
+            fp_limit: Maximum acceptable false positive rate (default 15%).
+            fn_limit: Maximum acceptable false negative rate (default 10%).
+        """
+        self._confidence_threshold = (
+            confidence_threshold or settings.escalation_confidence_threshold
+        )
+        self._fp_limit = fp_limit
+        self._fn_limit = fn_limit
+
+    EXPLICIT_ESCALATE_INTENTS = frozenset(
+        [
+            "escalate_quote",
+            "escalate_technical",
+            "escalate_order",
+        ]
+    )
 
     def decide(
         self,
@@ -154,31 +161,38 @@ class EscalationDecisionTree:
             )
 
         node = self.DECISION_RULES[intent_type]
-        adjusted_confidence = confidence * node.confidence_boost
 
         if node.action == EscalationAction.NO_ESCALATE:
             return EscalationDecision(
                 escalate=False,
                 action=EscalationAction.NO_ESCALATE,
-                confidence=adjusted_confidence,
+                confidence=confidence,
                 reason=f"Intent {intent_type} typically doesn't require escalation",
                 intent_type=intent_type,
             )
 
         if node.action == EscalationAction.ESCALATE:
-            if adjusted_confidence >= self._confidence_threshold:
+            if intent_type in self.EXPLICIT_ESCALATE_INTENTS:
                 return EscalationDecision(
                     escalate=True,
                     action=EscalationAction.ESCALATE,
-                    confidence=adjusted_confidence,
-                    reason=f"Intent {intent_type} requires human agent (confidence: {adjusted_confidence:.2f})",
+                    confidence=confidence,
+                    reason=f"Intent {intent_type} explicitly requires human agent",
+                    intent_type=intent_type,
+                )
+            if confidence >= self._confidence_threshold:
+                return EscalationDecision(
+                    escalate=True,
+                    action=EscalationAction.ESCALATE,
+                    confidence=confidence,
+                    reason=f"Intent {intent_type} requires human agent (confidence: {confidence:.2f})",
                     intent_type=intent_type,
                 )
             return EscalationDecision(
                 escalate=False,
                 action=EscalationAction.NO_ESCALATE,
-                confidence=adjusted_confidence,
-                reason=f"Low confidence ({adjusted_confidence:.2f}) for {intent_type}, not escalating",
+                confidence=confidence,
+                reason=f"Low confidence ({confidence:.2f}) for {intent_type}, not escalating",
                 intent_type=intent_type,
             )
 
@@ -188,7 +202,7 @@ class EscalationDecisionTree:
                 return EscalationDecision(
                     escalate=True,
                     action=EscalationAction.ESCALATE,
-                    confidence=adjusted_confidence,
+                    confidence=confidence,
                     reason=f"High complexity query (score: {complexity:.2f})",
                     intent_type=intent_type,
                     complexity_score=complexity,
@@ -196,7 +210,7 @@ class EscalationDecisionTree:
             return EscalationDecision(
                 escalate=False,
                 action=EscalationAction.NO_ESCALATE,
-                confidence=adjusted_confidence,
+                confidence=confidence,
                 reason=f"Low complexity query (score: {complexity:.2f}), can be handled automatically",
                 intent_type=intent_type,
                 complexity_score=complexity,
@@ -205,7 +219,7 @@ class EscalationDecisionTree:
         return EscalationDecision(
             escalate=False,
             action=EscalationAction.NO_ESCALATE,
-            confidence=adjusted_confidence,
+            confidence=confidence,
             reason=f"No decision path for action: {node.action}",
             intent_type=intent_type,
         )
