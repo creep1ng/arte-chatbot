@@ -1,0 +1,145 @@
+[
+  {
+    "id": "ee001",
+    "query": "¿Cuál es la diferencia entre paneles monocristalinos y policristalinos?",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "ee002",
+    "query": "¿Qué es un inversor híbrido y para qué sirve?",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "ee003",
+    "query": "¿Cómo funciona la conexión a red de un sistema solar?",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "ee004",
+    "query": "¿Qué características técnicas tiene el panel JA Solar JAM72S30-545?",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "ee005",
+    "query": "¿Qué modelos de inversores Huawei tienen disponibles?",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "ee006",
+    "query": "Necesito saber la potencia y eficiencia del panel Longi Hi-MO 5",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "ee007",
+    "query": "¿Cuál es mejor, el inversor Fronius o el Huawei para una instalación de 10kW?",
+    "expected_intent_type": "product_info",
+    "should_escalate": true,
+    "complexity": "high",
+    "note": "Comparación que requiere recomendación de experto"
+  },
+  {
+    "id": "ee008",
+    "query": "Quiero comparar las características de 3 paneles de 500W",
+    "expected_intent_type": "product_info",
+    "should_escalate": true,
+    "complexity": "high",
+    "note": "Comparación múltiple que requiere assistance"
+  },
+  {
+    "id": "ee009",
+    "query": "Necesito una cotización para un sistema solar de 10kW para mi empresa",
+    "expected_intent_type": "escalate_quote",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "ee010",
+    "query": "¿Cuánto cuesta un proyecto completo de energía solar residencial?",
+    "expected_intent_type": "escalate_quote",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "ee011",
+    "query": "Quiero un presupuesto para 50 paneles con instalación incluida",
+    "expected_intent_type": "escalate_quote",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "ee012",
+    "query": "Mi inversor está mostrando un error E027 y se apaga solo",
+    "expected_intent_type": "escalate_technical",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "ee013",
+    "query": "El sistema de monitoreo no me muestra los datos de producción desde hace una semana",
+    "expected_intent_type": "escalate_technical",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "ee014",
+    "query": "El inversor hace un ruido extraño como zumbido y necesita revisión técnica",
+    "expected_intent_type": "escalate_technical",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "ee015",
+    "query": "Quiero hacer un pedido de 20 paneles solares para mi proyecto",
+    "expected_intent_type": "escalate_order",
+    "should_escalate": true,
+    "complexity": "low"
+  },
+  {
+    "id": "ee016",
+    "query": "Necesito comprar un inversor Fronius y que me lo envíen",
+    "expected_intent_type": "escalate_order",
+    "should_escalate": true,
+    "complexity": "low"
+  },
+  {
+    "id": "ee017",
+    "query": "Deseo adquirir el sistema completo que me mostraron, ¿cómo procedo con la compra?",
+    "expected_intent_type": "escalate_order",
+    "should_escalate": true,
+    "complexity": "low"
+  },
+  {
+    "id": "ee018",
+    "query": "¿Tienen paneles de 400W en stock?",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "ee019",
+    "query": "¿Cuál me recomiendan para mi techo de 50m2?",
+    "expected_intent_type": "product_info",
+    "should_escalate": true,
+    "complexity": "high",
+    "note": "Requiere recomendaciones personalizadas"
+  },
+  {
+    "id": "ee020",
+    "query": "Hola, ¿qué servicios ofrecen?",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low"
+  }
+]

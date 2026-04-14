@@ -3,26 +3,15 @@ ARTE Chatbot Backend
 FastAPI server with /health and /chat endpoints.
 """
 
-import logging
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-
 import json
+import logging
 import os
+import re
 import uuid
 from typing import Any, Optional
 
-# Load environment variables from .env file
-from dotenv import load_dotenv
-
-load_dotenv()
-
 from backend.app.logging_config import setup_logging
 
-# Configure logging before anything else (reads LOG_LEVEL from centralized settings)
 setup_logging()
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -30,24 +19,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from rag import (
-    DEFAULT_ESCALATION_MESSAGE,
-    EscalationDetector,
-    default_detector,
-)
+from rag import DEFAULT_ESCALATION_MESSAGE
 from backend.app.llm_client import (
     LLMClient,
     LLMServiceError,
     ARTE_SYSTEM_PROMPT,
-    expand_query_with_context,
 )
-from backend.app.schemas import SourceDocument
 from backend.app.auth import verify_api_key
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
-from backend.app.tools import DATASHEET_CATEGORIES, get_tool_definitions
+from backend.app.tools import get_tool_definitions
 from backend.app.session import session_manager
 from backend.app.catalog import CatalogError, get_catalog
+from backend.app.escalation_tree import (
+    EscalationDecisionTree,
+    default_escalation_tree,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,31 +46,10 @@ INTENT_TYPES = [
     "escalate_order",
 ]
 
-import re
-
 INTENT_MARKER_RE = re.compile(r"\[INTENT:\s*(\w+)\]")
+CONFIDENCE_MARKER_RE = re.compile(r"\[CONFIDENCE:\s*(0?\.\d+)\]")
 
-
-def _extract_intent_type(text: str) -> tuple[str, str]:
-    """Extract intent_type from LLM output text.
-
-    The LLM is instructed to prefix responses with [INTENT: <type>].
-    This function parses the marker and returns the cleaned response.
-
-    Args:
-        text: Raw LLM output text.
-
-    Returns:
-        Tuple of (intent_type, cleaned_response_text).
-    """
-    match = INTENT_MARKER_RE.search(text)
-    if match:
-        intent = match.group(1)
-        if intent in INTENT_TYPES:
-            cleaned = INTENT_MARKER_RE.sub("", text).strip()
-            return intent, cleaned
-    return "FAQ", text
-
+MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
 
 app = FastAPI(title="ARTE Chatbot Backend")
 
@@ -95,48 +61,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# Diagnostic logging for environment configuration
-def _log_environment_configuration() -> None:
-    required_env_vars = [
-        "CHAT_API_KEY",
-        "OPENAI_API_KEY",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_BUCKET_NAME",
-    ]
-    for env_var in required_env_vars:
-        status = "set" if os.getenv(env_var) else "missing"
-        logger.info("Environment check: %s is %s", env_var, status)
-
-
-_log_environment_configuration()
-
-
-def _log_tool_definitions() -> None:
-    tools = get_tool_definitions()
-    for tool in tools:
-        function_block = tool.get("function", {})
-        name = function_block.get("name")
-        tool_type = tool.get("type")
-        has_parameters = isinstance(function_block.get("parameters"), dict)
-        logger.info(
-            "Tool configuration: name=%s, type=%s, has_parameters=%s",
-            name,
-            tool_type,
-            has_parameters,
-        )
-
-
-_log_tool_definitions()
-
-# Initialize clients
 llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
-catalog_search = get_catalog()
-
-MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
 
 
 class ChatRequest(BaseModel):
@@ -154,8 +81,6 @@ class ChatResponse(BaseModel):
     intent_type: str = "FAQ"
     reason: Optional[str] = None
     session_id: str
-    source_documents: list[SourceDocument] = Field(default_factory=list)
-    num_sources: int = 0
 
 
 @app.get("/health")
@@ -175,6 +100,45 @@ async def health_check() -> JSONResponse:
 async def root() -> dict[str, str]:
     """Root endpoint."""
     return {"message": "ARTE Chatbot Backend API", "docs": "/docs"}
+
+
+def _extract_intent_and_confidence(text: str) -> tuple[str, float, str]:
+    """Extract intent_type and confidence from LLM output text.
+
+    The LLM is instructed to prefix responses with:
+    - [INTENT: <type>]
+    - [CONFIDENCE: 0.XX]
+
+    This function parses both markers and returns the cleaned response.
+
+    Args:
+        text: Raw LLM output text.
+
+    Returns:
+        Tuple of (intent_type, confidence, cleaned_response_text).
+    """
+    intent_match = INTENT_MARKER_RE.search(text)
+    confidence_match = CONFIDENCE_MARKER_RE.search(text)
+
+    intent_type = "FAQ"
+    confidence = 0.5
+
+    if intent_match:
+        intent = intent_match.group(1)
+        if intent in INTENT_TYPES:
+            intent_type = intent
+
+    if confidence_match:
+        try:
+            confidence = float(confidence_match.group(1))
+            confidence = max(0.0, min(1.0, confidence))
+        except ValueError:
+            confidence = 0.5
+
+    cleaned = INTENT_MARKER_RE.sub("", text)
+    cleaned = CONFIDENCE_MARKER_RE.sub("", cleaned).strip()
+
+    return intent_type, confidence, cleaned
 
 
 def _parse_tool_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -211,81 +175,6 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _handle_buscar_producto_tool(
-    tool_call: dict[str, Any],
-) -> tuple[str, bool]:
-    """Handle a buscar_producto tool call (for testing compatibility).
-
-    Args:
-        tool_call: The tool call dict from OpenAI response.
-
-    Returns:
-        Tuple of (output_text, is_terminal).
-        is_terminal is always False for buscar_producto as it's not a final tool.
-    """
-    arguments = _parse_tool_arguments(tool_call)
-
-    categoria = arguments.get("categoria")
-    fabricante = arguments.get("fabricante")
-    capacidad_min = _safe_float(arguments.get("capacidad_min"))
-    capacidad_max = _safe_float(arguments.get("capacidad_max"))
-    tipo = arguments.get("tipo")
-    modelo_contiene = arguments.get("modelo_contiene")
-
-    if not categoria:
-        return (
-            "Error: Se requiere especificar una categoría (paneles, inversores, controladores, baterias).",
-            False,
-        )
-
-    try:
-        # Use catalog_search.search() which can be mocked in tests
-        results = catalog_search.search(
-            categoria=categoria,
-            fabricante=fabricante,
-            capacidad_min=capacidad_min,
-            capacidad_max=capacidad_max,
-            tipo=tipo,
-            modelo_contiene=modelo_contiene,
-        )
-
-        if not results:
-            return (
-                "No encontré productos que coincidan con los criterios de búsqueda especificados. "
-                "Prueba con otros filtros o contacta al equipo de ventas de Arte Soluciones Energéticas.",
-                False,
-            )
-
-        # Format results for the LLM
-        lines = [
-            f"Se encontraron {len(results)} producto(s) en la categoría '{categoria}':\n"
-        ]
-
-        for product in results:
-            lines.append(f"\n## {product.nombre_comercial} ({product.fabricante})")
-            if product.descripcion:
-                lines.append(f"Descripción: {product.descripcion}")
-            lines.append(f"Modelos disponibles:")
-            for variante in product.variantes:
-                modelo = variante.get("modelo", "Sin nombre")
-                params = variante.get("parametros_clave", {})
-                params_str = ", ".join(f"{k}: {v}" for k, v in params.items())
-                lines.append(f"  - {modelo} ({params_str})")
-            lines.append(
-                f"  → Para ver más detalles, usa leer_ficha_tecnica con ruta_s3: {product.ruta_s3}"
-            )
-
-        return ("\n".join(lines), False)
-
-    except CatalogError as e:
-        logger.error("Catalog error in buscar_producto: error=%s", e)
-        return (
-            "Lo siento, no pude consultar el catálogo de productos. "
-            "Por favor, intenta más tarde o contacta al equipo de ventas.",
-            False,
-        )
 
 
 def _process_buscar_producto(
@@ -341,7 +230,6 @@ def _process_buscar_producto(
                 "al equipo de ventas de Arte Soluciones Energéticas."
             )
 
-        # Format results for the LLM
         lines = [
             f"Se encontraron {len(results)} producto(s) en la categoría '{categoria}':\n"
         ]
@@ -399,7 +287,6 @@ def _process_leer_ficha_tecnica(
     if function_name != "leer_ficha_tecnica":
         raise ValueError(f"Unknown tool: {function_name}")
 
-    # Parse tool arguments
     arguments = _parse_tool_arguments(tool_call)
     ruta_s3 = arguments.get("ruta_s3")
     categoria = arguments.get("categoria")
@@ -417,7 +304,6 @@ def _process_leer_ficha_tecnica(
         session_id,
     )
 
-    # If ruta_s3 is not provided, try to find it via catalog search
     if not ruta_s3:
         logger.info(
             "No ruta_s3 provided, searching catalog: categoria=%s, "
@@ -436,7 +322,6 @@ def _process_leer_ficha_tecnica(
 
         try:
             catalog = get_catalog()
-            # Search by categoria and optionally fabricante/modelo
             modelo_contiene = modelo if modelo else None
             results = catalog.search(
                 categoria=categoria,
@@ -452,7 +337,6 @@ def _process_leer_ficha_tecnica(
                 )
 
             if len(results) == 1:
-                # Single product found, use its ruta_s3
                 ruta_s3 = results[0].ruta_s3
                 logger.info(
                     "Found single product, using ruta_s3=%s, session_id=%s",
@@ -460,7 +344,6 @@ def _process_leer_ficha_tecnica(
                     session_id,
                 )
             else:
-                # Multiple products found - select first one deterministically
                 ruta_s3 = results[0].ruta_s3
                 logger.warning(
                     "Multiple products found when resolving ruta_s3, selecting first: "
@@ -478,11 +361,9 @@ def _process_leer_ficha_tecnica(
             )
             raise ValueError(f"Failed to search catalog: {e}") from e
 
-    # Download PDF from S3
     try:
         pdf_bytes = s3_client.download_pdf(ruta_s3)
     except S3DownloadError:
-        # Fallback: if direct download fails, search catalog using other parameters
         logger.info(
             "Direct download failed for ruta_s3=%s, trying catalog fallback: "
             "categoria=%s, fabricante=%s, modelo=%s, session_id=%s",
@@ -503,7 +384,6 @@ def _process_leer_ficha_tecnica(
             )
 
             if len(results) == 1:
-                # Single product found, use its ruta_s3 and retry
                 ruta_s3 = results[0].ruta_s3
                 logger.info(
                     "Fallback successful, using ruta_s3=%s, session_id=%s",
@@ -512,7 +392,6 @@ def _process_leer_ficha_tecnica(
                 )
                 pdf_bytes = s3_client.download_pdf(ruta_s3)
             elif len(results) > 1:
-                # Multiple products found - pick first one as fallback (deterministic)
                 ruta_s3 = results[0].ruta_s3
                 logger.warning(
                     "Multiple products found during fallback, selecting first: "
@@ -523,22 +402,17 @@ def _process_leer_ficha_tecnica(
                 )
                 pdf_bytes = s3_client.download_pdf(ruta_s3)
             else:
-                # No results found in catalog fallback
                 raise ValueError(
                     "No se encontraron productos en el catálogo con los criterios "
                     "especificados. El archivo solicitado no está disponible."
                 )
         else:
-            # No categoria to search with, re-raise original error
             raise
 
-    # Generate filename from ruta_s3
     filename = ruta_s3.split("/")[-1] if "/" in ruta_s3 else ruta_s3
 
-    # Upload PDF to OpenAI
     file_id = file_inputs_client.upload_pdf(pdf_bytes, filename)
 
-    # Second LLM call with file
     try:
         response = llm_client.get_llm_response_with_file(
             message=user_message,
@@ -547,7 +421,6 @@ def _process_leer_ficha_tecnica(
         )
         return response, [ruta_s3]
     finally:
-        # Clean up: delete the uploaded file
         try:
             file_inputs_client.delete_file(file_id)
         except Exception as e:
@@ -559,10 +432,6 @@ def _process_leer_ficha_tecnica(
             )
 
 
-# Alias for backward compatibility with tests
-_process_tool_call = _process_leer_ficha_tecnica
-
-
 @app.post("/chat", response_model=ChatResponse)
 def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     """
@@ -572,7 +441,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     1. LLM call checks if tools need to be invoked
     2. Process tool calls (buscar_producto or leer_ficha_tecnica)
     3. Loop back to LLM with tool results until no more tools called
-    4. Return final response
+    4. Return final response with escalation decision from decision tree
     """
     session_id = request.session_id or str(uuid.uuid4())
     request_id = str(uuid.uuid4())
@@ -584,32 +453,17 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         request.message[:100],
     )
 
-    # Expandir query con contexto anafórico
-    history = session_manager.get_history(session_id)
-    expanded_query = expand_query_with_context(request.message, history)
-
-    logger.debug(
-        "Query expandida: original='%s', expandida='%s', session_id=%s",
-        request.message[:100],
-        expanded_query[:100],
-        session_id,
-    )
-
-    # Escalation is now determined by LLM intent_type classification (US-05)
-    # No keyword-based detection. The LLM prefixes responses with [INTENT: <type>].
-
-    system_message = {"role": "system", "content": ARTE_SYSTEM_PROMPT}
-    conversation_history: list[dict[str, Any]] = [
-        system_message,
-        {"role": "user", "content": expanded_query},
-    ]
-    source_docs: list[SourceDocument] = []
-
     try:
-        # Agentic loop: keep calling LLM until no more tool calls
+        context_string = session_manager.get_context_string(session_id)
+
+        system_message = {"role": "system", "content": ARTE_SYSTEM_PROMPT}
+        conversation_history: list[dict[str, Any]] = [
+            system_message,
+            {"role": "user", "content": request.message},
+        ]
+
         iteration = 0
         tool_results_summary = ""
-        last_output_text = ""
 
         while iteration < MAX_AGENTIC_ITERATIONS:
             iteration += 1
@@ -620,28 +474,21 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 session_id,
             )
 
-            # Obtener contexto de la sesión para mejorar el prompt
-            context_string = session_manager.get_context_string(session_id)
-
-            # Build user input with context and tool results if available
             if iteration == 1:
-                # First iteration: use expanded message with context
-                user_input = expanded_query
+                user_input = request.message
                 if context_string:
                     user_input = (
                         f"Contexto de la conversación:\n{context_string}\n\n"
-                        f"Pregunta actual: {expanded_query}"
+                        f"Pregunta actual: {request.message}"
                     )
             else:
-                # Subsequent iterations: include previous tool results
                 user_input = (
                     f"Resultados de las herramientas invocadas anteriormente:\n"
                     f"{tool_results_summary}\n\n"
-                    f"Pregunta original: {expanded_query}\n"
+                    f"Pregunta original: {request.message}\n"
                     f"Considera los resultados anteriores y proporciona una respuesta final."
                 )
 
-            # First LLM call with tools
             logger.debug(
                 "Calling LLM with tools: request_id=%s, session_id=%s, "
                 "model=%s, iteration=%d",
@@ -657,33 +504,53 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 context=context_string,
             )
 
-            last_output_text = llm_response.get("output_text", "")
-            tool_calls = llm_response.get("tool_calls", [])
+            tool_calls = llm_response.get("tool_calls")
 
             if not tool_calls:
-                # No tool call needed - return normal response
                 content = llm_response.get("output_text", "")
+                intent_type, confidence, cleaned_content = (
+                    _extract_intent_and_confidence(content)
+                )
+
+                decision = default_escalation_tree.decide(
+                    intent_type=intent_type,
+                    confidence=confidence,
+                    user_message=request.message,
+                )
+
+                if decision.escalate:
+                    session_manager.add_turn(
+                        session_id=session_id,
+                        question=request.message,
+                        answer=DEFAULT_ESCALATION_MESSAGE,
+                        source_documents=[],
+                    )
+                    return ChatResponse(
+                        response=DEFAULT_ESCALATION_MESSAGE,
+                        escalate=True,
+                        intent_type=intent_type,
+                        reason=decision.reason,
+                        session_id=session_id,
+                    )
+
                 session_manager.add_turn(
                     session_id=session_id,
                     question=request.message,
-                    answer=content,
+                    answer=cleaned_content,
                     source_documents=[],
                 )
                 return ChatResponse(
-                    response=content,
+                    response=cleaned_content,
                     escalate=False,
+                    intent_type=intent_type,
                     session_id=session_id,
-                    source_documents=source_docs,
-                    num_sources=len(source_docs),
                 )
 
-            # Process tool calls and collect results
             tool_results: list[dict[str, Any]] = []
 
             for tool_call in tool_calls:
                 function_name = tool_call.get("function", {}).get("name")
                 tool_call_id = tool_call.get("id", "")
-                arguments = _parse_tool_arguments(tool_call)
 
                 logger.info(
                     "Processing tool call: request_id=%s, session_id=%s, "
@@ -696,6 +563,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
                 try:
                     if function_name == "buscar_producto":
+                        arguments = _parse_tool_arguments(tool_call)
                         result_content = _process_buscar_producto(
                             arguments=arguments,
                             session_id=session_id,
@@ -710,16 +578,11 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         )
 
                     elif function_name == "leer_ficha_tecnica":
-                        final_response, new_source_docs = _process_leer_ficha_tecnica(
+                        final_response, _ = _process_leer_ficha_tecnica(
                             tool_call=tool_call,
-                            user_message=expanded_query,
+                            user_message=request.message,
                             session_id=session_id,
                         )
-                        # Track source documents
-                        source_docs.extend(
-                            [SourceDocument(ruta=ruta) for ruta in new_source_docs]
-                        )
-
                         tool_results.append(
                             {
                                 "tool_call_id": tool_call_id,
@@ -787,7 +650,6 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         }
                     )
                 except ValueError as e:
-                    # ValueError includes cases like missing ruta_s3 with catalog fallback
                     logger.warning(
                         "ValueError in tool call: request_id=%s, session_id=%s, "
                         "function=%s, error=%s",
@@ -825,7 +687,6 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         }
                     )
 
-            # Check if all tools failed - if so, return error response
             if all(not r["success"] for r in tool_results):
                 error_content = "\n".join(
                     f"- {r['function_name']}: {r['content']}" for r in tool_results
@@ -839,12 +700,10 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 return ChatResponse(
                     response=error_content,
                     escalate=False,
+                    intent_type="FAQ",
                     session_id=session_id,
-                    source_documents=source_docs,
-                    num_sources=len(source_docs),
                 )
 
-            # Build tool results summary for next iteration
             tool_results_summary = "\n\n".join(
                 f"## Resultado de {r['function_name']}:\n{r['content']}"
                 for r in tool_results
@@ -855,7 +714,6 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 iteration,
             )
 
-        # Max iterations reached
         logger.warning(
             "Max agentic iterations reached: request_id=%s, session_id=%s, "
             "iterations=%d",
@@ -869,9 +727,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 "tu pregunta o contacta al equipo de ventas."
             ),
             escalate=False,
+            intent_type="FAQ",
             session_id=session_id,
-            source_documents=source_docs,
-            num_sources=len(source_docs),
         )
 
     except LLMServiceError as e:
@@ -888,7 +745,6 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             request_id,
             session_id,
         )
-
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

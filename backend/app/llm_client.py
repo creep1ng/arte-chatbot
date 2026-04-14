@@ -1,10 +1,9 @@
 """LLM client module for Arte Chatbot.
 
-Provides a client to interact with OpenAI Chat Completions API
+Provides a client to interact with OpenAI Responses API
 for generating chatbot responses with tool calling support.
 """
 
-import json
 import logging
 import os
 from typing import Any, Optional
@@ -13,7 +12,6 @@ from openai import APIError, AuthenticationError, OpenAI
 
 from backend.app.config import settings
 from backend.app.tools import get_tool_definitions
-from backend.app.session import ChatTurn
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +41,11 @@ ARTE_SYSTEM_PROMPT = (
     "- No bloquees la tool call por falta de información. Es mejor intentar "
     "la búsqueda con datos parciales que pedir todos los campos al usuario.\n\n"
     "## Convención para rutas S3\n"
-    "- NO intentes construir la ruta S3 manualmente. Deja el campo `ruta_s3` VACÍO cuando llames a leer_ficha_tecnica.\n"
-    "- Proporciona solo `categoria`, `fabricante` y `modelo`. El sistema buscará automáticamente la ruta correcta en el catálogo.\n"
-    "- Si necesitas ver qué productos existen, usa primero la herramienta `buscar_producto`.\n\n"
+    "- Cuando llames a leer_ficha_tecnica, construye la ruta S3 usando: "
+    "{categoria}/{fabricante}-{modelo}.pdf (todo en minúsculas, espacios "
+    "reemplazados por guiones).\n"
+    "- Ejemplo: para un panel Jinko Tiger Pro 460W, la ruta sería: "
+    "paneles/jinko-tiger-pro-460w.pdf\n\n"
     "## Cuando uses datos de una ficha técnica\n"
     "- Cita los valores exactos del documento (potencia, voltaje, eficiencia, "
     "dimensiones, peso, etc.).\n"
@@ -59,29 +59,17 @@ ARTE_SYSTEM_PROMPT = (
     "cualquier consulta conceptual se responden directamente sin usar "
     "herramientas. Usa tu conocimiento general sobre energía solar.\n\n"
     "## Clasificación de intención\n"
-    "- Al INICIO de cada respuesta, incluye un marcador de clasificación.\n"
-    "- Usa EXACTAMENTE este formato: [INTENT: <tipo>]\n"
+    "- Al INICIO de cada respuesta, incluye UN markers de clasificación:\n"
+    "  - [INTENT: <tipo>] - clasificación de intención\n"
+    "  - [CONFIDENCE: 0.XX] - confianza de tu clasificación (entre 0.00 y 1.00)\n"
     "- Tipos válidos: FAQ, product_info, escalate_quote, escalate_technical, escalate_order\n"
-    "- FAQ: preguntas generales sobre energía solar, conceptos teóricos, diferencias entre "
-    "tecnologías (ej: '¿qué es un inversor híbrido?', '¿diferencia entre mono y policristalino?'). "
-    "NO menciona marcas ni modelos específicos.\n"
-    "- product_info: consultas sobre un producto, marca o modelo específico (ej: 'panel JA Solar "
-    "JAM72S30', 'inversores Huawei', 'Longi Hi-MO 5'). SIEMPRE que se menciona un fabricante, "
-    "marca o modelo concreto, es product_info.\n"
+    "- FAQ: preguntas generales sobre energía solar, conceptos, diferencias entre tecnologías\n"
+    "- product_info: consultas sobre especificaciones, modelos, características de productos\n"
     "- escalate_quote: solicitudes de cotización, presupuesto, precio de proyectos completos\n"
     "- escalate_technical: problemas técnicos que requieren revisión, errores en equipos\n"
     "- escalate_order: pedidos, compras, adquisición de productos\n"
-    "- Ejemplo: [INTENT: FAQ] Los paneles monocristalinos tienen mayor eficiencia...\n"
-    "- Ejemplo: [INTENT: product_info] El panel JA Solar JAM72S30-545 tiene...\n"
-    "- Ejemplo: [INTENT: escalate_quote] Un agente de ventas te contactará...\n\n"
-    "## Herramientas\n"
-    "- Usa la herramienta buscar_producto cuando el usuario pregunte por una "
-    "categoría o tipo de producto sin especificar modelo exacto.\n"
-    "- Usa la herramienta leer_ficha_tecnica únicamente cuando ya tengas la "
-    "ruta_s3 del producto específico.\n"
-    "- Si no hay un producto concreto y la pregunta es general, responde directamente.\n"
-    "- Si buscar_producto no encuentra resultados, informa al usuario y sugiere "
-    "contactar al equipo de ventas."
+    "- Ejemplo: [INTENT: FAQ][CONFIDENCE: 0.95] Los paneles monocristalinos tienen mayor eficiencia...\n"
+    "- Ejemplo: [INTENT: escalate_quote][CONFIDENCE: 0.98] Un agente de ventas te contactará..."
 )
 
 DATASHEET_SYSTEM_PROMPT = (
@@ -100,66 +88,8 @@ class LLMServiceError(Exception):
     pass
 
 
-REWRITE_PROMPT = """
-Dada la siguiente conversación y la pregunta del usuario, reescribe la pregunta
-para que sea autocontenida (sin referencias pronominales). 
-Si la pregunta ya es autocontenida, devuélvela sin cambios.
-
-Historial: {history}
-Pregunta actual: {query}
-Pregunta reescrita:
-""".strip()
-
-
-def expand_query_with_context(query: str, history: list[ChatTurn]) -> str:
-    """
-    Reescribe la query del usuario para que sea autocontenida usando el historial de la conversación.
-
-    Args:
-        query: Pregunta actual del usuario
-        history: Lista de turnos de la conversación (ChatTurn objects)
-
-    Returns:
-        Pregunta reescrita y autocontenida, o la original en caso de fallo
-    """
-    if not history:
-        return query
-
-    # Formatear historial para el prompt
-    history_parts = []
-    for i, turn in enumerate(history, 1):
-        history_parts.append(f"Turno {i}:")
-        history_parts.append(f"Usuario: {turn.question}")
-        history_parts.append(f"Asistente: {turn.answer}")
-        history_parts.append("")
-
-    history_str = "\n".join(history_parts).strip()
-
-    # Crear el prompt completo
-    prompt = REWRITE_PROMPT.format(history=history_str, query=query)
-
-    try:
-        # Usar el cliente OpenAI directamente para esta llamada simple
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
-            model=DEFAULT_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=200,
-        )
-
-        rewritten = response.choices[0].message.content.strip()
-        logger.debug("Query expandida: '%s' → '%s'", query, rewritten)
-
-        return rewritten if rewritten else query
-
-    except Exception as e:
-        logger.warning("Fallo al expandir query, usando original: %s", e)
-        return query
-
-
 class LLMClient:
-    """Client for interacting with OpenAI Chat Completions API."""
+    """Client for interacting with OpenAI Responses API."""
 
     def __init__(
         self,
@@ -182,39 +112,17 @@ class LLMClient:
             self._openai_client = OpenAI(api_key=self.api_key)
         return self._openai_client
 
-    @staticmethod
-    def _extract_text_from_content(content: Any) -> str:
-        """Convert chat completion message content into a plain string."""
-        if content is None:
-            return ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            text_parts: list[str] = []
-            for block in content:
-                if isinstance(block, dict):
-                    block_text = block.get("text")
-                    if block_text:
-                        text_parts.append(str(block_text))
-                else:
-                    text_parts.append(str(block))
-            return "\n".join(text_parts)
-        return str(content)
-
     def get_llm_response_with_tools(
         self,
-        message: Optional[str] = None,
-        *,
-        messages: Optional[list[dict[str, Any]]] = None,
+        message: str,
         session_id: str,
         system_prompt: Optional[str] = None,
         context: str = "",
     ) -> dict[str, Any]:
-        """Send messages to the LLM with tool definitions using Chat Completions.
+        """Send a message to the LLM with tool definitions using Responses API.
 
         Args:
-            message: Single-turn user input (legacy usage).
-            messages: Full message list to send to the Responses API.
+            message: The user's message.
             session_id: The session identifier for context.
             system_prompt: Optional system prompt override.
             context: Optional session context string with conversation history.
