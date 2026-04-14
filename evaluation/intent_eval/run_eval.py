@@ -11,7 +11,7 @@ Usage:
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
 DATASET_PATH = Path(__file__).parent / "dataset.json"
 OUTPUT_DIR = Path(__file__).parent / "output"
+CHAT_API_KEY = os.getenv("CHAT_API_KEY", "")
 
 ACCURACY_THRESHOLD = 80.0
 
@@ -54,17 +55,21 @@ def run_single_query(
         "correct": False,
         "error": "",
         "latency_ms": 0.0,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     try:
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
+        headers = {}
+        if CHAT_API_KEY:
+            headers["X-API-Key"] = CHAT_API_KEY
         response = client.post(
             CHAT_ENDPOINT,
             json={"message": query},
+            headers=headers,
             timeout=30.0,
         )
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         result["latency_ms"] = (end_time - start_time).total_seconds() * 1000
 
         if response.status_code == 200:
@@ -85,7 +90,9 @@ def run_single_query(
     return result
 
 
-def save_results(results: list[dict[str, Any]], accuracy: float, timestamp: str) -> Path:
+def save_results(
+    results: list[dict[str, Any]], accuracy: float, timestamp: str
+) -> Path:
     """Save evaluation results to JSON file."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output_path = OUTPUT_DIR / f"intent_eval_{timestamp}.json"
@@ -190,7 +197,9 @@ def run_intent_eval() -> None:
 
     print("Per-category breakdown:")
     for cat, counts in sorted(categories.items()):
-        cat_acc = (counts["correct"] / counts["total"] * 100) if counts["total"] > 0 else 0
+        cat_acc = (
+            (counts["correct"] / counts["total"] * 100) if counts["total"] > 0 else 0
+        )
         print(f"  {cat}: {counts['correct']}/{counts['total']} ({cat_acc:.0f}%)")
 
     print()
@@ -201,7 +210,7 @@ def run_intent_eval() -> None:
         print(f"FAIL: Accuracy {accuracy:.1f}% < {ACCURACY_THRESHOLD}%")
 
     # Save results
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     output_path = save_results(results, accuracy, timestamp)
     print(f"Results saved to: {output_path}")
     print("=" * 60)

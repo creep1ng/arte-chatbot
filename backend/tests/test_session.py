@@ -9,7 +9,7 @@ from backend.app.session import SessionManager, ChatTurn
 def test_session_manager_initialization():
     """Test that SessionManager initializes with correct default values."""
     sm = SessionManager()
-    assert sm.max_turns == 3
+    assert sm.max_turns == 20
     assert sm.sessions == {}
 
 

@@ -21,7 +21,7 @@ class ChatTurn(BaseModel):
 class SessionManager:
     """Gestiona las sesiones de conversación."""
 
-    def __init__(self, max_turns: int = 3):
+    def __init__(self, max_turns: int = 20):
         self.sessions: Dict[str, List[ChatTurn]] = {}
         self.max_turns = max_turns
         self._lock = threading.Lock()
@@ -31,7 +31,7 @@ class SessionManager:
         session_id: str,
         question: str,
         answer: str,
-        source_documents: List[str] = None,
+        source_documents: Optional[List[str]] = None,
     ) -> None:
         """
         Añade un turno a la sesión.
