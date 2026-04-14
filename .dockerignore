@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# Docs
+*.md
+docs/
+evaluation/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# IDE
+.idea/
+.vscode/
+.kilocode/
+.kilo/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Terraform
+infrastructure/
+*.tfstate
+*.tfstate.*
+
+# Misc
+LICENSE
+README.md
+Makefile
+scripts/
