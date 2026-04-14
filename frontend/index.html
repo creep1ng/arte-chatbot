@@ -432,6 +432,7 @@
       // --- State ---
       let sessionId = null;
       let isProcessing = false;
+      let isEscalated = false;
 
       // --- DOM refs ---
       const messagesEl = document.getElementById("messages");
@@ -538,7 +539,7 @@
       // --- Send message ---
       async function sendMessage() {
         const text = inputField.value.trim();
-        if (!text || isProcessing) return;
+        if (!text || isProcessing || isEscalated) return;
 
         if (!API_KEY) {
           addMessage(
@@ -620,6 +621,13 @@
             escalate: data.escalate,
             reason: data.reason,
           });
+
+          if (data.escalate) {
+            isEscalated = true;
+            inputField.disabled = true;
+            inputField.placeholder = "Conversacion escalada a un agente humano";
+            sendBtn.disabled = true;
+          }
         } catch (error) {
           hideTyping();
           addMessage(
