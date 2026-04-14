@@ -85,6 +85,9 @@ def _extract_intent_type(text: str) -> tuple[str, str]:
     return "FAQ", text
 
 
+ESCALATE_INTENTS = {"escalate_quote", "escalate_technical", "escalate_order"}
+
+
 app = FastAPI(title="ARTE Chatbot Backend")
 
 app.add_middleware(
@@ -661,17 +664,37 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             tool_calls = llm_response.get("tool_calls", [])
 
             if not tool_calls:
-                # No tool call needed - return normal response
+                # No tool call needed - check intent type for escalation
                 content = llm_response.get("output_text", "")
+                intent_type, cleaned_content = _extract_intent_type(content)
+
+                if intent_type in ESCALATE_INTENTS:
+                    session_manager.add_turn(
+                        session_id=session_id,
+                        question=request.message,
+                        answer=DEFAULT_ESCALATION_MESSAGE,
+                        source_documents=[],
+                    )
+                    return ChatResponse(
+                        response=DEFAULT_ESCALATION_MESSAGE,
+                        escalate=True,
+                        intent_type=intent_type,
+                        reason=f"Intent classified as {intent_type}",
+                        session_id=session_id,
+                        source_documents=source_docs,
+                        num_sources=len(source_docs),
+                    )
+
                 session_manager.add_turn(
                     session_id=session_id,
                     question=request.message,
-                    answer=content,
+                    answer=cleaned_content,
                     source_documents=[],
                 )
                 return ChatResponse(
-                    response=content,
+                    response=cleaned_content,
                     escalate=False,
+                    intent_type=intent_type,
                     session_id=session_id,
                     source_documents=source_docs,
                     num_sources=len(source_docs),
@@ -855,7 +878,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 iteration,
             )
 
-        # Max iterations reached
+        # Max iterations reached - check if final response indicates escalation
         logger.warning(
             "Max agentic iterations reached: request_id=%s, session_id=%s, "
             "iterations=%d",
@@ -863,12 +886,32 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             session_id,
             iteration,
         )
+        intent_type, cleaned_text = _extract_intent_type(last_output_text)
+
+        if intent_type in ESCALATE_INTENTS:
+            session_manager.add_turn(
+                session_id=session_id,
+                question=request.message,
+                answer=DEFAULT_ESCALATION_MESSAGE,
+                source_documents=[],
+            )
+            return ChatResponse(
+                response=DEFAULT_ESCALATION_MESSAGE,
+                escalate=True,
+                intent_type=intent_type,
+                reason=f"Intent classified as {intent_type}",
+                session_id=session_id,
+                source_documents=source_docs,
+                num_sources=len(source_docs),
+            )
+
         return ChatResponse(
             response=(
                 "Se alcanzó el límite de iteraciones. Por favor, reformula "
                 "tu pregunta o contacta al equipo de ventas."
             ),
             escalate=False,
+            intent_type=intent_type,
             session_id=session_id,
             source_documents=source_docs,
             num_sources=len(source_docs),
