@@ -58,7 +58,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Docker image
-        run: docker compose build backend
+        run: docker compose build backend --no-cache
 
   test-health:
     name: Test /health Endpoint
