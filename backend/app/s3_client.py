@@ -36,26 +36,35 @@ class S3Client:
 
         Args:
             bucket_name: Name of the S3 bucket. Defaults to AWS_BUCKET_NAME env var.
+                         If provided explicitly, takes precedence over env/settings.
             aws_access_key_id: AWS access key ID. Defaults to AWS_ACCESS_KEY_ID env var.
+                               If provided explicitly, takes precedence over env/settings.
             aws_secret_access_key: AWS secret access key. Defaults to AWS_SECRET_ACCESS_KEY env var.
+                                   If provided explicitly, takes precedence over env/settings.
             aws_region: AWS region. Defaults to AWS_REGION env var.
+                        If provided explicitly, takes precedence over env/settings.
         """
+        # Use explicit parameters if provided, otherwise fallback to env/settings
         self.bucket_name = (
             bucket_name
             if bucket_name is not None
-            else os.getenv("AWS_BUCKET_NAME") or settings.aws_bucket_name
+            else (os.getenv("AWS_BUCKET_NAME") or settings.aws_bucket_name)
         )
         self.aws_access_key_id = (
             aws_access_key_id
-            or os.getenv("AWS_ACCESS_KEY_ID")
-            or settings.aws_access_key_id
+            if aws_access_key_id is not None
+            else (os.getenv("AWS_ACCESS_KEY_ID") or settings.aws_access_key_id)
         )
         self.aws_secret_access_key = (
             aws_secret_access_key
-            or os.getenv("AWS_SECRET_ACCESS_KEY")
-            or settings.aws_secret_access_key
+            if aws_secret_access_key is not None
+            else (os.getenv("AWS_SECRET_ACCESS_KEY") or settings.aws_secret_access_key)
         )
-        self.aws_region = aws_region or os.getenv("AWS_REGION") or settings.aws_region
+        self.aws_region = (
+            aws_region
+            if aws_region is not None
+            else (os.getenv("AWS_REGION") or settings.aws_region)
+        )
 
         if not self.bucket_name:
             logger.warning("AWS_BUCKET_NAME not configured")

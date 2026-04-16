@@ -1,323 +1,151 @@
-"""Catalog module for searching products in catalog_index.json.
-
-This module provides functionality to search products in the catalog
-using various criteria like category, manufacturer, model, and capacity.
+"""
+Catalog module for product indexing and search functionality.
+Loads catalog index from S3 and provides search capabilities.
 """
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, List, Optional, Dict
 
-from backend.app.config import settings
+from pydantic import BaseModel, Field
+
 from backend.app.s3_client import S3Client, S3DownloadError
+
+s3_client = S3Client()
 
 logger = logging.getLogger(__name__)
 
-# S3 key for the catalog index
-CATALOG_INDEX_S3_KEY = "index/catalog_index.json"
+CATALOG_INDEX_PATH = "index/catalog_index.json"
 
 
 class CatalogError(Exception):
-    """Raised when catalog operations fail."""
+    """Custom exception for catalog-related errors."""
 
     pass
 
 
-class CatalogSearchResult:
-    """Represents a product search result with its variants and S3 route."""
+class ProductVariant(BaseModel):
+    """Variant of a product with specific parameters."""
 
-    def __init__(
-        self,
-        id: str,
-        nombre_comercial: str,
-        categoria: str,
-        fabricante: str,
-        ruta_s3: str,
-        descripcion: Optional[str] = None,
-        variantes: Optional[list[dict[str, Any]]] = None,
-        parametros_comunes: Optional[dict[str, Any]] = None,
-    ) -> None:
-        self.id = id
-        self.nombre_comercial = nombre_comercial
-        self.categoria = categoria
-        self.fabricante = fabricante
-        self.ruta_s3 = ruta_s3
-        self.descripcion = descripcion
-        self.variantes = variantes or []
-        self.parametros_comunes = parametros_comunes or {}
+    modelo: str
+    parametros_clave: Dict[str, Any] = Field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for tool response."""
-        return {
-            "id": self.id,
-            "nombre_comercial": self.nombre_comercial,
-            "categoria": self.categoria,
-            "fabricante": self.fabricante,
-            "ruta_s3": self.ruta_s3,
-            "descripcion": self.descripcion,
-            "variantes": self.variantes,
-        }
 
-    @classmethod
-    def from_product_dict(cls, product: dict[str, Any]) -> "CatalogSearchResult":
-        """Create from a product dictionary in catalog_index format."""
-        return cls(
-            id=product.get("id", ""),
-            nombre_comercial=product.get("nombre_comercial", ""),
-            categoria=product.get("categoria", ""),
-            fabricante=product.get("fabricante", ""),
-            ruta_s3=product.get("ruta_s3", ""),
-            descripcion=product.get("descripcion"),
-            variantes=product.get("variantes", []),
-            parametros_comunes=product.get("parametros_comunes", {}),
-        )
+class CatalogProduct(BaseModel):
+    """Product entry in the catalog index."""
+
+    nombre_comercial: str
+    fabricante: str
+    categoria: str
+    subcategoria: Optional[str] = None
+    descripcion: Optional[str] = None
+    ruta_s3: str
+    variantes: List[ProductVariant] = Field(default_factory=list)
+    parametros_comunes: Dict[str, Any] = Field(default_factory=dict)
 
 
 class Catalog:
-    """Client for searching products in the catalog index."""
+    """Catalog class that loads product index and provides search functionality."""
 
-    def __init__(self, s3_client: Optional[S3Client] = None) -> None:
-        """Initialize the catalog client.
+    def __init__(self, index_data: Dict[str, Any]):
+        self.products: List[CatalogProduct] = []
+        self._load_index(index_data)
 
-        Args:
-            s3_client: Optional S3Client instance. If not provided,
-                       a new one will be created.
-        """
-        self._s3_client = s3_client or S3Client()
-        self._index_cache: Optional[dict[str, Any]] = None
-
-    def _load_index(self) -> dict[str, Any]:
-        """Load the catalog index from S3 or cache.
-
-        Returns:
-            The catalog index dictionary.
-
-        Raises:
-            CatalogError: If the index cannot be loaded.
-        """
-        if self._index_cache is not None:
-            return self._index_cache
-
+    def _load_index(self, index_data: Dict[str, Any]) -> None:
+        """Load and validate catalog index data."""
         try:
-            logger.debug("Loading catalog index from S3: %s", CATALOG_INDEX_S3_KEY)
-            index_bytes = self._s3_client.download_pdf(CATALOG_INDEX_S3_KEY)
-            index_data: dict[str, Any] = json.loads(index_bytes.decode("utf-8"))
-            self._index_cache = index_data
-            productos = index_data.get("productos", [])
-            logger.info(
-                "Catalog index loaded: %d products",
-                len(productos),
-            )
-            return index_data
-        except S3DownloadError as e:
-            logger.error("Failed to load catalog index: %s", e)
-            raise CatalogError(f"Failed to load catalog index: {e}") from e
-        except json.JSONDecodeError as e:
-            logger.error("Invalid JSON in catalog index: %s", e)
-            raise CatalogError(f"Invalid catalog index JSON: {e}") from e
-
-    def invalidate_cache(self) -> None:
-        """Invalidate the cached catalog index."""
-        self._index_cache = None
-        logger.debug("Catalog index cache invalidated")
+            products_data = index_data.get("products", [])
+            self.products = [CatalogProduct(**p) for p in products_data]
+            logger.info("Loaded %d products into catalog", len(self.products))
+        except Exception as e:
+            logger.error("Failed to parse catalog index: %s", str(e))
+            raise CatalogError(f"Invalid catalog index format: {e}") from e
 
     def search(
         self,
-        categoria: str,
+        categoria: Optional[str] = None,
         fabricante: Optional[str] = None,
         capacidad_min: Optional[float] = None,
         capacidad_max: Optional[float] = None,
         tipo: Optional[str] = None,
         modelo_contiene: Optional[str] = None,
-    ) -> list[CatalogSearchResult]:
-        """Search for products in the catalog.
+    ) -> List[CatalogProduct]:
+        """
+        Search products in the catalog with optional filters.
 
         Args:
-            categoria: Product category (paneles, inversores, controladores, baterias).
-            fabricante: Optional manufacturer name to filter by.
-            capacidad_min: Optional minimum capacity (W for panels/inverters, Ah for batteries).
-            capacidad_max: Optional maximum capacity.
-            tipo: Optional product type (e.g., mppt, pwm, monocristalino, multifuncional).
-            modelo_contiene: Optional string that the model name should contain.
+            categoria: Filter by product category (paneles, inversores, etc.)
+            fabricante: Filter by manufacturer name
+            capacidad_min: Minimum capacity filter
+            capacidad_max: Maximum capacity filter
+            tipo: Product type filter
+            modelo_contiene: Filter variants containing this string in model name
 
         Returns:
-            List of matching products with their variants.
+            List of matching CatalogProduct objects
         """
-        index = self._load_index()
-        productos = index.get("productos", [])
-        resultados: list[CatalogSearchResult] = []
+        results = list(self.products)
+
+        if categoria:
+            results = [p for p in results if p.categoria.lower() == categoria.lower()]
+
+        if fabricante:
+            results = [p for p in results if fabricante.lower() in p.fabricante.lower()]
+
+        if modelo_contiene:
+            filtered = []
+            for product in results:
+                matching_variants = [
+                    v
+                    for v in product.variantes
+                    if modelo_contiene.lower() in v.modelo.lower()
+                ]
+                if matching_variants:
+                    filtered.append(product)
+            results = filtered
 
         logger.debug(
-            "Searching catalog: categoria=%s, fabricante=%s, capacidad_min=%s, "
-            "capacidad_max=%s, tipo=%s, modelo_contiene=%s",
+            "Catalog search returned %d results for filters: categoria=%s, fabricante=%s",
+            len(results),
             categoria,
             fabricante,
-            capacidad_min,
-            capacidad_max,
-            tipo,
-            modelo_contiene,
         )
 
-        for producto in productos:
-            # Filter by category
-            if producto.get("categoria") != categoria:
-                continue
-
-            # Filter by manufacturer (case-insensitive partial match)
-            if fabricante:
-                fabricante_producto = producto.get("fabricante", "").lower()
-                if fabricante.lower() not in fabricante_producto:
-                    continue
-
-            # Filter by type in parametros_comunes
-            if tipo:
-                parametros_comunes = producto.get("parametros_comunes", {})
-                tipo_producto = str(parametros_comunes.get("tipo", "")).lower()
-                if tipo.lower() not in tipo_producto:
-                    continue
-
-            # Filter variantes by capacity and model name
-            variantes = producto.get("variantes", [])
-            variantes_filtradas: list[dict[str, Any]] = []
-
-            for variante in variantes:
-                parametros_clave = variante.get("parametros_clave", {})
-
-                # Check capacity range
-                if capacidad_min is not None or capacidad_max is not None:
-                    capacidad = self._get_capacidad(parametros_clave, producto)
-                    if capacidad is None:
-                        # If no capacidad found, include the variant but won't filter by capacity
-                        pass
-                    else:
-                        if capacidad_min is not None and capacidad < capacidad_min:
-                            continue
-                        if capacidad_max is not None and capacidad > capacidad_max:
-                            continue
-
-                # Check model name contains
-                if modelo_contiene:
-                    modelo = variante.get("modelo", "").lower()
-                    if modelo_contiene.lower() not in modelo:
-                        continue
-
-                variantes_filtradas.append(variante)
-
-            # Only include product if it has matching variants
-            if variantes_filtradas:
-                result = CatalogSearchResult.from_product_dict(producto)
-                result.variantes = variantes_filtradas
-                resultados.append(result)
-
-        logger.info(
-            "Catalog search found %d products with %d total variants",
-            len(resultados),
-            sum(len(r.variantes) for r in resultados),
-        )
-        return resultados
-
-    def _get_capacidad(
-        self, parametros_clave: dict[str, Any], producto: dict[str, Any]
-    ) -> Optional[float]:
-        """Extract capacity value from variant parameters.
-
-        The capacity field name varies by category:
-        - paneles: potencia_w (in W)
-        - inversores: capacidad (in W or kVA)
-        - controladores: capacidad_a (in A)
-        - baterias: capacidad (in Ah or kWh)
-
-        Args:
-            parametros_clave: The variant's parametros_clave dictionary.
-            producto: The full product dictionary for fallback.
-
-        Returns:
-            The capacity value or None if not found.
-        """
-        # Try variant-level capacity
-        if "potencia_w" in parametros_clave:
-            return float(parametros_clave["potencia_w"])
-        if "capacidad" in parametros_clave:
-            return float(parametros_clave["capacidad"])
-        if "capacidad_a" in parametros_clave:
-            return float(parametros_clave["capacidad_a"])
-
-        # Fall back to parametros_comunes
-        parametros_comunes = producto.get("parametros_comunes", {})
-        if "potencia_w" in parametros_comunes:
-            return float(parametros_comunes["potencia_w"])
-        if "capacidad" in parametros_comunes:
-            return float(parametros_comunes["capacidad"])
-        if "capacidad_a" in parametros_comunes:
-            return float(parametros_comunes["capacidad_a"])
-
-        return None
-
-    def get_product_by_ruta_s3(self, ruta_s3: str) -> Optional[CatalogSearchResult]:
-        """Get a product by its S3 route.
-
-        Args:
-            ruta_s3: The S3 path to the product's PDF.
-
-        Returns:
-            The product if found, None otherwise.
-        """
-        index = self._load_index()
-        productos = index.get("productos", [])
-
-        for producto in productos:
-            if producto.get("ruta_s3") == ruta_s3:
-                return CatalogSearchResult.from_product_dict(producto)
-
-        return None
+        return results
 
 
-# Global catalog instance
-_catalog: Optional[Catalog] = None
+_catalog_instance: Optional[Catalog] = None
 
 
-def get_catalog() -> Catalog:
-    """Get the global Catalog instance.
-
-    Returns:
-        The Catalog singleton.
+def get_catalog(force_reload: bool = False) -> Catalog:
     """
-    global _catalog
-    if _catalog is None:
-        _catalog = Catalog()
-    return _catalog
-
-
-# Module-level function for backward compatibility
-def search_products(
-    categoria: str,
-    fabricante: Optional[str] = None,
-    capacidad_min: Optional[float] = None,
-    capacidad_max: Optional[float] = None,
-    tipo: Optional[str] = None,
-    modelo_contiene: Optional[str] = None,
-) -> list[dict[str, Any]]:
-    """Search for products and return as list of dictionaries.
-
-    This is a convenience function that wraps Catalog.search().
+    Get the singleton catalog instance. Loads from S3 if not already loaded.
 
     Args:
-        categoria: Product category.
-        fabricante: Optional manufacturer name.
-        capacidad_min: Optional minimum capacity.
-        capacidad_max: Optional maximum capacity.
-        tipo: Optional product type.
-        modelo_contiene: Optional model name substring.
+        force_reload: If True, reload catalog from S3 even if already loaded
 
     Returns:
-        List of product dictionaries.
+        Initialized Catalog instance
+
+    Raises:
+        CatalogError: If catalog cannot be loaded from S3
     """
-    results = get_catalog().search(
-        categoria=categoria,
-        fabricante=fabricante,
-        capacidad_min=capacidad_min,
-        capacidad_max=capacidad_max,
-        tipo=tipo,
-        modelo_contiene=modelo_contiene,
-    )
-    return [r.to_dict() for r in results]
+    global _catalog_instance
+
+    if _catalog_instance is None or force_reload:
+        logger.info("Loading catalog index from S3: %s", CATALOG_INDEX_PATH)
+        try:
+            index_bytes = s3_client.download_pdf(CATALOG_INDEX_PATH)
+            index_data = json.loads(index_bytes.decode("utf-8"))
+            _catalog_instance = Catalog(index_data)
+        except S3DownloadError as e:
+            logger.error("Failed to download catalog index from S3: %s", str(e))
+            raise CatalogError(f"Could not retrieve catalog index: {e}") from e
+        except json.JSONDecodeError as e:
+            logger.error("Failed to parse catalog index JSON: %s", str(e))
+            raise CatalogError(f"Invalid catalog index JSON: {e}") from e
+        except Exception as e:
+            logger.exception("Unexpected error loading catalog")
+            raise CatalogError(f"Failed to load catalog: {e}") from e
+
+    return _catalog_instance

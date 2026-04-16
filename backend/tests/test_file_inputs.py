@@ -12,35 +12,36 @@ from backend.app.file_inputs import FileInputsClient, FileUploadError
 class TestFileInputsClientInitialization:
     """Tests for FileInputsClient initialization."""
 
-    @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key123"}, clear=True)
-    def test_file_inputs_client_default_env_vars(self) -> None:
+    @patch("backend.app.file_inputs.settings")
+    def test_file_inputs_client_default_env_vars(self, mock_settings: MagicMock) -> None:
         """Test FileInputsClient initialization with default env vars."""
+        mock_settings.openai_api_key = "sk-test-key123"
         client = FileInputsClient()
         assert client.api_key == "sk-test-key123"
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_file_inputs_client_explicit_api_key(self) -> None:
         """Test FileInputsClient initialization with explicit API key."""
         client = FileInputsClient(api_key="sk-explicit-key456")
         assert client.api_key == "sk-explicit-key456"
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_file_inputs_client_raises_without_api_key(self) -> None:
+    @patch("backend.app.file_inputs.settings")
+    def test_file_inputs_client_raises_without_api_key(self, mock_settings: MagicMock) -> None:
         """Test FileInputsClient raises error when no API key available."""
+        mock_settings.openai_api_key = None
         with pytest.raises(FileUploadError) as exc_info:
             FileInputsClient()
 
         assert "API key not configured" in str(exc_info.value)
 
-    @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-env-key"}, clear=True)
-    def test_file_inputs_client_uses_env_var(self) -> None:
-        """Test FileInputsClient uses OPENAI_API_KEY env var when no explicit key."""
+    @patch("backend.app.file_inputs.settings")
+    def test_file_inputs_client_uses_env_var(self, mock_settings: MagicMock) -> None:
+        """Test FileInputsClient uses settings when no explicit key."""
+        mock_settings.openai_api_key = "sk-env-key"
         client = FileInputsClient()
         assert client.api_key == "sk-env-key"
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_file_inputs_client_explicit_overrides_env(self) -> None:
-        """Test explicit API key overrides env var."""
+        """Test explicit API key overrides settings."""
         client = FileInputsClient(api_key="sk-explicit")
         assert client.api_key == "sk-explicit"
 

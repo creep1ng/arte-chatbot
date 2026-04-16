@@ -30,8 +30,10 @@ class FileInputsClient:
 
         Args:
             api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
+                     If provided explicitly, takes precedence over settings.
         """
-        self.api_key = api_key or settings.openai_api_key
+        # Use explicit parameter if provided, otherwise fallback to settings
+        self.api_key = api_key if api_key is not None else settings.openai_api_key
         if not self.api_key:
             raise FileUploadError("OpenAI API key not configured")
 
