@@ -138,7 +138,18 @@ _log_tool_definitions()
 llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
-catalog_search = get_catalog()
+
+# Lazy-load catalog to allow /health to work without AWS credentials in CI
+_catalog_search: Optional[Any] = None
+
+
+def get_catalog_search() -> Any:
+    """Lazy loader for catalog to enable CI testing without AWS credentials."""
+    global _catalog_search
+    if _catalog_search is None:
+        _catalog_search = get_catalog()
+    return _catalog_search
+
 
 MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
 
@@ -247,7 +258,7 @@ def _handle_buscar_producto_tool(
 
     try:
         # Use catalog_search.search() which can be mocked in tests
-        results = catalog_search.search(
+        results = get_catalog_search().search(
             categoria=categoria,
             fabricante=fabricante,
             capacidad_min=capacidad_min,
