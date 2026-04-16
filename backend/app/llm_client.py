@@ -15,6 +15,23 @@ from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
 
+
+def expand_query_with_context(message: str, history: list) -> str:
+    """Expand query with conversational context (stub for future enhancement).
+
+    Currently returns the original message unchanged. This function is intended
+    to handle anaphoric references (e.g., "el panel del que hablábamos").
+
+    Args:
+        message: The user's message.
+        history: List of conversation turns.
+
+    Returns:
+        The original message (placeholder for full implementation).
+    """
+    return message
+
+
 DEFAULT_MODEL = settings.llm_model
 
 ARTE_SYSTEM_PROMPT = (

@@ -23,6 +23,7 @@ class SessionManager:
 
     def __init__(self, max_turns: int = 20):
         self.sessions: Dict[str, List[ChatTurn]] = {}
+        self.profiles: Dict[str, str] = {}
         self.max_turns = max_turns
         self._lock = threading.Lock()
 
@@ -106,6 +107,31 @@ class SessionManager:
         with self._lock:
             if session_id in self.sessions:
                 del self.sessions[session_id]
+            if session_id in self.profiles:
+                del self.profiles[session_id]
+
+    def set_user_profile(self, session_id: str, profile: str) -> None:
+        """
+        Almacena el perfil de usuario para una sesión.
+
+        Args:
+            session_id: Identificador único de la sesión
+            profile: Perfil de usuario (novato, intermedio, experto)
+        """
+        with self._lock:
+            self.profiles[session_id] = profile
+
+    def get_user_profile(self, session_id: str) -> Optional[str]:
+        """
+        Obtiene el perfil de usuario de una sesión.
+
+        Args:
+            session_id: Identificador único de la sesión
+
+        Returns:
+            El perfil de usuario si existe, None en caso contrario
+        """
+        return self.profiles.get(session_id)
 
     def get_session_count(self) -> int:
         """

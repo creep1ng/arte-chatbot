@@ -48,6 +48,7 @@ from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.tools import DATASHEET_CATEGORIES, get_tool_definitions
 from backend.app.session import session_manager
 from backend.app.catalog import CatalogError, get_catalog
+from backend.app.user_profiler import infer_user_profile, PROFILE_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,18 @@ _log_tool_definitions()
 llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
-catalog_search = get_catalog()
+
+# Lazy-load catalog to allow /health to work without AWS credentials in CI
+_catalog_search: Optional[Any] = None
+
+
+def get_catalog_search() -> Any:
+    """Lazy loader for catalog to enable CI testing without AWS credentials."""
+    global _catalog_search
+    if _catalog_search is None:
+        _catalog_search = get_catalog()
+    return _catalog_search
+
 
 MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
 
@@ -159,6 +171,7 @@ class ChatResponse(BaseModel):
     session_id: str
     source_documents: list[SourceDocument] = Field(default_factory=list)
     num_sources: int = 0
+    user_profile: Optional[str] = None
 
 
 @app.get("/health")
@@ -245,7 +258,7 @@ def _handle_buscar_producto_tool(
 
     try:
         # Use catalog_search.search() which can be mocked in tests
-        results = catalog_search.search(
+        results = get_catalog_search().search(
             categoria=categoria,
             fabricante=fabricante,
             capacidad_min=capacidad_min,
@@ -587,6 +600,56 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         request.message[:100],
     )
 
+    # Infer user profile if not already inferred for this session
+    existing_profile = session_manager.get_user_profile(session_id)
+    if existing_profile is None:
+        history = session_manager.get_history(session_id)
+        history_dicts = [{"role": "user", "content": turn.question} for turn in history]
+        inferred_profile = infer_user_profile(history_dicts)
+        session_manager.set_user_profile(session_id, inferred_profile)
+        logger.info(
+            "User profile inferred: session_id=%s, profile=%s, turn_count=%d",
+            session_id,
+            inferred_profile,
+            len(history),
+        )
+    else:
+        inferred_profile = existing_profile
+
+    # Build system prompt with profile instructions
+    profile_instructions = PROFILE_INSTRUCTIONS.get(
+        inferred_profile, PROFILE_INSTRUCTIONS["intermedio"]
+    )
+    system_prompt_with_profile = f"{ARTE_SYSTEM_PROMPT}\n\n## Adaptación al perfil del usuario\n{profile_instructions}"
+
+    # Detect escalation
+    escalation_result = default_detector.detect(request.message)
+
+    if escalation_result.escalate:
+        logger.info(
+            "Escalation detected: request_id=%s, session_id=%s, reason=%s",
+            request_id,
+            session_id,
+            escalation_result.reason,
+        )
+        # Guardamos la consulta en la sesión aunque vayamos a escalar
+        session_manager.add_turn(
+            session_id=session_id,
+            question=request.message,
+            answer=DEFAULT_ESCALATION_MESSAGE,
+            source_documents=[],
+        )
+        return ChatResponse(
+            response=DEFAULT_ESCALATION_MESSAGE,
+            escalate=True,
+            intent_type="escalate_technical",
+            reason=escalation_result.reason,
+            session_id=session_id,
+            source_documents=[],
+            num_sources=0,
+            user_profile=inferred_profile,
+        )
+
     # Expandir query con contexto anafórico
     history = session_manager.get_history(session_id)
     expanded_query = expand_query_with_context(request.message, history)
@@ -601,7 +664,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     # Escalation is now determined by LLM intent_type classification (US-05)
     # No keyword-based detection. The LLM prefixes responses with [INTENT: <type>].
 
-    system_message = {"role": "system", "content": ARTE_SYSTEM_PROMPT}
+    system_message = {"role": "system", "content": system_prompt_with_profile}
     conversation_history: list[dict[str, Any]] = [
         system_message,
         {"role": "user", "content": expanded_query},
@@ -656,7 +719,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             llm_response = llm_client.get_llm_response_with_tools(
                 message=user_input,
                 session_id=session_id,
-                system_prompt=ARTE_SYSTEM_PROMPT,
+                system_prompt=system_prompt_with_profile,
                 context=context_string,
             )
 
@@ -698,6 +761,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                     session_id=session_id,
                     source_documents=source_docs,
                     num_sources=len(source_docs),
+                    user_profile=inferred_profile,
                 )
 
             # Process tool calls and collect results
@@ -865,6 +929,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                     session_id=session_id,
                     source_documents=source_docs,
                     num_sources=len(source_docs),
+                    user_profile=inferred_profile,
                 )
 
             # Build tool results summary for next iteration
@@ -915,6 +980,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             session_id=session_id,
             source_documents=source_docs,
             num_sources=len(source_docs),
+            user_profile=inferred_profile,
         )
 
     except LLMServiceError as e:
