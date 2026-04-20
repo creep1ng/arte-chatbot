@@ -8,7 +8,7 @@ Esta guía consolida las convenciones de desarrollo, patrones de arquitectura y 
 
 ### SOLID Principles
 - **S**ingle Responsibility: Cada módulo tiene una única responsabilidad. Ej: `S3Client` solo maneja operaciones con S3, no lógica de negocio.
-- **O**pen/Closed: Abieto para extensión, cerrado para modificación. Usar protocolos/abstract base classes para permitir nuevos implementadores sin alterar código existente.
+- **O**pen/Closed: Abierto para extensión, cerrado para modificación.
 - **L**iskov Substitution: Las subclases pueden sustituir sus clases base sin comportamiento inesperado.
 - **I**nterface Segregation: Preferir muchos interfaces pequeños específicos (ej: `FileLoader` y `DocumentParser`) sobre uno grande general.
 - **D**ependency Inversion: Depender de abstracciones, no de concreciones. Inyectar dependencias via constructor o `Annotated[ Depends()]`.
