@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from evaluation.harness.config import harness_settings
+from evaluation.s3_client import S3ReportsClient, get_git_commit, get_git_branch
 
 logger = logging.getLogger(__name__)
 
@@ -36,22 +37,26 @@ def load_dataset() -> list[dict[str, Any]]:
         return json.load(f)
 
 
-def save_results_json(results: list[dict[str, Any]], timestamp: str) -> Path:
-    """Save results to JSON file."""
+def save_results_json(
+    results: list[dict[str, Any]],
+    timestamp: str,
+    git_commit: str | None = None,
+    git_branch: str | None = None,
+) -> Path:
+    """Save results to JSON file with metadata."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output_path = OUTPUT_DIR / f"results_{timestamp}.json"
 
+    data = {
+        "timestamp": timestamp,
+        "git_commit": git_commit,
+        "git_branch": git_branch,
+        "total_queries": len(results),
+        "results": results,
+    }
+
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "timestamp": timestamp,
-                "total_queries": len(results),
-                "results": results,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
     return output_path
 
@@ -158,13 +163,31 @@ def run_single_query(
     return result
 
 
-def run_harness() -> list[dict[str, Any]]:
-    """Run the complete evaluation harness."""
+def run_harness(
+    sprint: str = "sprint_unknown",
+    upload_s3: bool = False,
+) -> list[dict[str, Any]]:
+    """Run the complete evaluation harness.
+
+    Args:
+        sprint: Sprint identifier for the report (e.g., "sprint_2", "sprint_5").
+        upload_s3: Whether to upload results to S3.
+
+    Returns:
+        List of result dictionaries from the evaluation.
+    """
     print("=" * 60)
     print("ARTE Chatbot Evaluation Harness")
     print("=" * 60)
     print(f"Target endpoint: {CHAT_ENDPOINT}")
     print(f"Dataset: {DATASET_PATH}")
+    print(f"Sprint: {sprint}")
+    print()
+
+    git_commit = get_git_commit()
+    git_branch = get_git_branch()
+    print(f"Git commit: {git_commit}")
+    print(f"Git branch: {git_branch}")
     print()
 
     # Load dataset
@@ -233,6 +256,17 @@ def run_harness() -> list[dict[str, Any]]:
     min_latency = min(latencies) if latencies else 0
     max_latency = max(latencies) if latencies else 0
 
+    # Calculate escalation rate
+    expected_escalations = sum(1 for r in results if r.get("should_escalate", False))
+    actual_escalations = sum(1 for r in results if r.get("escalated", False))
+    correct_escalations = sum(
+        1
+        for r in results
+        if r.get("should_escalate", False) == r.get("escalated", False)
+    )
+    escalation_accuracy = (correct_escalations / len(results) * 100) if results else 0
+    escalation_rate = (actual_escalations / len(results) * 100) if results else 0
+
     logger.info(
         "Evaluation complete: successful=%d, failed=%d, avg_latency=%.2fms",
         successful,
@@ -245,11 +279,13 @@ def run_harness() -> list[dict[str, Any]]:
     print(f"Avg latency: {avg_latency:.2f}ms")
     print(f"Min latency: {min_latency:.2f}ms")
     print(f"Max latency: {max_latency:.2f}ms")
+    print(f"Escalation rate: {escalation_rate:.1f}%")
+    print(f"Escalation accuracy: {escalation_accuracy:.1f}%")
 
     # Save results
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-    json_path = save_results_json(results, timestamp)
+    json_path = save_results_json(results, timestamp, git_commit, git_branch)
     csv_path = save_results_csv(results, timestamp)
 
     print()
@@ -257,10 +293,44 @@ def run_harness() -> list[dict[str, Any]]:
     print(f"  JSON: {json_path}")
     print(f"  CSV:  {csv_path}")
     print()
+
+    # Upload to S3 if requested
+    if upload_s3:
+        print("Uploading results to S3...")
+        try:
+            s3_client = S3ReportsClient()
+            s3_key = s3_client.build_s3_key(sprint, "harness", timestamp)
+
+            with open(json_path, "r", encoding="utf-8") as f:
+                report_data = json.load(f)
+
+            if s3_client.upload_json(report_data, s3_key):
+                print(f"✓ Uploaded to s3://{s3_client.BUCKET_NAME}/{s3_key}")
+            else:
+                print("✗ Failed to upload to S3")
+        except ValueError as e:
+            print(f"✗ S3 upload skipped: {e}")
+
+    print()
     print("=" * 60)
 
     return results
 
 
 if __name__ == "__main__":
-    run_harness()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run ARTE Chatbot evaluation harness")
+    parser.add_argument(
+        "--sprint",
+        default="sprint_unknown",
+        help="Sprint identifier for the report (e.g., sprint_2, sprint_5)",
+    )
+    parser.add_argument(
+        "--upload-s3",
+        action="store_true",
+        help="Upload results to S3 after evaluation",
+    )
+
+    args = parser.parse_args()
+    run_harness(sprint=args.sprint, upload_s3=args.upload_s3)
