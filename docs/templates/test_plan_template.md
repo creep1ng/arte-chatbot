@@ -74,6 +74,6 @@ API_BASE_URL=http://localhost:8000
 
 ---
 
-## Notas y决 decisions
+## Notas y decisiones
 
 <!-- Registrar decisions tomadas durante la evaluación que puedan afectar otros equipos o futur releases -->
