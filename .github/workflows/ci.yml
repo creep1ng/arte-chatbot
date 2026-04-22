@@ -223,10 +223,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Kilo CLI
-        uses: Kilo-Org/kilocode@v1
-        with:
-          version: latest
+      - name: Install Kilo CLI
+        run: npm install -g @kilocode/cli
+
+      - name: Install agents-md skill
+        run: npx skills add https://github.com/getsentry/skills --skill agents-md
 
       - name: Authenticate Kilo
         run: |
