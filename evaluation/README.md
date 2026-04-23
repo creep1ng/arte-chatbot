@@ -225,3 +225,112 @@ If requests timeout:
 If you get "No module named evaluation.harness":
 - Ensure you're running from the project root
 - Check that `evaluation/__init__.py` exists
+
+## Quality Report (US-13)
+
+This section covers the quality report system for comparing Sprint 2 (baseline) vs Sprint 5 (final) metrics.
+
+### S3 Report Structure
+
+Reports are stored in S3 with the following structure:
+
+```
+arte-chatbot-data/
+└── evaluation/
+    └── reports/
+        ├── sprint_2/
+        │   ├── harness/report_YYYYMMDD_HHMMSS.json
+        │   ├── hallucination/report_YYYYMMDD_HHMMSS.json
+        │   └── human_eval/report_YYYYMMDD_HHMMSS.json
+        └── sprint_5/
+            ├── harness/report_YYYYMMDD_HHMMSS.json
+            ├── hallucination/report_YYYYMMDD_HHMMSS.json
+            └── human_eval/report_YYYYMMDD_HHMMSS.json
+```
+
+### Metrics Tracked
+
+| Metric | Description | Source |
+|--------|-------------|--------|
+| Latency (avg, p50, p95, p99) | Response time in milliseconds | Harness |
+| Escalation Rate | Percentage of queries escalated | Harness |
+| Escalation Accuracy | Correct escalation decisions (%) | Harness |
+| Technical Accuracy | Score 1-5 from human evaluation | Human Eval |
+| Hallucination Rate | Percentage of hallucinations detected | Hallucination Check |
+
+### Running the Harness with S3 Upload
+
+```bash
+# Run and upload to S3
+python -m evaluation.harness.run --sprint sprint_5 --upload-s3
+
+# With custom API endpoint
+python -m evaluation.harness.run --sprint sprint_2 --api-url http://localhost:8000
+```
+
+### Generating Mock Data
+
+For testing without real evaluations:
+
+```bash
+# Generate mock data locally
+python evaluation/mock_data_generator.py --output-dir evaluation/mock_data
+
+# Upload mock data to S3
+python evaluation/upload_mock_to_s3.py --sprints sprint_2 sprint_5
+```
+
+### Quality Report Notebook
+
+The interactive quality report is in `evaluation/quality_report.ipynb`.
+
+**Usage:**
+
+1. Open in Jupyter:
+   ```bash
+   jupyter notebook evaluation/quality_report.ipynb
+   ```
+
+2. Or run with JupyterLab:
+   ```bash
+   jupyter lab evaluation/quality_report.ipynb
+   ```
+
+3. Install dependencies if needed:
+   ```bash
+   pip install plotly boto3 pandas numpy
+   ```
+
+**Features:**
+- Reads data from S3 if available, falls back to mock data
+- Interactive Plotly charts comparing Sprint 2 vs Sprint 5
+- Latency analysis with percentiles
+- Human evaluation dimension breakdown
+- Gauge charts for current status
+- Export to HTML/PDF for sharing
+
+**Export options:**
+```python
+# Export to HTML (interactive)
+fig.write_html("evaluation/reports/quality_report.html")
+
+# Export to PDF (requires kaleido)
+fig.write_image("evaluation/reports/quality_report.pdf", format="pdf")
+```
+
+### Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `AWS_ACCESS_KEY_ID` | AWS access key | Yes (for S3) |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key | Yes (for S3) |
+| `AWS_BUCKET_NAME` | S3 bucket name (default: `arte-chatbot-data`) | No |
+| `AWS_REGION` | AWS region (default: `us-east-1`) | No |
+
+### Git Commit Tracking
+
+Each evaluation run automatically records:
+- Current git commit hash (`git rev-parse --short HEAD`)
+- Current git branch name
+
+This allows correlating evaluation results with specific code versions.
