@@ -138,7 +138,7 @@
     {
       "name": "tone_and_professionalism",
       "display_name": "Tono y Profesionalismo",
-      "description": "Evaluar el tono de la respuesta是否符合 el estándar profesional de la empresa",
+      "description": "Evaluar si el tono de la respuesta cumple con el estándar profesional de la empresa",
       "weight": 0.10,
       "levels": [
         {

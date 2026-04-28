@@ -1,224 +1,98 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "description": "Dataset de conversaciones para evaluación humana del chatbot Arte - Arte Soluciones Energéticas",
-  "created": "2026-03-04",
-  "total_conversations": 12,
+  "created": "2026-04-28",
+  "total_conversations": 5,
   "conversations": [
     {
-      "id": "conv_001",
+      "id": "conv_013",
       "turns": [
         {
           "role": "user",
-          "content": "Hola, necesito información sobre paneles solares para mi casa. ¿Qué me recomiendan?"
+          "content": "¿Cuáles son las características técnicas del panel solar JA Solar JAM72S30-545/MR?"
         },
         {
           "role": "assistant",
-          "content": "¡Hola! Gracias por contactarnos. Para recomendarle el panel solar más adecuado, necesito conocer algunos datos de su instalación: 1) ¿Cuánto es su consumo mensual de energía eléctrica? 2) ¿Tiene espacio disponible en el techo? 3) ¿Está en una zona con buena radiación solar? Con esta información podemos asesorarle mejor sobre las opciones de paneles monocristalinos o policristalinos que mejor se adapten a sus necesidades."
+          "content": "- leer_ficha_tecnica: Missing ruta_s3 in tool arguments. When ruta_s3 is not provided, categoria is required to search the catalog."
         }
       ],
-      "expected_response": "El asistente debe preguntar por consumo energético, espacio disponible y ubicación geográfica para dar una recomendación personalizada. Debe distinguir entre paneles monocristalinos (mayor eficiencia, ideal para espacios reducidos) y policristalinos (más económicos, buena opción para techos grandes).",
+      "expected_response": "El asistente debe reconocer que necesita acceder a la ficha técnica del panel específico y utilizar la herramienta de lectura de fichas técnicas con los parámetros correctos.",
       "escalation_classification": "no_escalate",
-      "domain": "product_recommendation",
-      "difficulty": "easy",
-      "notes": "Consulta básica de recomendación. El chatbot debe demostrar conocimiento del producto y hacer preguntas de cualificación."
+      "domain": "technical_specs",
+      "difficulty": "medium",
+      "notes": "Consulta de especificaciones técnicas de panel específico. El chatbot debe usar correctamente la herramienta de File Inputs."
     },
     {
-      "id": "conv_002",
+      "id": "conv_014",
       "turns": [
         {
           "role": "user",
-          "content": "Quiero instalar un sistema solar para una bodega comercial de 500 metros cuadrados. ¿Qué inversor me recomiendan?"
+          "content": "¿Qué inversor me recomiendan para una instalación residencial de 5kW?"
         },
         {
           "role": "assistant",
-          "content": "Gracias por la información. Para una bodega comercial de 500 m², generalmente recomendamos inversores de tipo string por su robustez y costo-efectividad para instalaciones de mayor escala. Sin embargo, necesitamos conocer: 1) Potencia instalada estimada (kW) 2) Tipo de techo (plano o inclinado) 3) Si existe sombreado 4) Presupuesto aproximado. Podríamos considerar inversores de marcas como SMA, Fronius o Huawei, dependiendo de sus necesidades específicas de monitoreo y garantía."
+          "content": "Para una instalación residencial de 5 kW, la recomendación típica es elegir un inversor string (on-grid) dimensionado con el pico de potencia FV y las condiciones de tu diseño (voltajes de string y cantidad de paneles). Sin datos de tu número de paneles y su voltaje, te dejo una guía práctica: 1) Potencia del inversor (regla rápida): Para 5 kW AC de consumo/objetivo normalmente se usa un inversor de ~4.6 a 6.0 kW. En FV se suele instalar potencia DC algo mayor que la AC (sobrecarga controlada) para aprovechar mejor el sol: Relación DC/AC recomendada: 1.1 a 1.3. Ejemplo orientativo: con inversor 5 kW, el generador FV puede quedar en ~5.5 a 6.5 kWp (dependiendo del límite de oversizing del equipo y del diseño). 2) Tipo de inversor recomendado: A) Sin baterías (solo autoconsumo con red): Inversor string (on-grid): suele ser la opción más económica y eficiente para 5 kW residenciales. Ideal si vas a inyectar a red o autoconsumir sin almacenamiento. B) Con baterías (futuro o presente): Inversor híbrido (o híbrido + sistema compatible): si planeas almacenamiento desde el inicio. Ventaja: gestiona carga/descarga y normalmente simplifica la integración. 3) Qué especificaciones mirar (clave para elegir el correcto): Para que sea el adecuado para tu 5 kW, hay que comprobar: Rango de voltaje MPPT (para que tu string arranque y trabaje en el punto correcto), Tensión máxima FV permitida, Corriente máxima por MPPT por entrada, Número de MPPT y si necesitarás 1 o 2 strings (según orientación/tejado), Eficiencia y protecciones (anti-isla, sobretensiones, etc.). Si habrá baterías: potencia de carga/descarga y compatibilidad (batería AC/DC, protocolos, etc.). 4) Recomendación típica (sin entrar a marca/modelo): Si tu instalación es simple (misma orientación o dos strings muy parecidos): Inversor st... (line truncated to 2000 chars)..."
         }
       ],
-      "expected_response": "El asistente debe reconocer que es una consulta comercial y hacer preguntas técnicas adicionales. Debe explicar la diferencia entre inversores string y microinversores, recomendando inversores string para este tipo de instalación comercial.",
+      "expected_response": "El asistente debe proporcionar una guía técnica detallada para seleccionar un inversor, incluyendo relaciones DC/AC, tipos de inversores, especificaciones clave y consideraciones para baterías. Debe ser informativo sin ser demasiado técnico.",
       "escalation_classification": "no_escalate",
       "domain": "product_recommendation",
       "difficulty": "medium",
-      "notes": "Consulta de producto comercial. El asistente debe demostrar conocimiento técnico de inversores y hacer preguntas de cualificación."
+      "notes": "Consulta de recomendación de inversor residencial. El chatbot debe demostrar conocimiento técnico de dimensionamiento."
     },
     {
-      "id": "conv_003",
+      "id": "conv_015",
       "turns": [
         {
           "role": "user",
-          "content": "¿Cuál es la diferencia entre paneles monocristalinos y policristalinos? Necesito decidir para mi residencia."
+          "content": "Tengo un problema con mi sistema fotovoltaico, no está generando la potencia esperada"
         },
         {
           "role": "assistant",
-          "content": "Excelente pregunta. Las principales diferencias son: **Paneles Monocristalinos**: - Eficiencia superior (18-22%) - Mejor rendimiento en espacios reducidos - Vida útil más larga (25-30 años) - Costo más elevado - Color oscuro uniforme **Paneles Policristalinos**: - Eficiencia moderada (15-17%) - Requieren más espacio - Costo más accesible - Eficiencia ligeramente menor en condiciones de baja luz - Color azul brillante Para una residencia con espacio limitado en el techo, recomiendo monocristalinos. Si tiene amplio espacio y busca economía, los policristalinos son una buena opción. ¿Cuál es su caso específico?"
+          "content": "Entiendo que necesitas asistencia personalizada. Un agente de ventas te contactará pronto para ayudarte con tu consulta."
         }
       ],
-      "expected_response": "El asistente debe explicar claramente las diferencias técnicas entre ambos tipos de paneles, incluyendo eficiencia, costo, espacio requerido y durabilidad. Debe ser informativo sin ser demasiado técnico.",
-      "escalation_classification": "no_escalate",
-      "domain": "product_recommendation",
-      "difficulty": "easy",
-      "notes": "Consulta educativa sobre tipos de paneles. El chatbot debe demostrar conocimiento técnico de manera accesible."
-    },
-    {
-      "id": "conv_004",
-      "turns": [
-        {
-          "role": "user",
-          "content": "Tengo un inversor Huawei que me dio error E027 yesterday. ¿Qué significa?"
-        },
-        {
-          "role": "assistant",
-          "content": "El error E027 en inversores Huawei generalmente indica un problema de comunicación o configuración. Le recomiendo los siguientes pasos: 1) Verificar que todos los cables de comunicación estén bien conectados 2) Reiniciar el inversor apagándolo y encendiéndolo después de 5 minutos 3) Revisar que la fecha y hora del sistema estén configuradas correctamente Si el error persiste después de estos pasos, podría indicar un problema en el módulo de comunicación interno. En ese caso, le sugiero agendar una revisión técnica con nuestro equipo de soporte para diagnosticar el problema correctamente."
-        }
-      ],
-      "expected_response": "El asistente debe reconocer el código de error específico, proporcionar soluciones de troubleshooting básicas y indicar cuándo es necesario escalar a soporte técnico.",
+      "expected_response": "El asistente debe ofrecer ayuda y escalar apropiadamente a soporte técnico o ventas según corresponda, mostrando empatía y ofreciendo seguimiento.",
       "escalation_classification": "no_escalate",
       "domain": "technical_support",
       "difficulty": "medium",
-      "notes": "Consulta técnica con código de error específico. El chatbot debe demostrar conocimiento de códigos de error comunes."
+      "notes": "Problema general de bajo rendimiento del sistema. El chatbot debe ofrecer asistencia personalizada."
     },
     {
-      "id": "conv_005",
+      "id": "conv_016",
       "turns": [
         {
           "role": "user",
-          "content": "Mi sistema de monitoreo no me muestra los datos de producción desde hace 3 días. ¿Qué puedo hacer?"
+          "content": "¿Cuál es el precio de instalación de un sistema de 10kW para una empresa?"
         },
         {
           "role": "assistant",
-          "content": "Entiendo la preocupación. Los problemas de monitoreo pueden tener varias causas. Vamos a descartar las más comunes: 1) **Verificar conexión a internet**: Asegúrese de que el router tenga señal estable 2) **Reiniciar el logger**: Desconecte el dispositivo de monitoreo por 30 segundos y vuelva a conectar 3) **Revisar app/plataforma**: Confirme que esté usando la aplicación correcta y tenga sesión activa 4) **Verificar credenciales**: Asegúrese de que las credenciales de la cuenta no hayan expirado Si después de estos pasos el problema persiste, necesitaremos verificar la configuración del APN y los parámetros de comunicación del sistema. ¿Qué marca y modelo de sistema de monitoreo utiliza?"
+          "content": "Entiendo que necesitas asistencia personalizada. Un agente de ventas te contactará pronto para ayudarte con tu consulta."
         }
       ],
-      "expected_response": "El asistente debe proporcionar troubleshooting estructurado paso a paso, cubrir las causas más comunes de problemas de monitoreo y hacer preguntas específicas para diagnóstico.",
-      "escalation_classification": "no_escalate",
-      "domain": "technical_support",
-      "difficulty": "medium",
-      "notes": "Problema de conectividad en sistema de monitoreo. El chatbot debe guiar al usuario a través de pasos de diagnóstico."
-    },
-    {
-      "id": "conv_006",
-      "turns": [
-        {
-          "role": "user",
-          "content": "¿Cuánto me cuesta un panel solar de 500 watts? Necesito el precio."
-        },
-        {
-          "role": "assistant",
-          "content": "Gracias por su interés. Los precios de paneles solares varían según la marca, tecnología y certificación. Para paneles de aproximadamente 500W (tamaño estándar residential), los rangos aproximados son: - **Económicos (fabricación china)**: $120 - $180 USD por panel - **Marca media (tier 2)**: $180 - $250 USD por panel - **Premium (top tier)**: $250 - $350 USD por panel Estos precios no incluyen instalación. Para una cotización exacta y personalizada, necesito saber: 1) ¿Para qué tipo de proyecto es? (residencial, comercial) 2) ¿Cuántos paneles necesita? 3) ¿Tiene alguna marca preferida? Nuestro equipo de ventas puede elaborarle una propuesta completa sin compromiso."
-        }
-      ],
-      "expected_response": "El asistente debe proporcionar rangos de precios pero evitar dar un precio exacto sin más contexto. Debe cualificar la consulta y ofrecer seguimiento comercial.",
-      "escalation_classification": "no_escalate",
-      "domain": "pricing",
-      "difficulty": "easy",
-      "notes": "Consulta de precios directa. El chatbot debe dar rangos orientativos sin comprometer precios finales."
-    },
-    {
-      "id": "conv_007",
-      "turns": [
-        {
-          "role": "user",
-          "content": "Quiero instalar paneles solares en mi factory de 2000 metros cuadrados. ¿Cuánto sale todo el proyecto?"
-        },
-        {
-          "role": "assistant",
-          "content": "Gracias por contactarnos. Para un proyecto comercial de esta envergadura (2000 m²), necesitamos una evaluación técnica completa para elaborar una cotización precisa. Para orientarle, los proyectos comerciales típicos oscilan entre $800 - $1,500 USD por metro cuadrado instalado, dependiendo de: - Tipo de paneles seleccionados - Potencia del sistema (kW) - Complejidad de la instalación - Necesidades de estructura de soporte - Sistema de monitoreo requerido - Inversor y marca Para este tipo de proyecto, le recomiendo agendar una visita técnica gratuita donde nuestro equipo pueda evaluar las condiciones específicas de su nave industrial y elaborar una propuesta personalizada."
-        }
-      ],
-      "expected_response": "El asistente debe dar un rango orientativo pero ser claro que se necesita una evaluación técnica. Debe posicionar la visita técnica como el siguiente paso natural y evitar dar presupuestos exactos sin análisis.",
-      "escalation_classification": "no_escalate",
+      "expected_response": "El asistente debe reconocer que se trata de un proyecto comercial y escalar a ventas especializadas, ofreciendo una cotización personalizada tras evaluación técnica.",
+      "escalation_classification": "escalate_sales",
       "domain": "pricing",
       "difficulty": "medium",
-      "notes": "Proyecto comercial grande que requiere evaluación in situ. El chatbot debe posicionar la visita técnica como siguiente paso."
+      "notes": "Consulta de precio para proyecto comercial. Debe escalar a ventas comerciales."
     },
     {
-      "id": "conv_008",
+      "id": "conv_017",
       "turns": [
         {
           "role": "user",
-          "content": "Tengo una pregunta compleja: estamos iniciando un proyecto de campus universitario con 5 edificios, necesitamos un sistema de monitoreo centralizado que se integre con nuestro BMS existente. También queremos baterías de respaldo para el data center. ¿Pueden manejarnos esto?"
+          "content": "¿Qué garantía tienen los paneles solares que venden?"
         },
         {
           "role": "assistant",
-          "content": "Gracias por contactarnos. Su proyecto suena interesante y de alta complejidad técnica. Para un campus universitario con los requisitos que menciona (5 edificios, integración con BMS, backup para data center), necesitamos una reunión técnica especializada con nuestro equipo de proyectos comerciales. Este tipo de implementación requiere: 1) Evaluación de carga crítica del data center 2) Diseño de sistema de respaldo con autonomía específica 3) Integración con el BMS existente 4) Consideraciones de redundancia y continuidad operativa Permítame escalar su consulta a nuestro equipo de ventas comerciales quienes le contactarán en las próximas 24 horas para agendar una reunión técnica. ¿A qué correo podemos enviar la información?"
+          "content": "En paneles solares, la garantía suele dividirse en dos partes: 1) Garantía de producto (materiales y mano de obra): Normalmente cubre defectos de fabricación durante un periodo aproximado de 10 a 15 años (según la marca/modelo). 2) Garantía de rendimiento (potencia con los años): Lo más común es una garantía lineal de 25 a 30 años, donde el fabricante asegura que el panel mantendrá un porcentaje de su potencia nominal con el tiempo (por ejemplo, algo como 80-90% hacia el final del periodo, según el estándar del fabricante). Para darte la garantía exacta de los paneles que vendemos, necesito que me indiques el modelo o marca (por ejemplo, Jinko Tiger 455/460, Longi Hi-MO, etc.). Si me compartes eso, te confirmo los años y porcentajes tal como figuran en la ficha técnica."
         }
       ],
-      "expected_response": "El asistente debe reconocer la complejidad del proyecto, identificar los diferentes componentes requeridos (monitoreo centralizado, integración BMS, baterías), y escalar correctamente a ventas comerciales con la información necesaria.",
-      "escalation_classification": "escalate_sales",
-      "domain": "product_recommendation",
-      "difficulty": "hard",
-      "notes": "Proyecto complejo que requiere evaluación técnica detallada. Debe escalar a equipo comercial especializado con capacidad de proyectos Enterprise."
-    },
-    {
-      "id": "conv_009",
-      "turns": [
-        {
-          "role": "user",
-          "content": "Hola, mi inversor hace un ruido extraño como un zumbido y a veces se apaga solo cuando hay nubes."
-        },
-        {
-          "role": "assistant",
-          "content": "Gracias por reportar este problema. Los síntomas que menciona (ruido y apagado durante cambios de irradiación solar) pueden indicar un problema serio en el inversor. Esto podría ser: 1) Fallo en los componentes internos de potencia 2) Problema de散热 (refrigeración) 3) Configuración de parámetros incorrecta 4) Problema de calidad de la red eléctrica Le recomiendo **no operar el inversor** hasta que un técnico especializado lo revise. Este tipo de problema puede dañar el equipo y potencialmente invalidate la garantía. ¿Tiene el manual del inversor a mano? Voy a escalar su caso a nuestro equipo de soporte técnico quienes le contactarán para programar una revisión presencial."
-        }
-      ],
-      "expected_response": "El asistente debe reconocer la gravedad potencial del problema, dar recomendaciones de seguridad (no operar), y escalar a soporte técnico para revisión presencial. Debe ser empático pero claro sobre la urgencia.",
-      "escalation_classification": "escalate_technical",
-      "domain": "technical_support",
-      "difficulty": "hard",
-      "notes": "Problema técnico potencialmente grave que requiere intervención in situ. Debe escalar a soporte técnico con urgencia."
-    },
-    {
-      "id": "conv_010",
-      "turns": [
-        {
-          "role": "user",
-          "content": "¿Qué baterías me recomiendan para almacenamiento residencial? ¿Litio o gel?"
-        },
-        {
-          "role": "assistant",
-          "content": "Excelente pregunta. La elección entre baterías de litio y gel (AGM) depende de sus necesidades específicas: **Baterías de Litio (Li-ion/LiFePO4)**: - Mayor densidad energética (más capacidad en menos espacio) - Mayor vida útil (10-15 años o 5000+ ciclos) - Mayor profundidad de descarga (80-100%) - Costo inicial más alto pero mejor ROI a largo plazo - Requieren BMS (Battery Management System) **Baterías de Gel/AGM**: - Costo inicial menor - Sensibles a la profundidad de descarga (máx 50%) - Vida útil más corta (3-7 años) - No requieren BMS complejo - Mejor para respaldo ocasional Para uso residencial diario con autonomía, recomiento **litio**. ¿Tiene idea de cuántas horas de autonomía necesita? Con esa información podemos dimensionar el sistema."
-        }
-      ],
-      "expected_response": "El asistente debe explicar las diferencias técnicas entre tipos de baterías, hacer preguntas de cualificación y dar recomendaciones basadas en el caso de uso.",
+      "expected_response": "El asistente debe explicar los tipos de garantía (producto y rendimiento), dar rangos generales, y solicitar la marca/modelo específico para proporcionar información exacta.",
       "escalation_classification": "no_escalate",
-      "domain": "product_recommendation",
-      "difficulty": "medium",
-      "notes": "Consulta técnica sobre baterías. El chatbot debe demostrar conocimiento profundo de tecnologías de almacenamiento."
-    },
-    {
-      "id": "conv_011",
-      "turns": [
-        {
-          "role": "user",
-          "content": "Soy instalador y necesito saber si tienen paneles Jinko de 550W disponibles en stock para proyectos que estoy manejando."
-        },
-        {
-          "role": "assistant",
-          "content": "¡Gracias por contactarnos! Nos alegra saber que es un profesional del sector. Para consultas de disponibilidad de stock y pricing B2B para instaladores, le conecto con nuestro equipo comercial dedicado a profesionales. Ellos pueden ofrecerle: - Precios especiales por volumen - Condiciones de pago para instaladores - Disponibilidad actual de inventario - Soporte técnico para proyectos complejos ¿Me puede proporcionar su nombre, empresa y un correo electrónico para que nuestro equipo de ventas pro-contacte con usted?"
-        }
-      ],
-      "expected_response": "El asistente debe identificar que es un cliente B2B/profesional, ofrecer las ventajas comerciales disponibles para instaladores, y escalar a ventas comerciales con los datos apropiados.",
-      "escalation_classification": "escalate_sales",
-      "domain": "general",
+      "domain": "warranty_info",
       "difficulty": "easy",
-      "notes": "Consulta de profesional/instalador que requiere atención B2B específica. Debe identificar el segmento y escalar correctamente."
-    },
-    {
-      "id": "conv_012",
-      "turns": [
-        {
-          "role": "user",
-          "content": "¿Cuánto tiempo tarda la instalación de un sistema solar residencial de 6kW? ¿Y la tramitología de la conexión a la red?"
-        },
-        {
-          "role": "assistant",
-          "content": "Buena pregunta. Los tiempos aproximados son: **Instalación**: - Sistema residencial de 6kW (aproximadamente 12-15 paneles): 1-3 días dependiendo de la complejidad del techo y acceso **Tramitología (conexión a red)**: -tramites depende de la distribuidora de su zona: - Solicitud de conexión: 1-2 semanas - Inspección técnica: 2-4 semanas - Conexión y medidor bidireccional: 1-2 semanas adicionales En total, desde la firma del contrato hasta la conexión a red, estamos hablando de 6-10 semanas. Nuestro equipo de proyectos le acompaña en todo el proceso de tramitología. ¿En qué zona está ubicada su propiedad?"
-        }
-      ],
-      "expected_response": "El asistente debe proporcionar tiempos realistas tanto de instalación como de tramitología, y mostrar conocimiento del proceso completo.",
-      "escalation_classification": "no_escalate",
-      "domain": "general",
-      "difficulty": "easy",
-      "notes": "Consulta informativa sobre tiempos y procesos. El chatbot debe dar información general sin comprometer fechas específicas."
+      "notes": "Consulta sobre garantías de paneles. El chatbot debe informar sobre garantías típicas y pedir información específica para dar detalles exactos."
     }
   ],
   "metadata": {
@@ -226,7 +100,9 @@
       "product_recommendation": 4,
       "technical_support": 3,
       "pricing": 2,
-      "general": 2
+      "general": 2,
+      "technical_specs": 1,
+      "warranty_info": 1
     },
     "escalation": {
       "no_escalate": 9,
