@@ -6,7 +6,7 @@ against the /chat endpoint and record the results.
 
 Usage:
     python -m evaluation.harness.run
-    python -m evaluation.harness.run --no-upload
+    python -m evaluation.harness.run --sprint sprint_5 --no-upload
 """
 
 import argparse
@@ -23,6 +23,7 @@ import httpx
 from dotenv import load_dotenv
 
 from evaluation.harness.config import harness_settings
+from evaluation.s3_client import get_git_commit, get_git_branch
 from evaluation.storage import get_commit_hash, save_results, upload_to_s3
 
 load_dotenv()
@@ -43,6 +44,12 @@ def parse_args() -> argparse.Namespace:
         "--no-upload",
         action="store_true",
         help="Skip S3 upload, save results locally only",
+    )
+    parser.add_argument(
+        "--sprint",
+        type=str,
+        default="sprint_5",
+        help="Sprint identifier for the evaluation run (default: sprint_5)",
     )
     return parser.parse_args()
 
@@ -165,6 +172,7 @@ async def run_single_query(
 
 async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
     """Run the complete evaluation harness."""
+    sprint = args.sprint
     print("=" * 60)
     print("ARTE Chatbot Evaluation Harness")
     print("=" * 60)
@@ -300,25 +308,6 @@ async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     if not args.no_upload:
         upload_to_s3(json_path, s3_key)
-
-    print()
-
-    # Upload to S3 if requested
-    if upload_s3:
-        print("Uploading results to S3...")
-        try:
-            s3_client = S3ReportsClient()
-            s3_key = s3_client.build_s3_key(sprint, "harness", timestamp)
-
-            with open(json_path, "r", encoding="utf-8") as f:
-                report_data = json.load(f)
-
-            if s3_client.upload_json(report_data, s3_key):
-                print(f"✓ Uploaded to s3://{s3_client.BUCKET_NAME}/{s3_key}")
-            else:
-                print("✗ Failed to upload to S3")
-        except ValueError as e:
-            print(f"✗ S3 upload skipped: {e}")
 
     print()
     print("=" * 60)
