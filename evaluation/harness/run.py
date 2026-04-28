@@ -3,8 +3,13 @@ Evaluation Harness for ARTE Chatbot
 
 This module provides the main script to run automated evaluation tests
 against the /chat endpoint and record the results.
+
+Usage:
+    python -m evaluation.harness.run
+    python -m evaluation.harness.run --no-upload
 """
 
+import argparse
 import csv
 import json
 import logging
@@ -14,17 +19,30 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
 
 from evaluation.harness.config import harness_settings
-from evaluation.s3_client import S3ReportsClient, get_git_commit, get_git_branch
+from evaluation.storage import get_commit_hash, save_results, upload_to_s3
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Configuration from centralized settings
 API_BASE_URL = harness_settings.api_base_url
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
 DATASET_PATH = harness_settings.dataset_path
 OUTPUT_DIR = harness_settings.output_dir
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Evaluation Harness for ARTE Chatbot")
+    parser.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="Skip S3 upload, save results locally only",
+    )
+    return parser.parse_args()
 
 
 def load_dataset() -> list[dict[str, Any]]:
@@ -35,30 +53,6 @@ def load_dataset() -> list[dict[str, Any]]:
 
     with open(DATASET_PATH, encoding="utf-8") as f:
         return json.load(f)
-
-
-def save_results_json(
-    results: list[dict[str, Any]],
-    timestamp: str,
-    git_commit: str | None = None,
-    git_branch: str | None = None,
-) -> Path:
-    """Save results to JSON file with metadata."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_DIR / f"results_{timestamp}.json"
-
-    data = {
-        "timestamp": timestamp,
-        "git_commit": git_commit,
-        "git_branch": git_branch,
-        "total_queries": len(results),
-        "results": results,
-    }
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-    return output_path
 
 
 def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
@@ -157,25 +151,14 @@ def run_single_query(
         result["error"] = f"Connection error: Could not connect to {CHAT_ENDPOINT}"
     except httpx.TimeoutException:
         result["error"] = "Request timed out after 30 seconds"
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:
         result["error"] = f"Unexpected error: {str(e)}"
 
     return result
 
 
-def run_harness(
-    sprint: str = "sprint_unknown",
-    upload_s3: bool = False,
-) -> list[dict[str, Any]]:
-    """Run the complete evaluation harness.
-
-    Args:
-        sprint: Sprint identifier for the report (e.g., "sprint_2", "sprint_5").
-        upload_s3: Whether to upload results to S3.
-
-    Returns:
-        List of result dictionaries from the evaluation.
-    """
+def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Run the complete evaluation harness."""
     print("=" * 60)
     print("ARTE Chatbot Evaluation Harness")
     print("=" * 60)
@@ -190,13 +173,11 @@ def run_harness(
     print(f"Git branch: {git_branch}")
     print()
 
-    # Load dataset
     dataset = load_dataset()
     logger.info("Loaded %d test queries", len(dataset))
     print(f"Loaded {len(dataset)} test queries")
     print()
 
-    # Check API availability
     try:
         with httpx.Client() as client:
             health_response = client.get(f"{API_BASE_URL}/health", timeout=5.0)
@@ -247,7 +228,6 @@ def run_harness(
     print("-" * 60)
     print(f"Completed {len(results)} queries")
 
-    # Calculate statistics
     successful = sum(1 for r in results if not r["error"])
     failed = sum(1 for r in results if r["error"])
     latencies = [r["latency_ms"] for r in results if r["latency_ms"] > 0]
@@ -282,16 +262,32 @@ def run_harness(
     print(f"Escalation rate: {escalation_rate:.1f}%")
     print(f"Escalation accuracy: {escalation_accuracy:.1f}%")
 
-    # Save results
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-    json_path = save_results_json(results, timestamp, git_commit, git_branch)
     csv_path = save_results_csv(results, timestamp)
-
     print()
-    print("Results saved to:")
-    print(f"  JSON: {json_path}")
-    print(f"  CSV:  {csv_path}")
+    print("CSV saved to:", csv_path)
+
+    commit_hash = get_commit_hash()
+
+    payload = {
+        "total_queries": len(results),
+        "successful": successful,
+        "failed": failed,
+        "avg_latency_ms": round(avg_latency, 2),
+        "min_latency_ms": round(min_latency, 2),
+        "max_latency_ms": round(max_latency, 2),
+        "results": results,
+    }
+
+    json_path, s3_key = save_results(
+        OUTPUT_DIR, "harness", payload, commit_hash, timestamp
+    )
+    print(f"JSON saved to: {json_path}")
+
+    if not args.no_upload:
+        upload_to_s3(json_path, s3_key)
+
     print()
 
     # Upload to S3 if requested
@@ -318,19 +314,5 @@ def run_harness(
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run ARTE Chatbot evaluation harness")
-    parser.add_argument(
-        "--sprint",
-        default="sprint_unknown",
-        help="Sprint identifier for the report (e.g., sprint_2, sprint_5)",
-    )
-    parser.add_argument(
-        "--upload-s3",
-        action="store_true",
-        help="Upload results to S3 after evaluation",
-    )
-
-    args = parser.parse_args()
-    run_harness(sprint=args.sprint, upload_s3=args.upload_s3)
+    args = parse_args()
+    run_harness(args)

@@ -7,7 +7,6 @@ measuring false positive and false negative rates.
 Usage:
     python -m evaluation.escalation_eval.run_eval
     python -m evaluation.escalation_eval.run_eval --no-upload
-    python -m evaluation.escalation_eval.run_eval --upload-only
 """
 
 import argparse
@@ -21,6 +20,8 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
+from evaluation.storage import get_commit_hash, save_results, upload_to_s3
+
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
@@ -28,32 +29,10 @@ CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
 DATASET_PATH = Path(__file__).parent / "dataset.json"
 OUTPUT_DIR = Path(__file__).parent / "output"
 
-AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "arte-chatbot-data")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+CHAT_API_KEY = os.getenv("CHAT_API_KEY", "")
 
 FALSE_POSITIVE_THRESHOLD = 0.15
 FALSE_NEGATIVE_THRESHOLD = 0.10
-
-try:
-    import boto3
-    BOTO_AVAILABLE = True
-except ImportError:
-    BOTO_AVAILABLE = False
-
-
-def get_commit_hash() -> str:
-    """Get current git commit hash or return 'unknown'."""
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return result.stdout.strip()
-    except Exception:
-        return "unknown"
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,36 +41,11 @@ def parse_args() -> argparse.Namespace:
         description="Escalation Evaluation Harness for ARTE Chatbot"
     )
     parser.add_argument(
-        "--upload-only",
-        action="store_true",
-        help="Skip local save, only upload to S3 if available",
-    )
-    parser.add_argument(
         "--no-upload",
         action="store_true",
         help="Skip S3 upload, save results locally only",
     )
     return parser.parse_args()
-
-
-def upload_to_s3(file_path: Path, s3_key: str) -> bool:
-    """Upload file to S3 bucket. Returns True on success."""
-    if not BOTO_AVAILABLE:
-        print("Warning: boto3 not available, skipping S3 upload")
-        return False
-
-    if not os.getenv("AWS_ACCESS_KEY_ID") or not os.getenv("AWS_SECRET_ACCESS_KEY"):
-        print("Warning: AWS credentials not found, skipping S3 upload")
-        return False
-
-    try:
-        s3_client = boto3.client("s3", region_name=AWS_REGION)
-        s3_client.upload_file(str(file_path), AWS_BUCKET_NAME, s3_key)
-        print(f"Uploaded to s3://{AWS_BUCKET_NAME}/{s3_key}")
-        return True
-    except Exception as e:
-        print(f"Warning: Failed to upload to S3: {e}")
-        return False
 
 
 def load_dataset() -> list[dict[str, Any]]:
@@ -126,9 +80,13 @@ def run_single_query(
 
     try:
         start_time = datetime.utcnow()
+        headers = {}
+        if CHAT_API_KEY:
+            headers["X-API-Key"] = CHAT_API_KEY
         response = client.post(
             CHAT_ENDPOINT,
             json={"message": query},
+            headers=headers,
             timeout=30.0,
         )
         end_time = datetime.utcnow()
@@ -153,24 +111,20 @@ def run_single_query(
 
 
 def calculate_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
-    """Calculate false positive and false negative rates.
-    
-    False Positive: Predicted escalate=true, but expected=false
-    False Negative: Predicted escalate=false, but expected=true
-    """
+    """Calculate false positive and false negative rates."""
     total = len(results)
     false_positives = 0
     false_negatives = 0
     true_positives = 0
     true_negatives = 0
-    
+
     for r in results:
         if r["error"]:
             continue
-            
+
         predicted = r["predicted_escalate"]
         expected = r["expected_should_escalate"]
-        
+
         if predicted and expected:
             true_positives += 1
         elif not predicted and not expected:
@@ -179,10 +133,10 @@ def calculate_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
             false_positives += 1
         else:
             false_negatives += 1
-    
+
     fp_rate = false_positives / total if total > 0 else 0
     fn_rate = false_negatives / total if total > 0 else 0
-    
+
     return {
         "false_positive_rate": fp_rate,
         "false_negative_rate": fn_rate,
@@ -192,77 +146,6 @@ def calculate_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
         "true_negatives": true_negatives,
         "total": total,
     }
-
-
-def save_results(
-    results: list[dict[str, Any]],
-    metrics: dict[str, float],
-    timestamp: str,
-    commit_hash: str,
-) -> tuple[Path, str]:
-    """Save evaluation results to JSON file and return S3 key.
-
-    Result File Schema (evaluations/escalation/{commit_hash}_{timestamp}.json):
-        {
-            "timestamp": str,          # Execution timestamp (YYYYMMDD_HHMMSS)
-            "commit_hash": str,       # Git commit hash (short)
-            "s3_key": str,             # S3 object key
-            "total_queries": int,     # Total test cases processed
-            "true_positives": int,    # Predicted escalate=true, expected=true
-            "true_negatives": int,    # Predicted escalate=false, expected=false
-            "false_positives": int,   # Predicted escalate=true, expected=false
-            "false_negatives": int,   # Predicted escalate=false, expected=true
-            "false_positive_rate": float,  # FP rate (0.0 - 1.0)
-            "false_negative_rate": float,   # FN rate (0.0 - 1.0)
-            "fp_threshold": float,    # Threshold for FP rate comparison
-            "fn_threshold": float,    # Threshold for FN rate comparison
-            "passed": bool,            # True if both rates within thresholds
-            "results": [              # Per-query details
-                {
-                    "query_id": str,
-                    "query": str,
-                    "expected_should_escalate": bool,
-                    "predicted_escalate": bool,
-                    "predicted_intent_type": str,
-                    "correct": bool,
-                    "error": str,          # Empty if success
-                    "latency_ms": float,
-                    "timestamp": str        # ISO 8601 timestamp of query
-                }
-            ]
-        }
-    """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    s3_key = f"evaluations/escalation/{commit_hash}_{timestamp}.json"
-    output_path = OUTPUT_DIR / s3_key.replace("/", "_")
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "timestamp": timestamp,
-                "commit_hash": commit_hash,
-                "s3_key": s3_key,
-                "total_queries": metrics["total"],
-                "false_positives": metrics["false_positives"],
-                "false_negatives": metrics["false_negatives"],
-                "true_positives": metrics["true_positives"],
-                "true_negatives": metrics["true_negatives"],
-                "false_positive_rate": round(metrics["false_positive_rate"], 4),
-                "false_negative_rate": round(metrics["false_negative_rate"], 4),
-                "fp_threshold": FALSE_POSITIVE_THRESHOLD,
-                "fn_threshold": FALSE_NEGATIVE_THRESHOLD,
-                "passed": (
-                    metrics["false_positive_rate"] <= FALSE_POSITIVE_THRESHOLD
-                    and metrics["false_negative_rate"] <= FALSE_NEGATIVE_THRESHOLD
-                ),
-                "results": results,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
-
-    return output_path, s3_key
 
 
 def run_escalation_eval(args: argparse.Namespace) -> None:
@@ -281,7 +164,9 @@ def run_escalation_eval(args: argparse.Namespace) -> None:
     dataset = load_dataset()
     print(f"Loaded {len(dataset)} test queries")
 
-    # Check API availability
+    if not CHAT_API_KEY:
+        print("Warning: CHAT_API_KEY environment variable not set. API requests will fail.")
+
     try:
         with httpx.Client() as client:
             health_response = client.get(f"{API_BASE_URL}/health", timeout=5.0)
@@ -325,7 +210,6 @@ def run_escalation_eval(args: argparse.Namespace) -> None:
     print()
     print("-" * 60)
 
-    # Calculate metrics
     metrics = calculate_metrics(results)
     errors = sum(1 for r in results if r["error"])
 
@@ -358,16 +242,24 @@ def run_escalation_eval(args: argparse.Namespace) -> None:
 
     commit_hash = get_commit_hash()
 
-    output_path = None
-    s3_key = None
+    payload = {
+        "total_queries": metrics["total"],
+        "false_positives": metrics["false_positives"],
+        "false_negatives": metrics["false_negatives"],
+        "true_positives": metrics["true_positives"],
+        "true_negatives": metrics["true_negatives"],
+        "false_positive_rate": round(metrics["false_positive_rate"], 4),
+        "false_negative_rate": round(metrics["false_negative_rate"], 4),
+        "fp_threshold": FALSE_POSITIVE_THRESHOLD,
+        "fn_threshold": FALSE_NEGATIVE_THRESHOLD,
+        "passed": passed,
+        "results": results,
+    }
 
-    if not args.upload_only:
-        output_path, s3_key = save_results(results, metrics, timestamp, commit_hash)
-        print(f"Results saved to: {output_path}")
+    output_path, s3_key = save_results(OUTPUT_DIR, "escalation", payload, commit_hash, timestamp)
+    print(f"Results saved to: {output_path}")
 
     if not args.no_upload:
-        if output_path is None:
-            output_path, s3_key = save_results(results, metrics, timestamp, commit_hash)
         upload_to_s3(output_path, s3_key)
 
     print("=" * 60)
