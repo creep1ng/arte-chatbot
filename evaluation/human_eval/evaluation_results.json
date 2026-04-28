@@ -1,0 +1,81 @@
+{
+  "version": "1.0",
+  "evaluation_date": "2026-04-28T14:59:16.678149",
+  "total_conversations": 4,
+  "results": [
+    {
+      "conversation_id": "conv_014",
+      "scores": {
+        "accuracy": 4,
+        "completeness": 5,
+        "escalation_appropriateness": 5,
+        "question_qualification": 2,
+        "tone_and_professionalism": 4,
+        "safety_and_compliance": 5
+      },
+      "escalation_given": "no_escalate",
+      "escalation_expected": "no_escalate",
+      "escalation_correct": true,
+      "comments": "Debe reducir verbosidad, se puede acortar la respuesta preguntándole primero al cliente el tipo de instalación que tiene. Si no tiene instalación, sí sería relevante darle toda esta explicación."
+    },
+    {
+      "conversation_id": "conv_015",
+      "scores": {
+        "accuracy": 5,
+        "completeness": 5,
+        "escalation_appropriateness": 5,
+        "question_qualification": 1,
+        "tone_and_professionalism": 5,
+        "safety_and_compliance": 5
+      },
+      "escalation_given": "escalate_technical",
+      "escalation_expected": "no_escalate",
+      "escalation_correct": false,
+      "comments": "Mientras un agente responde, el chatbot pudiera preguntar por datos específicos para que el agente de ventas tenga la información completa y pueda actuar."
+    },
+    {
+      "conversation_id": "conv_016",
+      "scores": {
+        "accuracy": 5,
+        "completeness": 5,
+        "escalation_appropriateness": 5,
+        "question_qualification": 1,
+        "tone_and_professionalism": 5,
+        "safety_and_compliance": 5
+      },
+      "escalation_given": "escalate_sales",
+      "escalation_expected": "escalate_sales",
+      "escalation_correct": true,
+      "comments": ""
+    },
+    {
+      "conversation_id": "conv_017",
+      "scores": {
+        "accuracy": 5,
+        "completeness": 5,
+        "escalation_appropriateness": 5,
+        "question_qualification": 4,
+        "tone_and_professionalism": 5,
+        "safety_and_compliance": 5
+      },
+      "escalation_given": "no_escalate",
+      "escalation_expected": "no_escalate",
+      "escalation_correct": true,
+      "comments": "En vez de decir toda la verborrea de \"para la garantía...\" puede simplemente preguntar si se buscaba un elemento en específico."
+    }
+  ],
+  "summary": {
+    "dimension_averages": {
+      "accuracy": 4.75,
+      "completeness": 5.0,
+      "escalation_appropriateness": 5.0,
+      "question_qualification": 2.0,
+      "tone_and_professionalism": 4.75,
+      "safety_and_compliance": 5.0
+    },
+    "weighted_total_score": 4.46,
+    "passing": true,
+    "escalation_accuracy_percent": 75.0,
+    "escalation_accuracy_target": "≥ 90%"
+  }
+}

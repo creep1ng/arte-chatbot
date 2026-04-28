@@ -1,13 +1,16 @@
 """
 Intent Classification Evaluation Harness for ARTE Chatbot (US-05)
 
-Sends 15 annotated queries to the /chat endpoint and measures
+Sends annotated queries to the /chat endpoint and measures
 intent_type classification accuracy against the expected labels.
 
 Usage:
     python -m evaluation.intent_eval.run_eval
+    python -m evaluation.intent_eval.run_eval --no-upload
 """
 
+import argparse
+import asyncio
 import json
 import os
 import sys
@@ -18,15 +21,32 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
+from evaluation.storage import get_commit_hash, save_results, upload_to_s3
+
+from evaluation.harness.config import harness_settings
+
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
 DATASET_PATH = Path(__file__).parent / "dataset.json"
 OUTPUT_DIR = Path(__file__).parent / "output"
-CHAT_API_KEY = os.getenv("CHAT_API_KEY", "")
+CHAT_API_KEY = harness_settings.chat_api_key
 
 ACCURACY_THRESHOLD = 80.0
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Intent Classification Evaluation Harness for ARTE Chatbot"
+    )
+    parser.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="Skip S3 upload, save results locally only",
+    )
+    return parser.parse_args()
 
 
 def load_dataset() -> list[dict[str, Any]]:
@@ -39,8 +59,8 @@ def load_dataset() -> list[dict[str, Any]]:
         return json.load(f)
 
 
-def run_single_query(
-    client: httpx.Client, query_data: dict[str, Any]
+async def run_single_query(
+    client: httpx.AsyncClient, query_data: dict[str, Any]
 ) -> dict[str, Any]:
     """Execute a single query and extract intent_type classification."""
     query_id = query_data["id"]
@@ -63,7 +83,7 @@ def run_single_query(
         headers = {}
         if CHAT_API_KEY:
             headers["X-API-Key"] = CHAT_API_KEY
-        response = client.post(
+        response = await client.post(
             CHAT_ENDPOINT,
             json={"message": query},
             headers=headers,
@@ -90,33 +110,7 @@ def run_single_query(
     return result
 
 
-def save_results(
-    results: list[dict[str, Any]], accuracy: float, timestamp: str
-) -> Path:
-    """Save evaluation results to JSON file."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_DIR / f"intent_eval_{timestamp}.json"
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "timestamp": timestamp,
-                "total_queries": len(results),
-                "correct": sum(1 for r in results if r["correct"]),
-                "accuracy_percent": round(accuracy, 2),
-                "threshold_percent": ACCURACY_THRESHOLD,
-                "passed": accuracy >= ACCURACY_THRESHOLD,
-                "results": results,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
-
-    return output_path
-
-
-def run_intent_eval() -> None:
+async def run_intent_eval(args: argparse.Namespace) -> None:
     """Run the intent classification evaluation harness."""
     print("=" * 60)
     print("ARTE Chatbot - Intent Classification Evaluation (US-05)")
@@ -126,10 +120,11 @@ def run_intent_eval() -> None:
     print(f"Accuracy threshold: {ACCURACY_THRESHOLD}%")
     print()
 
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
     dataset = load_dataset()
     print(f"Loaded {len(dataset)} test queries")
 
-    # Check API availability
     try:
         with httpx.Client() as client:
             health_response = client.get(f"{API_BASE_URL}/health", timeout=5.0)
@@ -143,22 +138,20 @@ def run_intent_eval() -> None:
         sys.exit(1)
 
     print()
-    print("Running queries...")
+    print("Running queries asynchronously...")
     print("-" * 60)
 
-    results: list[dict[str, Any]] = []
+    semaphore = asyncio.Semaphore(10)
 
-    with httpx.Client() as client:
-        for i, query_data in enumerate(dataset, 1):
+    async def run_with_semaphore(
+        client: httpx.AsyncClient, query_data: dict[str, Any], index: int
+    ) -> dict[str, Any]:
+        async with semaphore:
             query_id = query_data["id"]
             query_preview = query_data["query"][:50]
             expected = query_data["expected_intent_type"]
-
-            print(f"[{i}/{len(dataset)}] {query_id}: {query_preview}...")
-
-            result = run_single_query(client, query_data)
-            results.append(result)
-
+            print(f"[{index}/{len(dataset)}] {query_id}: {query_preview}...")
+            result = await run_single_query(client, query_data)
             if result["error"]:
                 print(f"    Error: {result['error']}")
             else:
@@ -168,17 +161,25 @@ def run_intent_eval() -> None:
                     f"predicted={result['predicted_intent_type']} "
                     f"({result['latency_ms']:.0f}ms)"
                 )
+            return result
+
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            run_with_semaphore(client, query_data, i)
+            for i, query_data in enumerate(dataset, 1)
+        ]
+        results = await asyncio.gather(*tasks)
+
+    results = list(results)
 
     print()
     print("-" * 60)
 
-    # Calculate accuracy
     correct = sum(1 for r in results if r["correct"])
     errors = sum(1 for r in results if r["error"])
     total = len(results)
     accuracy = (correct / total * 100) if total > 0 else 0
 
-    # Per-category breakdown
     categories: dict[str, dict[str, int]] = {}
     for r in results:
         if r["error"]:
@@ -204,19 +205,34 @@ def run_intent_eval() -> None:
 
     print()
 
-    if accuracy >= ACCURACY_THRESHOLD:
+    passed = accuracy >= ACCURACY_THRESHOLD
+    if passed:
         print(f"PASS: Accuracy {accuracy:.1f}% >= {ACCURACY_THRESHOLD}%")
     else:
         print(f"FAIL: Accuracy {accuracy:.1f}% < {ACCURACY_THRESHOLD}%")
 
-    # Save results
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    output_path = save_results(results, accuracy, timestamp)
+    commit_hash = get_commit_hash()
+
+    payload = {
+        "total_queries": total,
+        "correct": correct,
+        "accuracy_percent": round(accuracy, 2),
+        "threshold_percent": ACCURACY_THRESHOLD,
+        "passed": passed,
+        "results": results,
+    }
+
+    output_path, s3_key = save_results(OUTPUT_DIR, "intent", payload, commit_hash, timestamp)
     print(f"Results saved to: {output_path}")
+
+    if not args.no_upload:
+        upload_to_s3(output_path, s3_key)
+
     print("=" * 60)
 
-    sys.exit(0 if accuracy >= ACCURACY_THRESHOLD else 1)
+    sys.exit(0 if passed else 1)
 
 
 if __name__ == "__main__":
-    run_intent_eval()
+    args = parse_args()
+    asyncio.run(run_intent_eval(args))

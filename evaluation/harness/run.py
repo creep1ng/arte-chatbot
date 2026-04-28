@@ -3,8 +3,14 @@ Evaluation Harness for ARTE Chatbot
 
 This module provides the main script to run automated evaluation tests
 against the /chat endpoint and record the results.
+
+Usage:
+    python -m evaluation.harness.run
+    python -m evaluation.harness.run --no-upload
 """
 
+import argparse
+import asyncio
 import csv
 import json
 import logging
@@ -14,16 +20,33 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
 
 from evaluation.harness.config import harness_settings
+from evaluation.storage import get_commit_hash, save_results, upload_to_s3
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Configuration from centralized settings
 API_BASE_URL = harness_settings.api_base_url
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
 DATASET_PATH = harness_settings.dataset_path
 OUTPUT_DIR = harness_settings.output_dir
+CHAT_API_KEY = harness_settings.chat_api_key
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Evaluation Harness for ARTE Chatbot"
+    )
+    parser.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="Skip S3 upload, save results locally only",
+    )
+    return parser.parse_args()
 
 
 def load_dataset() -> list[dict[str, Any]]:
@@ -34,26 +57,6 @@ def load_dataset() -> list[dict[str, Any]]:
 
     with open(DATASET_PATH, encoding="utf-8") as f:
         return json.load(f)
-
-
-def save_results_json(results: list[dict[str, Any]], timestamp: str) -> Path:
-    """Save results to JSON file."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_DIR / f"results_{timestamp}.json"
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "timestamp": timestamp,
-                "total_queries": len(results),
-                "results": results,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
-
-    return output_path
 
 
 def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
@@ -106,8 +109,8 @@ def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
     return output_path
 
 
-def run_single_query(
-    client: httpx.Client, query_data: dict[str, Any]
+async def run_single_query(
+    client: httpx.AsyncClient, query_data: dict[str, Any]
 ) -> dict[str, Any]:
     """Execute a single query against the /chat endpoint."""
     query_id = query_data.get("id", "unknown")
@@ -130,9 +133,13 @@ def run_single_query(
 
     try:
         start_time = datetime.now(timezone.utc)
-        response = client.post(
+        headers = {}
+        if CHAT_API_KEY:
+            headers["X-API-Key"] = CHAT_API_KEY
+        response = await client.post(
             CHAT_ENDPOINT,
             json={"message": query},
+            headers=headers,
             timeout=30.0,
         )
         end_time = datetime.now(timezone.utc)
@@ -152,13 +159,13 @@ def run_single_query(
         result["error"] = f"Connection error: Could not connect to {CHAT_ENDPOINT}"
     except httpx.TimeoutException:
         result["error"] = "Request timed out after 30 seconds"
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:
         result["error"] = f"Unexpected error: {str(e)}"
 
     return result
 
 
-def run_harness() -> list[dict[str, Any]]:
+async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
     """Run the complete evaluation harness."""
     print("=" * 60)
     print("ARTE Chatbot Evaluation Harness")
@@ -167,13 +174,11 @@ def run_harness() -> list[dict[str, Any]]:
     print(f"Dataset: {DATASET_PATH}")
     print()
 
-    # Load dataset
     dataset = load_dataset()
     logger.info("Loaded %d test queries", len(dataset))
     print(f"Loaded {len(dataset)} test queries")
     print()
 
-    # Check API availability
     try:
         with httpx.Client() as client:
             health_response = client.get(f"{API_BASE_URL}/health", timeout=5.0)
@@ -193,22 +198,19 @@ def run_harness() -> list[dict[str, Any]]:
         sys.exit(1)
 
     print()
-    print("Running queries...")
+    print("Running queries asynchronously...")
     print("-" * 60)
 
-    results: list[dict[str, Any]] = []
+    semaphore = asyncio.Semaphore(10)
 
-    with httpx.Client() as client:
-        for i, query_data in enumerate(dataset, 1):
-            query_id = query_data.get("id", f"q{i:03d}")
+    async def run_with_semaphore(
+        client: httpx.AsyncClient, query_data: dict[str, Any], index: int
+    ) -> dict[str, Any]:
+        async with semaphore:
+            query_id = query_data.get("id", f"q{index:03d}")
             query_preview = query_data.get("query", "")[:50]
-
-            logger.debug("Running query %d/%d: %s", i, len(dataset), query_id)
-            print(f"[{i}/{len(dataset)}] {query_id}: {query_preview}...")
-
-            result = run_single_query(client, query_data)
-            results.append(result)
-
+            print(f"[{index}/{len(dataset)}] {query_id}: {query_preview}...")
+            result = await run_single_query(client, query_data)
             if result["error"]:
                 logger.error("Query %s failed: %s", query_id, result["error"])
                 print(f"    ✗ Error: {result['error']}")
@@ -219,12 +221,21 @@ def run_harness() -> list[dict[str, Any]]:
                     result["latency_ms"],
                 )
                 print(f"    ✓ Latency: {result['latency_ms']:.2f}ms")
+            return result
+
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            run_with_semaphore(client, query_data, i)
+            for i, query_data in enumerate(dataset, 1)
+        ]
+        results = await asyncio.gather(*tasks)
+
+    results = list(results)
 
     print()
     print("-" * 60)
     print(f"Completed {len(results)} queries")
 
-    # Calculate statistics
     successful = sum(1 for r in results if not r["error"])
     failed = sum(1 for r in results if r["error"])
     latencies = [r["latency_ms"] for r in results if r["latency_ms"] > 0]
@@ -246,16 +257,30 @@ def run_harness() -> list[dict[str, Any]]:
     print(f"Min latency: {min_latency:.2f}ms")
     print(f"Max latency: {max_latency:.2f}ms")
 
-    # Save results
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-    json_path = save_results_json(results, timestamp)
     csv_path = save_results_csv(results, timestamp)
-
     print()
-    print("Results saved to:")
-    print(f"  JSON: {json_path}")
-    print(f"  CSV:  {csv_path}")
+    print("CSV saved to:", csv_path)
+
+    commit_hash = get_commit_hash()
+
+    payload = {
+        "total_queries": len(results),
+        "successful": successful,
+        "failed": failed,
+        "avg_latency_ms": round(avg_latency, 2),
+        "min_latency_ms": round(min_latency, 2),
+        "max_latency_ms": round(max_latency, 2),
+        "results": results,
+    }
+
+    json_path, s3_key = save_results(OUTPUT_DIR, "harness", payload, commit_hash, timestamp)
+    print(f"JSON saved to: {json_path}")
+
+    if not args.no_upload:
+        upload_to_s3(json_path, s3_key)
+
     print()
     print("=" * 60)
 
@@ -263,4 +288,5 @@ def run_harness() -> list[dict[str, Any]]:
 
 
 if __name__ == "__main__":
-    run_harness()
+    args = parse_args()
+    results = asyncio.run(run_harness(args))

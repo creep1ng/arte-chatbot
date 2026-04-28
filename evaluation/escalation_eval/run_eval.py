@@ -6,17 +6,24 @@ measuring false positive and false negative rates.
 
 Usage:
     python -m evaluation.escalation_eval.run_eval
+    python -m evaluation.escalation_eval.run_eval --no-upload
 """
 
+import argparse
+import asyncio
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
+
+from evaluation.storage import get_commit_hash, save_results, upload_to_s3
+
+from evaluation.harness.config import harness_settings
 
 load_dotenv()
 
@@ -24,9 +31,23 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
 DATASET_PATH = Path(__file__).parent / "dataset.json"
 OUTPUT_DIR = Path(__file__).parent / "output"
+CHAT_API_KEY = harness_settings.chat_api_key
 
 FALSE_POSITIVE_THRESHOLD = 0.15
 FALSE_NEGATIVE_THRESHOLD = 0.10
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Escalation Evaluation Harness for ARTE Chatbot"
+    )
+    parser.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="Skip S3 upload, save results locally only",
+    )
+    return parser.parse_args()
 
 
 def load_dataset() -> list[dict[str, Any]]:
@@ -39,8 +60,8 @@ def load_dataset() -> list[dict[str, Any]]:
         return json.load(f)
 
 
-def run_single_query(
-    client: httpx.Client, query_data: dict[str, Any]
+async def run_single_query(
+    client: httpx.AsyncClient, query_data: dict[str, Any]
 ) -> dict[str, Any]:
     """Execute a single query and extract escalation decision."""
     query_id = query_data["id"]
@@ -56,17 +77,21 @@ def run_single_query(
         "correct": False,
         "error": "",
         "latency_ms": 0.0,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
     try:
-        start_time = datetime.utcnow()
-        response = client.post(
+        start_time = datetime.now(timezone.utc)
+        headers = {}
+        if CHAT_API_KEY:
+            headers["X-API-Key"] = CHAT_API_KEY
+        response = await client.post(
             CHAT_ENDPOINT,
             json={"message": query},
+            headers=headers,
             timeout=30.0,
         )
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         result["latency_ms"] = (end_time - start_time).total_seconds() * 1000
 
         if response.status_code == 200:
@@ -88,24 +113,20 @@ def run_single_query(
 
 
 def calculate_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
-    """Calculate false positive and false negative rates.
-    
-    False Positive: Predicted escalate=true, but expected=false
-    False Negative: Predicted escalate=false, but expected=true
-    """
+    """Calculate false positive and false negative rates."""
     total = len(results)
     false_positives = 0
     false_negatives = 0
     true_positives = 0
     true_negatives = 0
-    
+
     for r in results:
         if r["error"]:
             continue
-            
+
         predicted = r["predicted_escalate"]
         expected = r["expected_should_escalate"]
-        
+
         if predicted and expected:
             true_positives += 1
         elif not predicted and not expected:
@@ -114,10 +135,10 @@ def calculate_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
             false_positives += 1
         else:
             false_negatives += 1
-    
+
     fp_rate = false_positives / total if total > 0 else 0
     fn_rate = false_negatives / total if total > 0 else 0
-    
+
     return {
         "false_positive_rate": fp_rate,
         "false_negative_rate": fn_rate,
@@ -129,43 +150,7 @@ def calculate_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
     }
 
 
-def save_results(
-    results: list[dict[str, Any]], 
-    metrics: dict[str, float], 
-    timestamp: str
-) -> Path:
-    """Save evaluation results to JSON file."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_DIR / f"escalation_eval_{timestamp}.json"
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "timestamp": timestamp,
-                "total_queries": metrics["total"],
-                "false_positives": metrics["false_positives"],
-                "false_negatives": metrics["false_negatives"],
-                "true_positives": metrics["true_positives"],
-                "true_negatives": metrics["true_negatives"],
-                "false_positive_rate": round(metrics["false_positive_rate"], 4),
-                "false_negative_rate": round(metrics["false_negative_rate"], 4),
-                "fp_threshold": FALSE_POSITIVE_THRESHOLD,
-                "fn_threshold": FALSE_NEGATIVE_THRESHOLD,
-                "passed": (
-                    metrics["false_positive_rate"] <= FALSE_POSITIVE_THRESHOLD
-                    and metrics["false_negative_rate"] <= FALSE_NEGATIVE_THRESHOLD
-                ),
-                "results": results,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
-
-    return output_path
-
-
-def run_escalation_eval() -> None:
+async def run_escalation_eval(args: argparse.Namespace) -> None:
     """Run the escalation evaluation harness."""
     print("=" * 60)
     print("ARTE Chatbot - Escalation Evaluation (US-10)")
@@ -176,10 +161,14 @@ def run_escalation_eval() -> None:
     print(f"False negative threshold: {FALSE_NEGATIVE_THRESHOLD * 100}%")
     print()
 
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
     dataset = load_dataset()
     print(f"Loaded {len(dataset)} test queries")
 
-    # Check API availability
+    if not CHAT_API_KEY:
+        print("Warning: CHAT_API_KEY environment variable not set. API requests will fail.")
+
     try:
         with httpx.Client() as client:
             health_response = client.get(f"{API_BASE_URL}/health", timeout=5.0)
@@ -193,22 +182,20 @@ def run_escalation_eval() -> None:
         sys.exit(1)
 
     print()
-    print("Running queries...")
+    print("Running queries asynchronously...")
     print("-" * 60)
 
-    results: list[dict[str, Any]] = []
+    semaphore = asyncio.Semaphore(10)
 
-    with httpx.Client() as client:
-        for i, query_data in enumerate(dataset, 1):
+    async def run_with_semaphore(
+        client: httpx.AsyncClient, query_data: dict[str, Any], index: int
+    ) -> dict[str, Any]:
+        async with semaphore:
             query_id = query_data["id"]
             query_preview = query_data["query"][:50]
             expected = query_data["should_escalate"]
-
-            print(f"[{i}/{len(dataset)}] {query_id}: {query_preview}...")
-
-            result = run_single_query(client, query_data)
-            results.append(result)
-
+            print(f"[{index}/{len(dataset)}] {query_id}: {query_preview}...")
+            result = await run_single_query(client, query_data)
             if result["error"]:
                 print(f"    Error: {result['error']}")
             else:
@@ -219,11 +206,20 @@ def run_escalation_eval() -> None:
                     f"intent={result['predicted_intent_type']} "
                     f"({result['latency_ms']:.0f}ms)"
                 )
+            return result
+
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            run_with_semaphore(client, query_data, i)
+            for i, query_data in enumerate(dataset, 1)
+        ]
+        results = await asyncio.gather(*tasks)
+
+    results = list(results)
 
     print()
     print("-" * 60)
 
-    # Calculate metrics
     metrics = calculate_metrics(results)
     errors = sum(1 for r in results if r["error"])
 
@@ -254,14 +250,33 @@ def run_escalation_eval() -> None:
             failed_conditions.append(f"FN rate ({metrics['false_negative_rate']*100:.1f}% > {FALSE_NEGATIVE_THRESHOLD*100}%)")
         print(f"FAIL: {', '.join(failed_conditions)}")
 
-    # Save results
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    output_path = save_results(results, metrics, timestamp)
+    commit_hash = get_commit_hash()
+
+    payload = {
+        "total_queries": metrics["total"],
+        "false_positives": metrics["false_positives"],
+        "false_negatives": metrics["false_negatives"],
+        "true_positives": metrics["true_positives"],
+        "true_negatives": metrics["true_negatives"],
+        "false_positive_rate": round(metrics["false_positive_rate"], 4),
+        "false_negative_rate": round(metrics["false_negative_rate"], 4),
+        "fp_threshold": FALSE_POSITIVE_THRESHOLD,
+        "fn_threshold": FALSE_NEGATIVE_THRESHOLD,
+        "passed": passed,
+        "results": results,
+    }
+
+    output_path, s3_key = save_results(OUTPUT_DIR, "escalation", payload, commit_hash, timestamp)
     print(f"Results saved to: {output_path}")
+
+    if not args.no_upload:
+        upload_to_s3(output_path, s3_key)
+
     print("=" * 60)
 
     sys.exit(0 if passed else 1)
 
 
 if __name__ == "__main__":
-    run_escalation_eval()
+    args = parse_args()
+    asyncio.run(run_escalation_eval(args))
