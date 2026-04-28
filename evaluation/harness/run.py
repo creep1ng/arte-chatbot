@@ -6,6 +6,7 @@ against the /chat endpoint and record the results.
 
 Usage:
     python -m evaluation.harness.run
+    python -m evaluation.harness.run --sprint sprint_5 --no-upload
     python -m evaluation.harness.run --no-upload
 """
 
@@ -23,6 +24,7 @@ import httpx
 from dotenv import load_dotenv
 
 from evaluation.harness.config import harness_settings
+from evaluation.s3_client import get_git_commit, get_git_branch
 from evaluation.storage import get_commit_hash, save_results, upload_to_s3
 
 load_dotenv()
@@ -45,6 +47,12 @@ def parse_args() -> argparse.Namespace:
         "--no-upload",
         action="store_true",
         help="Skip S3 upload, save results locally only",
+    )
+    parser.add_argument(
+        "--sprint",
+        type=str,
+        default="sprint_5",
+        help="Sprint identifier for the evaluation run (default: sprint_5)",
     )
     return parser.parse_args()
 
@@ -167,11 +175,19 @@ async def run_single_query(
 
 async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
     """Run the complete evaluation harness."""
+    sprint = args.sprint
     print("=" * 60)
     print("ARTE Chatbot Evaluation Harness")
     print("=" * 60)
     print(f"Target endpoint: {CHAT_ENDPOINT}")
     print(f"Dataset: {DATASET_PATH}")
+    print(f"Sprint: {sprint}")
+    print()
+
+    git_commit = get_git_commit()
+    git_branch = get_git_branch()
+    print(f"Git commit: {git_commit}")
+    print(f"Git branch: {git_branch}")
     print()
 
     dataset = load_dataset()
@@ -244,6 +260,17 @@ async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
     min_latency = min(latencies) if latencies else 0
     max_latency = max(latencies) if latencies else 0
 
+    # Calculate escalation rate
+    expected_escalations = sum(1 for r in results if r.get("should_escalate", False))
+    actual_escalations = sum(1 for r in results if r.get("escalated", False))
+    correct_escalations = sum(
+        1
+        for r in results
+        if r.get("should_escalate", False) == r.get("escalated", False)
+    )
+    escalation_accuracy = (correct_escalations / len(results) * 100) if results else 0
+    escalation_rate = (actual_escalations / len(results) * 100) if results else 0
+
     logger.info(
         "Evaluation complete: successful=%d, failed=%d, avg_latency=%.2fms",
         successful,
@@ -256,6 +283,8 @@ async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
     print(f"Avg latency: {avg_latency:.2f}ms")
     print(f"Min latency: {min_latency:.2f}ms")
     print(f"Max latency: {max_latency:.2f}ms")
+    print(f"Escalation rate: {escalation_rate:.1f}%")
+    print(f"Escalation accuracy: {escalation_accuracy:.1f}%")
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
@@ -275,7 +304,9 @@ async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
         "results": results,
     }
 
-    json_path, s3_key = save_results(OUTPUT_DIR, "harness", payload, commit_hash, timestamp)
+    json_path, s3_key = save_results(
+        OUTPUT_DIR, "harness", payload, commit_hash, timestamp
+    )
     print(f"JSON saved to: {json_path}")
 
     if not args.no_upload:
