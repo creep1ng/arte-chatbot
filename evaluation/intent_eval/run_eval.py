@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -22,13 +23,15 @@ from dotenv import load_dotenv
 
 from evaluation.storage import get_commit_hash, save_results, upload_to_s3
 
+from evaluation.harness.config import harness_settings
+
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
 DATASET_PATH = Path(__file__).parent / "dataset.json"
 OUTPUT_DIR = Path(__file__).parent / "output"
-CHAT_API_KEY = os.getenv("CHAT_API_KEY", "")
+CHAT_API_KEY = harness_settings.chat_api_key
 
 ACCURACY_THRESHOLD = 80.0
 
@@ -56,8 +59,8 @@ def load_dataset() -> list[dict[str, Any]]:
         return json.load(f)
 
 
-def run_single_query(
-    client: httpx.Client, query_data: dict[str, Any]
+async def run_single_query(
+    client: httpx.AsyncClient, query_data: dict[str, Any]
 ) -> dict[str, Any]:
     """Execute a single query and extract intent_type classification."""
     query_id = query_data["id"]
@@ -80,7 +83,7 @@ def run_single_query(
         headers = {}
         if CHAT_API_KEY:
             headers["X-API-Key"] = CHAT_API_KEY
-        response = client.post(
+        response = await client.post(
             CHAT_ENDPOINT,
             json={"message": query},
             headers=headers,
@@ -107,7 +110,7 @@ def run_single_query(
     return result
 
 
-def run_intent_eval(args: argparse.Namespace) -> None:
+async def run_intent_eval(args: argparse.Namespace) -> None:
     """Run the intent classification evaluation harness."""
     print("=" * 60)
     print("ARTE Chatbot - Intent Classification Evaluation (US-05)")
@@ -135,22 +138,20 @@ def run_intent_eval(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print()
-    print("Running queries...")
+    print("Running queries asynchronously...")
     print("-" * 60)
 
-    results: list[dict[str, Any]] = []
+    semaphore = asyncio.Semaphore(10)
 
-    with httpx.Client() as client:
-        for i, query_data in enumerate(dataset, 1):
+    async def run_with_semaphore(
+        client: httpx.AsyncClient, query_data: dict[str, Any], index: int
+    ) -> dict[str, Any]:
+        async with semaphore:
             query_id = query_data["id"]
             query_preview = query_data["query"][:50]
             expected = query_data["expected_intent_type"]
-
-            print(f"[{i}/{len(dataset)}] {query_id}: {query_preview}...")
-
-            result = run_single_query(client, query_data)
-            results.append(result)
-
+            print(f"[{index}/{len(dataset)}] {query_id}: {query_preview}...")
+            result = await run_single_query(client, query_data)
             if result["error"]:
                 print(f"    Error: {result['error']}")
             else:
@@ -160,6 +161,16 @@ def run_intent_eval(args: argparse.Namespace) -> None:
                     f"predicted={result['predicted_intent_type']} "
                     f"({result['latency_ms']:.0f}ms)"
                 )
+            return result
+
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            run_with_semaphore(client, query_data, i)
+            for i, query_data in enumerate(dataset, 1)
+        ]
+        results = await asyncio.gather(*tasks)
+
+    results = list(results)
 
     print()
     print("-" * 60)
@@ -224,4 +235,4 @@ def run_intent_eval(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     args = parse_args()
-    run_intent_eval(args)
+    asyncio.run(run_intent_eval(args))
