@@ -10,10 +10,11 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,14 +23,15 @@ from dotenv import load_dotenv
 
 from evaluation.storage import get_commit_hash, save_results, upload_to_s3
 
+from evaluation.harness.config import harness_settings
+
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
 DATASET_PATH = Path(__file__).parent / "dataset.json"
 OUTPUT_DIR = Path(__file__).parent / "output"
-
-CHAT_API_KEY = os.getenv("CHAT_API_KEY", "")
+CHAT_API_KEY = harness_settings.chat_api_key
 
 FALSE_POSITIVE_THRESHOLD = 0.15
 FALSE_NEGATIVE_THRESHOLD = 0.10
@@ -58,8 +60,8 @@ def load_dataset() -> list[dict[str, Any]]:
         return json.load(f)
 
 
-def run_single_query(
-    client: httpx.Client, query_data: dict[str, Any]
+async def run_single_query(
+    client: httpx.AsyncClient, query_data: dict[str, Any]
 ) -> dict[str, Any]:
     """Execute a single query and extract escalation decision."""
     query_id = query_data["id"]
@@ -75,21 +77,21 @@ def run_single_query(
         "correct": False,
         "error": "",
         "latency_ms": 0.0,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
     try:
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         headers = {}
         if CHAT_API_KEY:
             headers["X-API-Key"] = CHAT_API_KEY
-        response = client.post(
+        response = await client.post(
             CHAT_ENDPOINT,
             json={"message": query},
             headers=headers,
             timeout=30.0,
         )
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         result["latency_ms"] = (end_time - start_time).total_seconds() * 1000
 
         if response.status_code == 200:
@@ -148,7 +150,7 @@ def calculate_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
     }
 
 
-def run_escalation_eval(args: argparse.Namespace) -> None:
+async def run_escalation_eval(args: argparse.Namespace) -> None:
     """Run the escalation evaluation harness."""
     print("=" * 60)
     print("ARTE Chatbot - Escalation Evaluation (US-10)")
@@ -159,7 +161,7 @@ def run_escalation_eval(args: argparse.Namespace) -> None:
     print(f"False negative threshold: {FALSE_NEGATIVE_THRESHOLD * 100}%")
     print()
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     dataset = load_dataset()
     print(f"Loaded {len(dataset)} test queries")
@@ -180,22 +182,20 @@ def run_escalation_eval(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print()
-    print("Running queries...")
+    print("Running queries asynchronously...")
     print("-" * 60)
 
-    results: list[dict[str, Any]] = []
+    semaphore = asyncio.Semaphore(10)
 
-    with httpx.Client() as client:
-        for i, query_data in enumerate(dataset, 1):
+    async def run_with_semaphore(
+        client: httpx.AsyncClient, query_data: dict[str, Any], index: int
+    ) -> dict[str, Any]:
+        async with semaphore:
             query_id = query_data["id"]
             query_preview = query_data["query"][:50]
             expected = query_data["should_escalate"]
-
-            print(f"[{i}/{len(dataset)}] {query_id}: {query_preview}...")
-
-            result = run_single_query(client, query_data)
-            results.append(result)
-
+            print(f"[{index}/{len(dataset)}] {query_id}: {query_preview}...")
+            result = await run_single_query(client, query_data)
             if result["error"]:
                 print(f"    Error: {result['error']}")
             else:
@@ -206,6 +206,16 @@ def run_escalation_eval(args: argparse.Namespace) -> None:
                     f"intent={result['predicted_intent_type']} "
                     f"({result['latency_ms']:.0f}ms)"
                 )
+            return result
+
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            run_with_semaphore(client, query_data, i)
+            for i, query_data in enumerate(dataset, 1)
+        ]
+        results = await asyncio.gather(*tasks)
+
+    results = list(results)
 
     print()
     print("-" * 60)
@@ -269,4 +279,4 @@ def run_escalation_eval(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     args = parse_args()
-    run_escalation_eval(args)
+    asyncio.run(run_escalation_eval(args))

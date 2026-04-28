@@ -38,6 +38,10 @@ class HarnessSettings(BaseSettings):
         default=_HARNESS_DIR / "output",
         description="Directory to save evaluation results",
     )
+    chat_api_key: str = Field(
+        default="",
+        description="API key for the /chat endpoint",
+    )
 
 
 harness_settings = HarnessSettings()
