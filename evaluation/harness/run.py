@@ -7,6 +7,7 @@ against the /chat endpoint and record the results.
 Usage:
     python -m evaluation.harness.run
     python -m evaluation.harness.run --sprint sprint_5 --no-upload
+    python -m evaluation.harness.run --no-upload
 """
 
 import argparse
@@ -39,7 +40,9 @@ CHAT_API_KEY = harness_settings.chat_api_key
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Evaluation Harness for ARTE Chatbot")
+    parser = argparse.ArgumentParser(
+        description="Evaluation Harness for ARTE Chatbot"
+    )
     parser.add_argument(
         "--no-upload",
         action="store_true",
