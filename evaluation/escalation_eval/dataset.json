@@ -22,7 +22,7 @@
   },
   {
     "id": "ee004",
-    "query": "¿Qué características técnicas tiene el panel JA Solar JAM72S30-545?",
+    "query": "¿Qué características técnicas tiene el panel ZnShineSolar 555W?",
     "expected_intent_type": "product_info",
     "should_escalate": false,
     "complexity": "low"
@@ -36,14 +36,14 @@
   },
   {
     "id": "ee006",
-    "query": "Necesito saber la potencia y eficiencia del panel Longi Hi-MO 5",
+    "query": "Necesito saber la potencia y eficiencia del panel Risen Perc 425W",
     "expected_intent_type": "product_info",
     "should_escalate": false,
     "complexity": "low"
   },
   {
     "id": "ee007",
-    "query": "¿Cuál es mejor, el inversor Fronius o el Huawei para una instalación de 10kW?",
+    "query": "¿Cuál es mejor, el inversor Growatt MAC 10KTL3-XL o Solis S5-GR3P10K-LV para una instalación instalación con conexión a red de 10kW?",
     "expected_intent_type": "product_info",
     "should_escalate": true,
     "complexity": "high",
