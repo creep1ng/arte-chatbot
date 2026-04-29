@@ -1,0 +1,83 @@
+{
+  "timestamp": "20260428_020359",
+  "commit_hash": "fd96912",
+  "s3_key": "evaluations/harness/fd96912_20260428_020359.json",
+  "total_queries": 5,
+  "successful": 5,
+  "failed": 0,
+  "avg_latency_ms": 0,
+  "min_latency_ms": 0,
+  "max_latency_ms": 0,
+  "results": [
+    {
+      "query_id": "q001",
+      "query": "¿Cuáles son las características técnicas del panel solar JA Solar JAM72S30-545/MR?",
+      "expected_intent": "technical_specs",
+      "should_escalate": false,
+      "response": "- leer_ficha_tecnica: Missing ruta_s3 in tool arguments. When ruta_s3 is not provided, categoria is required to search the catalog.",
+      "session_id": "6e5c9961-f4a8-437a-bd24-44337860d8f1",
+      "latency_ms": 0.0,
+      "escalated": false,
+      "error": "",
+      "timestamp": "2026-04-28T02:03:49.029170Z",
+      "num_sources": 0,
+      "source_documents": []
+    },
+    {
+      "query_id": "q002",
+      "query": "¿Qué inversor me recomiendan para una instalación residencial de 5kW?",
+      "expected_intent": "product_recommendation",
+      "should_escalate": false,
+      "response": "Para una instalación **residencial de 5 kW**, la recomendación típica es elegir un inversor “**string**” (on-grid) dimensionado con el **pico de potencia FV** y las condiciones de tu diseño (voltajes de string y cantidad de paneles). Sin datos de tu número de paneles y su voltaje, te dejo una guía práctica:\n\n## 1) Potencia del inversor (regla rápida)\n- Para **5 kW AC de consumo/objetivo** normalmente se usa un inversor de **~4.6 a 6.0 kW**.\n- En FV se suele instalar potencia DC algo mayor que la AC (sobrecarga controlada) para aprovechar mejor el sol:\n  - **Relación DC/AC recomendada: 1.1 a 1.3**\n  - Ejemplo orientativo: con inversor **5 kW**, el generador FV puede quedar en **~5.5 a 6.5 kWp** (dependiendo del límite de “oversizing” del equipo y del diseño).\n\n## 2) Tipo de inversor recomendado\n### A) Sin baterías (solo autoconsumo con red)\n- **Inversor string (on-grid)**: suele ser la opción más económica y eficiente para 5 kW residenciales.\n- Ideal si vas a inyectar a red o autoconsumir sin almacenamiento.\n\n### B) Con baterías (futuro o presente)\n- **Inversor híbrido** (o híbrido + sistema compatible): si planeas almacenamiento desde el inicio.\n- Ventaja: gestiona carga/descarga y normalmente simplifica la integración.\n\n## 3) Qué especificaciones mirar (clave para elegir el correcto)\nPara que sea “el adecuado” para tu 5 kW, hay que comprobar:\n- **Rango de voltaje MPPT** (para que tu string arranque y trabaje en el punto correcto).\n- **Tensión máxima FV permitida**.\n- **Corriente máxima por MPPT / por entrada**.\n- **Número de MPPT** y si necesitarás **1 o 2 strings** (según orientación/tejado).\n- **Eficiencia** y **protecciones** (anti-isla, sobretensiones, etc.).\n- Si habrá baterías: **potencia de carga/descarga** y compatibilidad (batería AC/DC, protocolos, etc.).\n\n## 4) Recomendación típica (sin entrar a marca/modelo)\n- Si tu instalación es **simple** (misma orientación o dos strings muy parecidos):\n  - **Inversor string de 5 kW (clase 5.0–6.0 kW)** con **2 MPPT** suele encajar muy bien.\n- Si tienes **dos orientaciones** o quieres flexibilidad:\n  - te conviene que el inversor tenga **MPPT suficientes** para acomodar strings con distinta producción.\n\n## 5) Para afinar y darte “el recomendado” exacto\nRespóndeme estas 3 preguntas y te indico el dimensionamiento más adecuado:\n1) ¿Los paneles serán **en una sola orientación** (o dos: por ejemplo este/oeste)?  \n2) ¿Cuántos paneles y de qué **potencia** aproximada (ej. 430W, 450W, 550W)?  \n3) ¿Será **sin baterías** o ya cuentas con **batería** (y qué capacidad aprox. kWh)?\n\nCon esos datos, ajustamos potencia AC/DC, cantidad de strings y el tipo de inversor (string vs híbrido) para que quede óptimo y no te “quede corto” en tensión o potencia.",
+      "session_id": "42e2eb0f-704a-413c-8789-14cffa8649d6",
+      "latency_ms": 0.0,
+      "escalated": false,
+      "error": "",
+      "timestamp": "2026-04-28T02:03:49.030475Z",
+      "num_sources": 0,
+      "source_documents": []
+    },
+    {
+      "query_id": "q003",
+      "query": "Tengo un problema con mi sistema fotovoltaico, no está generando la potencia esperada",
+      "expected_intent": "technical_support",
+      "should_escalate": false,
+      "response": "Entiendo que necesitas asistencia personalizada. Un agente de ventas te contactará pronto para ayudarte con tu consulta.",
+      "session_id": "a98e30d3-eb87-414d-b332-9bd8dcfd0695",
+      "latency_ms": 0.0,
+      "escalated": false,
+      "error": "",
+      "timestamp": "2026-04-28T02:03:49.030590Z",
+      "num_sources": 0,
+      "source_documents": []
+    },
+    {
+      "query_id": "q004",
+      "query": "¿Cuál es el precio de instalación de un sistema de 10kW para una empresa?",
+      "expected_intent": "pricing",
+      "should_escalate": true,
+      "response": "Entiendo que necesitas asistencia personalizada. Un agente de ventas te contactará pronto para ayudarte con tu consulta.",
+      "session_id": "9ab03e4b-69dd-4706-81ca-6cf99310ba7a",
+      "latency_ms": 0.0,
+      "escalated": false,
+      "error": "",
+      "timestamp": "2026-04-28T02:03:49.030686Z",
+      "num_sources": 0,
+      "source_documents": []
+    },
+    {
+      "query_id": "q005",
+      "query": "¿Qué garantía tienen los paneles solares que venden?",
+      "expected_intent": "warranty_info",
+      "should_escalate": false,
+      "response": "En paneles solares, la **garantía suele dividirse en dos partes**:\n\n1) **Garantía de producto (materiales y mano de obra)**  \n   - Normalmente cubre defectos de fabricación durante un periodo aproximado de **10 a 15 años** (según la marca/modelo).\n\n2) **Garantía de rendimiento (potencia con los años)**  \n   - Lo más común es una garantía **lineal de 25 a 30 años**, donde el fabricante asegura que el panel **mantendrá un porcentaje de su potencia nominal** con el tiempo (por ejemplo, algo como 80–90% hacia el final del periodo, según el estándar del fabricante).\n\n📌 **Para darte la garantía exacta de “los paneles que vendemos”**, necesito que me indiques el **modelo o marca** (por ejemplo, “Jinko Tiger 455/460”, “Longi Hi-MO”, etc.). Si me compartes eso, te confirmo los años y porcentajes tal como figuran en la ficha técnica.",
+      "session_id": "86f45a6e-7355-4edd-834d-6c5a74fa67c0",
+      "latency_ms": 0.0,
+      "escalated": false,
+      "error": "",
+      "timestamp": "2026-04-28T02:03:49.030767Z",
+      "num_sources": 0,
+      "source_documents": []
+    }
+  ]
+}

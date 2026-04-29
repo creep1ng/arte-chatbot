@@ -1,0 +1,6 @@
+query_id,query,expected_intent,should_escalate,response,session_id,latency_ms,escalated,error,timestamp,num_sources,source_documents
+q001,¿Cuáles son las características técnicas del panel solar JA Solar JAM72S30-545/MR?,technical_specs,False,,,0.0,False,"HTTP 401: {""detail"":""Missing API key""}",2026-04-28T02:00:47.793911Z,0,
+q002,¿Qué inversor me recomiendan para una instalación residencial de 5kW?,product_recommendation,False,,,0.0,False,"HTTP 401: {""detail"":""Missing API key""}",2026-04-28T02:00:47.796872Z,0,
+q003,"Tengo un problema con mi sistema fotovoltaico, no está generando la potencia esperada",technical_support,False,,,0.0,False,"HTTP 401: {""detail"":""Missing API key""}",2026-04-28T02:00:47.796989Z,0,
+q004,¿Cuál es el precio de instalación de un sistema de 10kW para una empresa?,pricing,True,,,0.0,False,"HTTP 401: {""detail"":""Missing API key""}",2026-04-28T02:00:47.797077Z,0,
+q005,¿Qué garantía tienen los paneles solares que venden?,warranty_info,False,,,0.0,False,"HTTP 401: {""detail"":""Missing API key""}",2026-04-28T02:00:47.797159Z,0,
