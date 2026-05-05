@@ -58,7 +58,16 @@ INTENT_TYPES = [
     "escalate_quote",
     "escalate_technical",
     "escalate_order",
+    "fuera_de_dominio",
 ]
+
+OUT_OF_DOMAIN_MESSAGE = (
+    "Lo siento, no puedo responder preguntas sobre ese tema. "
+    "Estoy especializado en ayudarte con información sobre energía solar, "
+    "como paneles, inversores, controladores, baterías, fichas técnicas "
+    "de productos y consultas generales sobre sistemas de energía solar. "
+    "¿Hay algo relacionado con energía solar en lo que pueda ayudarte?"
+)
 
 import re
 
@@ -746,6 +755,23 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                         session_id=session_id,
                         source_documents=source_docs,
                         num_sources=len(source_docs),
+                    )
+
+                if intent_type == "fuera_de_dominio":
+                    session_manager.add_turn(
+                        session_id=session_id,
+                        question=request.message,
+                        answer=OUT_OF_DOMAIN_MESSAGE,
+                        source_documents=[],
+                    )
+                    return ChatResponse(
+                        response=OUT_OF_DOMAIN_MESSAGE,
+                        escalate=False,
+                        intent_type=intent_type,
+                        session_id=session_id,
+                        source_documents=source_docs,
+                        num_sources=len(source_docs),
+                        user_profile=inferred_profile,
                     )
 
                 session_manager.add_turn(
