@@ -1,0 +1,202 @@
+[
+  {
+    "id": "q001",
+    "query": "¿Cuáles son las características técnicas del panel solar JA Solar JAM72S30-545/MR?",
+    "expected_intent": "technical_specs",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "q002",
+    "query": "¿Qué inversor me recomiendan para una instalación residencial de 5kW?",
+    "expected_intent": "product_recommendation",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "medium"
+  },
+  {
+    "id": "q003",
+    "query": "Tengo un problema con mi sistema fotovoltaico, no está generando la potencia esperada",
+    "expected_intent": "technical_support",
+    "expected_intent_type": "escalate_technical",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "q004",
+    "query": "¿Cuál es el precio de instalación de un sistema de 10kW para una empresa?",
+    "expected_intent": "pricing",
+    "expected_intent_type": "escalate_quote",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "q005",
+    "query": "¿Qué garantía tienen los paneles solares que venden?",
+    "expected_intent": "warranty_info",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "q006",
+    "query": "¿Cuál es la diferencia entre paneles monocristalinos y policristalinos?",
+    "expected_intent": "FAQ",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "q007",
+    "query": "¿Qué es un inversor híbrido y para qué sirve?",
+    "expected_intent": "FAQ",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "q008",
+    "query": "¿Cómo funciona la conexión a red de un sistema solar?",
+    "expected_intent": "FAQ",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "q009",
+    "query": "¿Qué características técnicas tiene el panel ZnShineSolar 555W?",
+    "expected_intent": "technical_specs",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "q010",
+    "query": "¿Qué modelos de inversores Huawei tienen disponibles?",
+    "expected_intent": "product_info",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "q011",
+    "query": "Necesito saber la potencia y eficiencia del panel Longi Hi-MO 5",
+    "expected_intent": "technical_specs",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "q012",
+    "query": "Necesito una cotización para un sistema solar de 10kW para mi empresa",
+    "expected_intent": "escalate_quote",
+    "expected_intent_type": "escalate_quote",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "q013",
+    "query": "¿Cuánto cuesta un proyecto completo de energía solar residencial?",
+    "expected_intent": "pricing",
+    "expected_intent_type": "escalate_quote",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "q014",
+    "query": "Quiero un presupuesto para 50 paneles con instalación incluida",
+    "expected_intent": "escalate_quote",
+    "expected_intent_type": "escalate_quote",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "q015",
+    "query": "Mi inversor está mostrando un error E027 y se apaga solo",
+    "expected_intent": "escalate_technical",
+    "expected_intent_type": "escalate_technical",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "q016",
+    "query": "El sistema de monitoreo no me muestra los datos de producción desde hace una semana",
+    "expected_intent": "escalate_technical",
+    "expected_intent_type": "escalate_technical",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "q017",
+    "query": "El inversor hace un ruido extraño como zumbido y necesita revisión técnica",
+    "expected_intent": "escalate_technical",
+    "expected_intent_type": "escalate_technical",
+    "should_escalate": true,
+    "complexity": "medium"
+  },
+  {
+    "id": "q018",
+    "query": "Quiero hacer un pedido de 20 paneles solares para mi proyecto",
+    "expected_intent": "escalate_order",
+    "expected_intent_type": "escalate_order",
+    "should_escalate": true,
+    "complexity": "low"
+  },
+  {
+    "id": "q019",
+    "query": "Necesito comprar un inversor Fronius y que me lo envíen",
+    "expected_intent": "escalate_order",
+    "expected_intent_type": "escalate_order",
+    "should_escalate": true,
+    "complexity": "low"
+  },
+  {
+    "id": "q020",
+    "query": "Deseo adquirir el sistema completo que me mostraron, ¿cómo procedo con la compra?",
+    "expected_intent": "escalate_order",
+    "expected_intent_type": "escalate_order",
+    "should_escalate": true,
+    "complexity": "low"
+  },
+  {
+    "id": "q021",
+    "query": "¿Cuál me recomiendan para mi techo de 50m2?",
+    "expected_intent": "product_recommendation",
+    "expected_intent_type": "product_info",
+    "should_escalate": true,
+    "complexity": "high"
+  },
+  {
+    "id": "q022",
+    "query": "¿Cuál es mejor, el inversor Growatt MAC 10KTL3-XL o Solis S5-GR3P10K-LV para una instalación de 10kW?",
+    "expected_intent": "product_comparison",
+    "expected_intent_type": "product_info",
+    "should_escalate": true,
+    "complexity": "high"
+  },
+  {
+    "id": "q023",
+    "query": "Quiero comparar las características de 3 paneles de 500W",
+    "expected_intent": "product_comparison",
+    "expected_intent_type": "product_info",
+    "should_escalate": true,
+    "complexity": "high"
+  },
+  {
+    "id": "q024",
+    "query": "¿Tienen paneles de 400W en stock?",
+    "expected_intent": "product_info",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "low"
+  },
+  {
+    "id": "q025",
+    "query": "Hola, ¿qué servicios ofrecen?",
+    "expected_intent": "FAQ",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low"
+  }
+]
