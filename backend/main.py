@@ -32,7 +32,6 @@ from pydantic import BaseModel, Field
 
 from rag import (
     DEFAULT_ESCALATION_MESSAGE,
-    EscalationDetector,
     default_detector,
 )
 from backend.app.llm_client import (
@@ -45,7 +44,8 @@ from backend.app.schemas import SourceDocument
 from backend.app.auth import verify_api_key
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.file_inputs import FileInputsClient, FileUploadError
-from backend.app.tools import DATASHEET_CATEGORIES, get_tool_definitions
+from backend.app.tools import get_tool_definitions
+from backend.app.tools import validate_s3_path
 from backend.app.session import session_manager
 from backend.app.catalog import CatalogError, get_catalog
 from backend.app.user_profiler import infer_user_profile, PROFILE_INSTRUCTIONS
@@ -283,7 +283,7 @@ def _handle_buscar_producto_tool(
             lines.append(f"\n## {product.nombre_comercial} ({product.fabricante})")
             if product.descripcion:
                 lines.append(f"Descripción: {product.descripcion}")
-            lines.append(f"Modelos disponibles:")
+            lines.append("Modelos disponibles:")
             for variante in product.variantes:
                 modelo = variante.get("modelo", "Sin nombre")
                 params = variante.get("parametros_clave", {})
@@ -366,7 +366,7 @@ def _process_buscar_producto(
             lines.append(f"\n## {product.nombre_comercial} ({product.fabricante})")
             if product.descripcion:
                 lines.append(f"Descripción: {product.descripcion}")
-            lines.append(f"Modelos disponibles:")
+            lines.append("Modelos disponibles:")
             for variante in product.variantes:
                 modelo = variante.get("modelo", "Sin nombre")
                 params = variante.get("parametros_clave", {})
@@ -422,6 +422,10 @@ def _process_leer_ficha_tecnica(
     fabricante = arguments.get("fabricante")
     modelo = arguments.get("modelo")
 
+    # Validate ruta_s3 for path traversal attacks (OWASP LLM07)
+    if ruta_s3:
+        validate_s3_path(ruta_s3)
+
     logger.debug(
         "Tool call parameters: function=%s, ruta_s3=%s, categoria=%s, "
         "fabricante=%s, modelo=%s, session_id=%s",
@@ -470,6 +474,7 @@ def _process_leer_ficha_tecnica(
             if len(results) == 1:
                 # Single product found, use its ruta_s3
                 ruta_s3 = results[0].ruta_s3
+                validate_s3_path(ruta_s3)
                 logger.info(
                     "Found single product, using ruta_s3=%s, session_id=%s",
                     ruta_s3,
@@ -478,6 +483,7 @@ def _process_leer_ficha_tecnica(
             else:
                 # Multiple products found - select first one deterministically
                 ruta_s3 = results[0].ruta_s3
+                validate_s3_path(ruta_s3)
                 logger.warning(
                     "Multiple products found when resolving ruta_s3, selecting first: "
                     "ruta_s3=%s, session_id=%s, available=%d, products=%s",
@@ -521,6 +527,7 @@ def _process_leer_ficha_tecnica(
             if len(results) == 1:
                 # Single product found, use its ruta_s3 and retry
                 ruta_s3 = results[0].ruta_s3
+                validate_s3_path(ruta_s3)
                 logger.info(
                     "Fallback successful, using ruta_s3=%s, session_id=%s",
                     ruta_s3,
@@ -530,6 +537,7 @@ def _process_leer_ficha_tecnica(
             elif len(results) > 1:
                 # Multiple products found - pick first one as fallback (deterministic)
                 ruta_s3 = results[0].ruta_s3
+                validate_s3_path(ruta_s3)
                 logger.warning(
                     "Multiple products found during fallback, selecting first: "
                     "ruta_s3=%s, session_id=%s, available_products=%d",
@@ -991,7 +999,7 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             e,
         )
         raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
+    except Exception:
         logger.exception(
             "Unexpected error in chat endpoint: request_id=%s, session_id=%s",
             request_id,
