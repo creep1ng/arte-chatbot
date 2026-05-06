@@ -3,6 +3,7 @@ ARTE Chatbot Backend
 FastAPI server with /health and /chat endpoints.
 """
 
+import asyncio
 import logging
 
 logging.basicConfig(
@@ -416,7 +417,7 @@ def _process_buscar_producto(
         )
 
 
-def _process_leer_ficha_tecnica(
+async def _process_leer_ficha_tecnica(
     tool_call: dict[str, Any],
     user_message: str,
     session_id: str,
@@ -531,7 +532,7 @@ def _process_leer_ficha_tecnica(
 
     # Download PDF from S3
     try:
-        pdf_bytes = s3_client.download_pdf(ruta_s3)
+        pdf_bytes = await asyncio.to_thread(s3_client.download_pdf, ruta_s3)
     except S3DownloadError:
         # Fallback: if direct download fails, search catalog using other parameters
         logger.info(
@@ -562,7 +563,7 @@ def _process_leer_ficha_tecnica(
                     ruta_s3,
                     session_id,
                 )
-                pdf_bytes = s3_client.download_pdf(ruta_s3)
+                pdf_bytes = await asyncio.to_thread(s3_client.download_pdf, ruta_s3)
             elif len(results) > 1:
                 # Multiple products found - pick first one as fallback (deterministic)
                 ruta_s3 = results[0].ruta_s3
@@ -574,7 +575,7 @@ def _process_leer_ficha_tecnica(
                     session_id,
                     len(results),
                 )
-                pdf_bytes = s3_client.download_pdf(ruta_s3)
+                pdf_bytes = await asyncio.to_thread(s3_client.download_pdf, ruta_s3)
             else:
                 # No results found in catalog fallback
                 raise ValueError(
@@ -589,11 +590,12 @@ def _process_leer_ficha_tecnica(
     filename = ruta_s3.split("/")[-1] if "/" in ruta_s3 else ruta_s3
 
     # Upload PDF to OpenAI
-    file_id = file_inputs_client.upload_pdf(pdf_bytes, filename)
+    file_id = await asyncio.to_thread(file_inputs_client.upload_pdf, pdf_bytes, filename)
 
     # Second LLM call with file
     try:
-        response = llm_client.get_llm_response_with_file(
+        response = await asyncio.to_thread(
+            llm_client.get_llm_response_with_file,
             message=user_message,
             file_id=file_id,
             session_id=session_id,
@@ -602,7 +604,7 @@ def _process_leer_ficha_tecnica(
     finally:
         # Clean up: delete the uploaded file
         try:
-            file_inputs_client.delete_file(file_id)
+            await asyncio.to_thread(file_inputs_client.delete_file, file_id)
         except Exception as e:
             logger.warning(
                 "Failed to delete file: file_id=%s, session_id=%s, error=%s",
@@ -617,7 +619,7 @@ _process_tool_call = _process_leer_ficha_tecnica
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat_endpoint(
+async def chat_endpoint(
     request: ChatRequest,
     api_key: Annotated[str, Depends(verify_api_key)],
     llm_client: Annotated[LLMClient, Depends(get_llm_client)],
@@ -759,7 +761,8 @@ def chat_endpoint(
                 llm_client.model,
                 iteration,
             )
-            llm_response = llm_client.get_llm_response_with_tools(
+            llm_response = await asyncio.to_thread(
+                llm_client.get_llm_response_with_tools,
                 message=user_input,
                 session_id=session_id,
                 system_prompt=system_prompt_with_profile,
@@ -857,7 +860,7 @@ def chat_endpoint(
                         )
 
                     elif function_name == "leer_ficha_tecnica":
-                        final_response, new_source_docs = _process_leer_ficha_tecnica(
+                        final_response, new_source_docs = await _process_leer_ficha_tecnica(
                             tool_call=tool_call,
                             user_message=expanded_query,
                             session_id=session_id,
