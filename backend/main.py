@@ -999,11 +999,12 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             e,
         )
         raise HTTPException(status_code=503, detail=str(e))
-    except Exception:
+    except Exception as e:
         logger.exception(
-            "Unexpected error in chat endpoint: request_id=%s, session_id=%s",
+            "Unexpected error in chat endpoint: request_id=%s, session_id=%s, error=%s",
             request_id,
             session_id,
+            e,
         )
 
         raise HTTPException(status_code=500, detail="Internal server error")
