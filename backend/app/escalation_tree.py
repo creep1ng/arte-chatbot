@@ -77,6 +77,10 @@ class EscalationDecisionTree:
             action=EscalationAction.ESCALATE,
             confidence_boost=0.95,
         ),
+        "fuera_de_dominio": DecisionNode(
+            action=EscalationAction.NO_ESCALATE,
+            confidence_boost=0.95,
+        ),
     }
 
     COMPLEXITY_KEYWORDS = {
