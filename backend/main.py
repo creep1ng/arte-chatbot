@@ -13,7 +13,7 @@ logging.basicConfig(
 import json
 import os
 import uuid
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -134,10 +134,27 @@ def _log_tool_definitions() -> None:
 
 _log_tool_definitions()
 
-# Initialize clients
+# Module-level clients maintained for backward compatibility with existing tests.
+# New code should prefer dependency injection via FastAPI Depends().
 llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
+
+
+def get_llm_client() -> LLMClient:
+    """Dependency that provides a LLMClient instance."""
+    return llm_client
+
+
+def get_s3_client() -> S3Client:
+    """Dependency that provides a S3Client instance."""
+    return s3_client
+
+
+def get_file_inputs_client() -> FileInputsClient:
+    """Dependency that provides a FileInputsClient instance."""
+    return file_inputs_client
+
 
 # Lazy-load catalog to allow /health to work without AWS credentials in CI
 _catalog_search: Optional[Any] = None
@@ -394,6 +411,9 @@ def _process_leer_ficha_tecnica(
     tool_call: dict[str, Any],
     user_message: str,
     session_id: str,
+    llm_client: LLMClient,
+    s3_client: S3Client,
+    file_inputs_client: FileInputsClient,
 ) -> tuple[str, list[str]]:
     """Process a tool call for reading a technical datasheet.
 
@@ -580,7 +600,13 @@ _process_tool_call = _process_leer_ficha_tecnica
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
+def chat_endpoint(
+    request: ChatRequest,
+    api_key: Annotated[str, Depends(verify_api_key)],
+    llm_client: Annotated[LLMClient, Depends(get_llm_client)],
+    s3_client: Annotated[S3Client, Depends(get_s3_client)],
+    file_inputs_client: Annotated[FileInputsClient, Depends(get_file_inputs_client)],
+):
     """
     Chat endpoint that handles user messages.
 
@@ -801,6 +827,9 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                             tool_call=tool_call,
                             user_message=expanded_query,
                             session_id=session_id,
+                            llm_client=llm_client,
+                            s3_client=s3_client,
+                            file_inputs_client=file_inputs_client,
                         )
                         # Track source documents
                         source_docs.extend(
