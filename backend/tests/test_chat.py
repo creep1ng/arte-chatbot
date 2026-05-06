@@ -10,7 +10,7 @@ import requests
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
-from backend.main import app
+from backend.main import app, llm_client, s3_client, file_inputs_client
 from backend.app.auth import verify_api_key
 from backend.app.schemas import SourceDocument
 
@@ -877,6 +877,9 @@ class TestProcessToolCall:
                 tool_call=tool_call,
                 user_message="Specs del panel",
                 session_id="test-session",
+                llm_client=llm_client,
+                s3_client=mock_s3,
+                file_inputs_client=mock_file_inputs,
             )
 
         assert "460W" in result
@@ -907,6 +910,9 @@ class TestProcessToolCall:
                 tool_call=tool_call,
                 user_message="Test",
                 session_id="test",
+                llm_client=llm_client,
+                s3_client=mock_s3,
+                file_inputs_client=file_inputs_client,
             )
         
         assert "catálogo" in str(exc_info.value).lower() or "no se encontraron" in str(exc_info.value).lower()
