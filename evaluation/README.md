@@ -334,3 +334,62 @@ Each evaluation run automatically records:
 - Current git branch name
 
 This allows correlating evaluation results with specific code versions.
+
+## Resultados en S3
+
+Los resultados del harness se suben automáticamente a S3 para permitir acceso centralizado y histórico.
+
+### Estructura de directorios en S3
+
+```
+arte-chatbot-data/
+├── raw/                    # Fichas técnicas
+├── index/                  # Catálogo
+└── evaluation/
+    ├── ci/
+    │   └── {branch}/
+    │       └── {run_id}/
+    │           ├── results_{timestamp}.json
+    │           ├── results_{timestamp}.csv
+    │           └── metadata.json
+    └── manual/
+        └── {username}/
+            └── {timestamp}/
+                ├── results_{timestamp}.json
+                ├── results_{timestamp}.csv
+                └── metadata.json
+```
+
+### Variables de entorno
+
+| Variable | Descripción | Default |
+|----------|-------------|---------|
+| `AWS_ACCESS_KEY_ID` | Clave de acceso AWS | - |
+| `AWS_SECRET_ACCESS_KEY` | Clave secreta AWS | - |
+| `AWS_BUCKET_NAME` | Nombre del bucket S3 | `arte-chatbot-data` |
+| `AWS_REGION` | Región AWS | `us-east-1` |
+| `EVAL_S3_UPLOAD_ENABLED` | Habilitar/deshabilitar upload | `true` |
+| `EVAL_S3_PREFIX` | Prefijo custom (override automático) | auto-generado |
+
+### Comportamiento
+
+- **Ejecución local**: Los resultados se suben a `evaluation/manual/{username}/{timestamp}/`
+- **Ejecución en CI (GitHub Actions)**: Los resultados se suben a `evaluation/ci/{branch}/{run_id}/`
+- El prefijo puede ser overriden con `EVAL_S3_PREFIX` (útil para CI)
+- Un fallo en el upload **no interrumpe** la ejecución del harness
+- Se sube un archivo `metadata.json` con: `git_commit`, `git_branch`, `timestamp_utc`, `trigger`, `runner`, `harness_version`
+
+### Deshabilitar upload
+
+Para ejecutar sin subir a S3:
+
+```bash
+python -m evaluation.harness.run --no-upload
+```
+
+O exportar la variable:
+
+```bash
+export EVAL_S3_UPLOAD_ENABLED=false
+python -m evaluation.harness.run
+```

@@ -42,6 +42,10 @@ class HarnessSettings(BaseSettings):
         default="",
         description="API key for the /chat endpoint",
     )
+    aws_bucket_name: str = Field(
+        default="arte-chatbot-data",
+        description="S3 bucket name for evaluation results",
+    )
 
 
 harness_settings = HarnessSettings()
