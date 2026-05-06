@@ -50,6 +50,8 @@ from backend.app.tools import validate_s3_path
 from backend.app.session import session_manager
 from backend.app.catalog import CatalogError, get_catalog
 from backend.app.user_profiler import infer_user_profile, PROFILE_INSTRUCTIONS
+from backend.app.config import settings
+from backend.app.whatsapp_formatter import format_for_whatsapp
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +188,10 @@ class ChatRequest(BaseModel):
 
     message: str = Field(..., min_length=1)
     session_id: Optional[str] = None
+    is_final: Optional[bool] = Field(
+        default=None,
+        description="Hint to flush multi-message buffer immediately",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -199,6 +205,15 @@ class ChatResponse(BaseModel):
     source_documents: list[SourceDocument] = Field(default_factory=list)
     num_sources: int = 0
     user_profile: Optional[str] = None
+    messages: list[str] = Field(default_factory=list)
+    delays_ms: list[int] = Field(default_factory=list)
+
+
+class BufferingResponse(BaseModel):
+    """Response returned while multi-message buffer is active."""
+
+    status: str = "buffering"
+    session_id: str
 
 
 @app.get("/health")
@@ -811,14 +826,19 @@ async def chat_endpoint(
                         user_profile=inferred_profile,
                     )
 
+                # P1: Apply WhatsApp formatting if enabled
+                response_text = cleaned_content
+                if settings.whatsapp_formatter_enabled:
+                    response_text = format_for_whatsapp(cleaned_content)
+
                 session_manager.add_turn(
                     session_id=session_id,
                     question=request.message,
-                    answer=cleaned_content,
+                    answer=response_text,
                     source_documents=[],
                 )
                 return ChatResponse(
-                    response=cleaned_content,
+                    response=response_text,
                     escalate=False,
                     intent_type=intent_type,
                     session_id=session_id,
