@@ -15,6 +15,8 @@ import asyncio
 import csv
 import json
 import logging
+import getpass
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,10 +26,17 @@ import httpx
 from dotenv import load_dotenv
 
 from evaluation.harness.config import harness_settings
+from evaluation.harness.s3_upload import (
+    build_prefix,
+    upload_results_with_metadata,
+)
 from evaluation.s3_client import get_git_commit, get_git_branch
-from evaluation.storage import get_commit_hash, save_results, upload_to_s3
+from evaluation.storage import get_commit_hash, save_results
 
 load_dotenv()
+
+EVAL_S3_UPLOAD_ENABLED = os.getenv("EVAL_S3_UPLOAD_ENABLED", "true").lower() != "false"
+EVAL_S3_PREFIX = os.getenv("EVAL_S3_PREFIX", "")
 
 logger = logging.getLogger(__name__)
 
@@ -309,8 +318,32 @@ async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
     )
     print(f"JSON saved to: {json_path}")
 
-    if not args.no_upload:
-        upload_to_s3(json_path, s3_key)
+    if EVAL_S3_UPLOAD_ENABLED and not args.no_upload:
+        import getpass
+
+        if os.getenv("GITHUB_ACTIONS"):
+            trigger = "ci"
+            branch = os.getenv("GITHUB_REF_NAME", "unknown")
+        else:
+            trigger = "manual"
+            branch = getpass.getuser()
+
+        if EVAL_S3_PREFIX:
+            prefix = EVAL_S3_PREFIX
+        else:
+            prefix = build_prefix(trigger, branch, timestamp)
+
+        print()
+        print("Uploading results to S3...")
+        uploaded_keys = upload_results_with_metadata(OUTPUT_DIR, prefix, trigger, branch)
+        if uploaded_keys is None:
+            print("✗ Failed to upload results to S3 (check credentials or network)")
+        elif uploaded_keys:
+            print(f"✓ Successfully uploaded {len(uploaded_keys)} files to S3:")
+            for key in uploaded_keys:
+                print(f"  - s3://{harness_settings.AWS_BUCKET_NAME}/{key}")
+        else:
+            print("⚠ No files available for upload")
 
     print()
     print("=" * 60)
