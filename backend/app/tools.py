@@ -7,7 +7,48 @@ that allows the LLM to retrieve and analyze technical datasheets from S3.
 from typing import Any
 
 # Valid categories for technical datasheets
-DATASHEET_CATEGORIES = ["paneles", "inversores", "controladores", "baterias"]
+DATASHEET_CATEGORIES = [
+    "paneles",
+    "inversores",
+    "controladores",
+    "baterias",
+    "microinversores",
+    "protecciones",
+]
+
+
+class PathTraversalError(ValueError):
+    """Raised when a path traversal attack is detected."""
+
+    pass
+
+
+def validate_s3_path(ruta_s3: str) -> None:
+    """Validate that an S3 path is safe from path traversal attacks.
+
+    Args:
+        ruta_s3: The S3 path to validate.
+
+    Raises:
+        PathTraversalError: If the path contains traversal patterns or
+                           doesn't start with a valid category prefix.
+    """
+    if not ruta_s3:
+        raise PathTraversalError("ruta_s3 cannot be empty")
+
+    if ".." in ruta_s3 or ruta_s3.startswith("/"):
+        raise PathTraversalError(
+            f"Invalid path detected in ruta_s3: '{ruta_s3}'. "
+            "Path traversal attempts are not allowed."
+        )
+
+    path_parts = ruta_s3.split("/")
+    if path_parts[0] not in DATASHEET_CATEGORIES:
+        raise PathTraversalError(
+            f"Invalid category prefix in ruta_s3: '{path_parts[0]}'. "
+            f"Must start with one of: {DATASHEET_CATEGORIES}"
+        )
+
 
 # Tool definition for reading technical datasheets (Chat Completions API format)
 LEER_FICHA_TECNICA_TOOL: dict[str, Any] = {
@@ -38,7 +79,7 @@ LEER_FICHA_TECNICA_TOOL: dict[str, Any] = {
                     "type": "string",
                     "description": (
                         "Categoría del producto. Opciones: paneles, inversores, "
-                        "controladores, baterias."
+                        "controladores, baterias, microinversores, protecciones."
                     ),
                     "enum": DATASHEET_CATEGORIES,
                 },

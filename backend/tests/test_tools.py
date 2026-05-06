@@ -90,8 +90,14 @@ class TestToolParameters:
         categoria = properties["categoria"]
         assert "enum" in categoria
 
-        # Check valid enum values
-        expected_categories = ["paneles", "inversores", "controladores", "baterias"]
+        expected_categories = [
+            "paneles",
+            "inversores",
+            "controladores",
+            "baterias",
+            "microinversores",
+            "protecciones",
+        ]
         assert categoria["enum"] == expected_categories
 
     def test_fabricante_parameter(self) -> None:
@@ -155,6 +161,8 @@ class TestConstants:
             "inversores",
             "controladores",
             "baterias",
+            "microinversores",
+            "protecciones",
         ]
 
     def test_available_tools_constant(self) -> None:
@@ -167,3 +175,78 @@ class TestConstants:
         """Test LEER_FICHA_TECNICA_TOOL constant exists."""
         assert hasattr(tools, "LEER_FICHA_TECNICA_TOOL")
         assert tools.LEER_FICHA_TECNICA_TOOL["function"]["name"] == "leer_ficha_tecnica"
+
+
+class TestPathTraversalValidation:
+    """Tests for S3 path validation against path traversal attacks."""
+
+    def test_validate_s3_path_accepts_valid_paths(self) -> None:
+        """Test that valid paths are accepted."""
+        from backend.app.tools import validate_s3_path
+
+        valid_paths = [
+            "paneles/jinko-tiger-pro-460w.pdf",
+            "inversores/fronius-primo-5kw.pdf",
+            "controladores/epever-20a.pdf",
+            "baterias/BYD-battery-box.pdf",
+        ]
+        for path in valid_paths:
+            validate_s3_path(path)
+
+    def test_validate_s3_path_rejects_parent_traversal(self) -> None:
+        """Test that ../ path traversal is rejected."""
+        from backend.app.tools import PathTraversalError, validate_s3_path
+
+        malicious_paths = [
+            "../index/catalog_index.json",
+            "paneles/../../../etc/passwd",
+            "paneles/../../secret.pdf",
+        ]
+        for path in malicious_paths:
+            with pytest.raises(PathTraversalError):
+                validate_s3_path(path)
+
+    def test_validate_s3_path_rejects_absolute_paths(self) -> None:
+        """Test that absolute paths starting with / are rejected."""
+        from backend.app.tools import PathTraversalError, validate_s3_path
+
+        absolute_paths = [
+            "/etc/passwd",
+            "/paneles/jinko.pdf",
+            "/tmp/../../../etc/passwd",
+        ]
+        for path in absolute_paths:
+            with pytest.raises(PathTraversalError):
+                validate_s3_path(path)
+
+    def test_validate_s3_path_rejects_invalid_category(self) -> None:
+        """Test that paths not starting with valid category are rejected."""
+        from backend.app.tools import PathTraversalError, validate_s3_path
+
+        invalid_category_paths = [
+            "secret/file.pdf",
+            "config/data.json",
+            "raw/paneles/jinko.pdf",
+        ]
+        for path in invalid_category_paths:
+            with pytest.raises(PathTraversalError):
+                validate_s3_path(path)
+
+    def test_validate_s3_path_rejects_empty_path(self) -> None:
+        """Test that empty paths raise PathTraversalError."""
+        from backend.app.tools import PathTraversalError, validate_s3_path
+
+        with pytest.raises(PathTraversalError):
+            validate_s3_path("")
+
+    def test_validate_s3_path_error_message_is_informative(self) -> None:
+        """Test that error messages provide useful information."""
+        from backend.app.tools import PathTraversalError, validate_s3_path
+
+        with pytest.raises(PathTraversalError) as exc_info:
+            validate_s3_path("../index/catalog_index.json")
+        assert "Path traversal" in str(exc_info.value)
+
+        with pytest.raises(PathTraversalError) as exc_info:
+            validate_s3_path("raw/paneles/jinko.pdf")
+        assert "Invalid category prefix" in str(exc_info.value)
