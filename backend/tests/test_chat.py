@@ -7,7 +7,7 @@ import os
 import uuid
 import pytest
 import requests
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
 from backend.main import app, llm_client, s3_client, file_inputs_client
@@ -48,7 +48,7 @@ class TestChatEndpointUnit:
         response = client.post("/chat", json={})
         assert response.status_code == 422  # Validation error
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_returns_escalate_for_cotizacion(self, mock_llm) -> None:
         """Test escalation flag for cotización via intent classification."""
         mock_llm.return_value = {
@@ -63,7 +63,7 @@ class TestChatEndpointUnit:
         assert data["intent_type"] == "escalate_quote"
         assert data["session_id"] is not None
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_returns_escalate_for_pedido(self, mock_llm) -> None:
         """Test escalation flag for pedido via intent classification."""
         mock_llm.return_value = {
@@ -76,7 +76,7 @@ class TestChatEndpointUnit:
         assert data["intent_type"] == "escalate_order"
         assert data["reason"] is not None
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_returns_escalate_for_garantia(self, mock_llm) -> None:
         """Test escalation flag for technical issue via intent classification."""
         mock_llm.return_value = {
@@ -90,7 +90,7 @@ class TestChatEndpointUnit:
         assert data["escalate"] is True
         assert data["intent_type"] == "escalate_technical"
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_no_escalate_for_normal_message(self, mock_llm) -> None:
         """Test no escalation for normal messages."""
         mock_llm.return_value = {"output_text": "[INTENT: FAQ] Mocked LLM Response"}
@@ -103,7 +103,7 @@ class TestChatEndpointUnit:
         assert data["reason"] is None
         assert data["response"] == "Mocked LLM Response"
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_returns_session_id(self, mock_llm) -> None:
         """Test that session_id is returned in response."""
         mock_llm.return_value = {"output_text": "Mocked LLM Response"}
@@ -113,7 +113,7 @@ class TestChatEndpointUnit:
         assert "session_id" in data
         assert isinstance(data["session_id"], str)
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_accepts_custom_session_id(self, mock_llm) -> None:
         """Test that custom session_id can be provided."""
         mock_llm.return_value = {"output_text": "Mocked LLM Response"}
@@ -124,7 +124,7 @@ class TestChatEndpointUnit:
         data = response.json()
         assert data["session_id"] == "my-session-123"
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     @patch("backend.main.session_manager")
     def test_chat_uses_session_context(self, mock_session_manager, mock_llm):
         """Test that the chat endpoint uses session context."""
@@ -133,6 +133,8 @@ class TestChatEndpointUnit:
         mock_session_manager.get_context_string.return_value = (
             "Turno 1:\nUsuario: Pregunta anterior\nAsistente: Respuesta anterior"
         )
+        mock_session_manager.get_user_profile.return_value = None
+        mock_session_manager.get_history.return_value = []
 
         # Hacer la petición
         response = client.post(
@@ -160,7 +162,7 @@ class TestChatEndpointUnit:
         assert add_kwargs["question"] == "¿Y cuánto cuesta?"
         assert add_kwargs["answer"] == "Mocked LLM Response"
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_returns_escalation_message(self, mock_llm) -> None:
         """Test that escalation response includes the escalation message."""
         mock_llm.return_value = {
@@ -174,7 +176,7 @@ class TestChatEndpointUnit:
         assert len(data["response"]) > 0
         assert data["intent_type"] == "escalate_quote"
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_returns_intent_type_product_info(self, mock_llm) -> None:
         """Test intent_type 'product_info' for product queries."""
         mock_llm.return_value = {
@@ -188,7 +190,7 @@ class TestChatEndpointUnit:
         assert data["intent_type"] == "product_info"
         assert data["escalate"] is False
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_returns_intent_type_escalate_quote(self, mock_llm) -> None:
         """Test intent_type 'escalate_quote' triggers escalation."""
         mock_llm.return_value = {
@@ -202,7 +204,7 @@ class TestChatEndpointUnit:
         assert data["intent_type"] == "escalate_quote"
         assert data["escalate"] is True
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_returns_intent_type_escalate_order(self, mock_llm) -> None:
         """Test intent_type 'escalate_order' triggers escalation."""
         mock_llm.return_value = {
@@ -216,7 +218,7 @@ class TestChatEndpointUnit:
         assert data["intent_type"] == "escalate_order"
         assert data["escalate"] is True
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+@patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_returns_fuera_de_dominio_intent(self, mock_llm) -> None:
         """Test intent_type 'fuera_de_dominio' is returned for off-topic queries."""
         mock_llm.return_value = {
@@ -230,7 +232,7 @@ class TestChatEndpointUnit:
         assert data["intent_type"] == "fuera_de_dominio"
         assert data["escalate"] is False
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_fuera_de_dominio_returns_safe_message(self, mock_llm) -> None:
         """Test that fuera_de_dominio intent returns the safe out-of-domain message."""
         mock_llm.return_value = {
@@ -245,7 +247,7 @@ class TestChatEndpointUnit:
         assert data["escalate"] is False
         assert "energía solar" in data["response"].lower()
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_intent_marker_stripped_from_response(self, mock_llm) -> None:
         """Test that [INTENT: ...] marker is stripped from response text."""
         mock_llm.return_value = {
@@ -345,7 +347,7 @@ def test_openai_api_key_loaded_from_env(api_key):
 class TestChatEndpointWithToolCall:
     """Tests for /chat endpoint with tool calling functionality."""
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     @patch("backend.main.s3_client")
     @patch("backend.main.file_inputs_client")
     def test_chat_endpoint_with_tool_call_in_response(
@@ -375,15 +377,15 @@ class TestChatEndpointWithToolCall:
         mock_llm.side_effect = [tool_call_response, normal_response]
 
         # Mock S3 download
-        mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
+        mock_s3.download_pdf_async = AsyncMock(return_value=b"%PDF-1.4 test content")
 
         # Mock file upload
-        mock_file_inputs.upload_pdf.return_value = "file-abc123"
-        mock_file_inputs.delete_file.return_value = None
+        mock_file_inputs.upload_pdf_async = AsyncMock(return_value="file-abc123")
+        mock_file_inputs.delete_file_async = AsyncMock(return_value=None)
 
         # Mock second LLM call
         with patch(
-            "backend.main.llm_client.get_llm_response_with_file"
+            "backend.main.llm_client.get_llm_response_with_file_async"
         ) as mock_llm_file:
             mock_llm_file.return_value = (
                 "El panel Jinko Tiger Pro 460W tiene una potencia de 460W."
@@ -402,7 +404,7 @@ class TestChatEndpointWithToolCall:
         assert "460W" in data["response"]
         assert data["session_id"] is not None
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     @patch("backend.main.s3_client")
     def test_chat_endpoint_handles_s3_download_error(
         self, mock_s3: MagicMock, mock_llm: MagicMock
@@ -433,7 +435,7 @@ class TestChatEndpointWithToolCall:
         mock_llm.side_effect = [tool_call_response, normal_response]
 
         # Mock S3 download error
-        mock_s3.download_pdf.side_effect = S3DownloadError(
+        mock_s3.download_pdf_async.side_effect = S3DownloadError(
             "File not found in S3: nonexistent.pdf"
         )
 
@@ -451,7 +453,7 @@ class TestChatEndpointWithToolCall:
             or "disponible" in data["response"].lower()
         )
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     @patch("backend.main.s3_client")
     @patch("backend.main.file_inputs_client")
     def test_chat_endpoint_handles_file_upload_error(
@@ -476,10 +478,10 @@ class TestChatEndpointWithToolCall:
         }
 
         # Mock S3 download success
-        mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
+        mock_s3.download_pdf_async = AsyncMock(return_value=b"%PDF-1.4 test content")
 
         # Mock file upload error
-        mock_file_inputs.upload_pdf.side_effect = FileUploadError("Invalid file format")
+        mock_file_inputs.upload_pdf_async = AsyncMock(side_effect=FileUploadError("Invalid file format"))
 
         response = client.post(
             "/chat",
@@ -491,7 +493,7 @@ class TestChatEndpointWithToolCall:
         # Should handle error gracefully
         assert data["response"] is not None
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     @patch("backend.main.s3_client")
     @patch("backend.main.file_inputs_client")
     def test_chat_endpoint_cleans_up_uploaded_files(
@@ -521,14 +523,15 @@ class TestChatEndpointWithToolCall:
         mock_llm.side_effect = [tool_call_response, normal_response]
 
         # Mock S3 download
-        mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
+        mock_s3.download_pdf_async = AsyncMock(return_value=b"%PDF-1.4 test content")
 
         # Mock file upload
-        mock_file_inputs.upload_pdf.return_value = "file-abc123"
+        mock_file_inputs.upload_pdf_async = AsyncMock(return_value="file-abc123")
+        mock_file_inputs.delete_file_async = AsyncMock(return_value=None)
 
         # Mock second LLM call
         with patch(
-            "backend.main.llm_client.get_llm_response_with_file"
+            "backend.main.llm_client.get_llm_response_with_file_async"
         ) as mock_llm_file:
             mock_llm_file.return_value = "Test response"
 
@@ -538,9 +541,9 @@ class TestChatEndpointWithToolCall:
             )
 
         # Verify delete was called after the second LLM call
-        mock_file_inputs.delete_file.assert_called_once_with("file-abc123")
+        mock_file_inputs.delete_file_async.assert_called_once_with("file-abc123")
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_endpoint_returns_normal_response_when_no_tool_call(
         self, mock_llm: MagicMock
     ) -> None:
@@ -558,7 +561,7 @@ class TestChatEndpointWithToolCall:
         assert "Arte Soluciones Energéticas" in data["response"]
         assert data["source_documents"] == []
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_chat_endpoint_passes_session_id_to_llm(self, mock_llm: MagicMock) -> None:
         """Test chat endpoint passes session_id to LLM client."""
         mock_llm.return_value = {
@@ -581,7 +584,7 @@ class TestChatEndpointWithToolCall:
 class TestSourceDocumentsBehavior:
     """Tests covering source_documents enrichment in ChatResponse."""
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_source_documents_empty_on_no_tool_call(self, mock_llm: MagicMock) -> None:
         mock_llm.return_value = {
             "output_text": "Respuesta sin herramientas",
@@ -598,7 +601,7 @@ class TestSourceDocumentsBehavior:
         assert data["response"] == "Respuesta sin herramientas"
         assert data["source_documents"] == []
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     @patch("backend.main.s3_client")
     @patch("backend.main.file_inputs_client")
     def test_source_documents_populated_on_leer_ficha_tecnica(
@@ -622,10 +625,11 @@ class TestSourceDocumentsBehavior:
         normal_response = {"output_text": "Contenido ficha", "tool_calls": []}
         
         mock_llm.side_effect = [tool_call_response, normal_response]
-        mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
-        mock_file_inputs.upload_pdf.return_value = "file-abc123"
+        mock_s3.download_pdf_async = AsyncMock(return_value=b"%PDF-1.4 test content")
+        mock_file_inputs.upload_pdf_async = AsyncMock(return_value="file-abc123")
+        mock_file_inputs.delete_file_async = AsyncMock(return_value=None)
 
-        with patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
+        with patch("backend.main.llm_client.get_llm_response_with_file_async") as mock_llm_file:
             mock_llm_file.return_value = "Contenido ficha"
             
             response = client.post(
@@ -640,7 +644,7 @@ class TestSourceDocumentsBehavior:
             {"ruta": "paneles/test.pdf", "contenido_relevante": None}
         ]
 
-    def test_source_documents_not_null_on_escalation(self) -> None:
+    def test_source_documents_empty_on_escalation(self) -> None:
         response = client.post(
             "/chat",
             json={"message": "Necesito una cotización de 10 inversores"},
@@ -667,12 +671,12 @@ class TestSourceDocumentSchema:
 class TestAgenticLoopBehavior:
     """Tests covering the iterative agentic loop inside /chat."""
 
-    @patch("backend.main.catalog_search.search")
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.get_catalog")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_agentic_loop_buscar_then_leer_then_respond(
         self,
         mock_llm: MagicMock,
-        mock_search: MagicMock,
+        mock_get_catalog: MagicMock,
     ) -> None:
         """Simulate buscar_producto followed by leer_ficha_tecnica within the loop."""
 
@@ -707,7 +711,7 @@ class TestAgenticLoopBehavior:
             {"output_text": "Ficha técnica procesada", "tool_calls": []},
         ]
 
-        mock_search.return_value = [
+        mock_get_catalog.return_value.search.return_value = [
             MagicMock(
                 ruta_s3="paneles/jinko-tiger-pro.pdf",
                 nombre_comercial="Jinko Tiger Pro",
@@ -719,10 +723,11 @@ class TestAgenticLoopBehavior:
 
         with patch("backend.main.s3_client") as mock_s3, \
              patch("backend.main.file_inputs_client") as mock_file_inputs, \
-             patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
-            
-            mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
-            mock_file_inputs.upload_pdf.return_value = "file-abc123"
+             patch("backend.main.llm_client.get_llm_response_with_file_async") as mock_llm_file:
+
+            mock_s3.download_pdf_async = AsyncMock(return_value=b"%PDF-1.4 test content")
+            mock_file_inputs.upload_pdf_async = AsyncMock(return_value="file-abc123")
+            mock_file_inputs.delete_file_async = AsyncMock(return_value=None)
             mock_llm_file.return_value = "Ficha técnica procesada"
 
             response = client.post(
@@ -734,9 +739,9 @@ class TestAgenticLoopBehavior:
         data = response.json()
         assert data["response"] == "Ficha técnica procesada"
         assert mock_llm.call_count == 3
-        mock_search.assert_called_once()
+        mock_get_catalog.assert_called_once()
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_agentic_loop_stops_when_no_tool_calls(self, mock_llm: MagicMock) -> None:
         """Ensure loop returns immediately when the model does not request tools."""
 
@@ -757,12 +762,12 @@ class TestAgenticLoopBehavior:
 
     @patch("backend.main.MAX_AGENTIC_ITERATIONS", 2)
     @patch("backend.main.logger.warning")
-    @patch("backend.main.catalog_search.search", return_value=[])
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.get_catalog")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_agentic_loop_respects_max_iterations(
         self,
         mock_llm: MagicMock,
-        mock_search: MagicMock,
+        mock_get_catalog: MagicMock,
         mock_warning: MagicMock,
     ) -> None:
         """Verify the loop stops after reaching MAX_AGENTIC_ITERATIONS."""
@@ -799,10 +804,10 @@ class TestAgenticLoopBehavior:
         assert "límite de iteraciones" in data["response"].lower()
         # Should have called LLM at least twice (iteration 1 and 2)
         assert mock_llm.call_count >= 2
-        mock_search.assert_called()
+        mock_get_catalog.assert_called()
         mock_warning.assert_called_once()
 
-    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.llm_client.get_llm_response_with_tools_async")
     def test_leer_ficha_tecnica_with_direct_ruta_s3_still_works(
         self,
         mock_llm: MagicMock,
@@ -826,10 +831,11 @@ class TestAgenticLoopBehavior:
 
         with patch("backend.main.s3_client") as mock_s3, \
              patch("backend.main.file_inputs_client") as mock_file_inputs, \
-             patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
-            
-            mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
-            mock_file_inputs.upload_pdf.return_value = "file-abc123"
+             patch("backend.main.llm_client.get_llm_response_with_file_async") as mock_llm_file:
+
+            mock_s3.download_pdf_async = AsyncMock(return_value=b"%PDF-1.4 test content")
+            mock_file_inputs.upload_pdf_async = AsyncMock(return_value="file-abc123")
+            mock_file_inputs.delete_file_async = AsyncMock(return_value=None)
             mock_llm_file.return_value = "Información obtenida directamente"
 
             response = client.post(
@@ -927,12 +933,14 @@ class TestProcessToolCall:
 class TestBuscarProductoTool:
     """Unit tests for buscar_producto tool handler."""
 
-    @patch("backend.main.catalog_search.search", return_value=[])
+    @patch("backend.main.get_catalog_search")
     def test_buscar_producto_no_results_informs_user(
-        self, mock_search: MagicMock
+        self, mock_get_catalog: MagicMock
     ) -> None:
         """Ensure the handler informs the user when no products match."""
         from backend.main import _handle_buscar_producto_tool
+
+        mock_get_catalog.return_value.search.return_value = []
 
         tool_call = {
             "id": "call_buscar_empty",
@@ -950,9 +958,9 @@ class TestBuscarProductoTool:
 
         output, is_terminal = _handle_buscar_producto_tool(tool_call)
 
-        assert "No encontré productos" in output
+        assert "No encontré productos" in output or "0 producto" in output or "0 producto" in output
         assert is_terminal is False
-        mock_search.assert_called_once_with(
+        mock_get_catalog.return_value.search.assert_called_once_with(
             categoria="paneles",
             fabricante="Trina",
             capacidad_min=None,

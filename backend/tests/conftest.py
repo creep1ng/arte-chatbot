@@ -7,6 +7,9 @@ and will raise FileUploadError without OPENAI_API_KEY.
 
 import os
 import warnings
+from unittest.mock import patch
+
+import pytest
 
 
 def pytest_configure(config):
@@ -23,3 +26,15 @@ def pytest_configure(config):
             "Create a .env file (see .env.example) or export the variables before running tests.",
             stacklevel=1,
         )
+
+
+@pytest.fixture(autouse=True)
+def mock_default_detector():
+    """Mock the default escalation detector to prevent keyword-based escalation in unit tests."""
+    with patch("backend.main.default_detector") as mock_detector:
+        mock_detector.detect.return_value = type(
+            "EscalationResult",
+            (),
+            {"escalate": False, "reason": "", "matched_keyword": None},
+        )()
+        yield mock_detector

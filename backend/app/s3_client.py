@@ -9,6 +9,7 @@ import os
 from typing import Optional
 
 import boto3
+import anyio
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from backend.app.config import settings
@@ -144,8 +145,65 @@ class S3Client:
             self.client.head_object(Bucket=self.bucket_name, Key=s3_key)
             logger.debug("S3 file exists: bucket=%s, key=%s", self.bucket_name, s3_key)
             return True
-        except ClientError:
-            logger.debug(
-                "S3 file not found: bucket=%s, key=%s", self.bucket_name, s3_key
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code in ("404", "NoSuchKey"):
+                logger.debug(
+                    "S3 file not found: bucket=%s, key=%s", self.bucket_name, s3_key
+                )
+                return False
+            logger.error(
+                "S3 client error in file_exists: bucket=%s, key=%s, error_code=%s",
+                self.bucket_name,
+                s3_key,
+                error_code,
             )
-            return False
+            raise S3DownloadError(f"S3 error checking file existence: {error_code}") from e
+
+    async def download_pdf_async(self, s3_key: str) -> bytes:
+        """Download a PDF file from S3 asynchronously.
+
+        Args:
+            s3_key: The S3 key (path) to the PDF file.
+                    Example: "paneles/jinko-tiger-pro-460w.pdf"
+
+        Returns:
+            Raw bytes of the PDF file.
+
+        Raises:
+            S3DownloadError: If the download fails.
+        """
+        if not self.bucket_name:
+            raise S3DownloadError("S3 bucket name not configured")
+
+        def _download():
+            try:
+                logger.debug(
+                    "S3 download initiated: bucket=%s, key=%s",
+                    self.bucket_name,
+                    s3_key,
+                )
+                logger.info("Downloading S3 object: %s/%s", self.bucket_name, s3_key)
+                response = self.client.get_object(Bucket=self.bucket_name, Key=s3_key)
+                pdf_bytes = response["Body"].read()
+                logger.debug(
+                    "S3 download complete: key=%s, size_bytes=%d",
+                    s3_key,
+                    len(pdf_bytes),
+                )
+                logger.info("Downloaded %d bytes from %s", len(pdf_bytes), s3_key)
+                return pdf_bytes
+            except ClientError as e:
+                error_code = e.response.get("Error", {}).get("Code", "Unknown")
+                logger.error("S3 client error (%s): %s", error_code, e)
+                if error_code == "NoSuchKey":
+                    raise S3DownloadError(f"File not found in S3: {s3_key}") from e
+                raise S3DownloadError(f"S3 download failed: {e}") from e
+            except NoCredentialsError:
+                logger.error("AWS credentials not available")
+                raise S3DownloadError("AWS credentials not configured") from None
+            except Exception as e:
+                logger.exception("Unexpected error downloading from S3: %s", e)
+                raise S3DownloadError(f"Unexpected S3 error: {e}") from e
+
+        return await anyio.to_thread.run_sync(_download)

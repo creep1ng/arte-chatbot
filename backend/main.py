@@ -255,6 +255,27 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def _validate_ruta_s3(path: str) -> str:
+    """Validate and sanitize S3 path to prevent path traversal attacks.
+
+    Args:
+        path: The S3 path to validate.
+
+    Returns:
+        The validated path.
+
+    Raises:
+        ValueError: If path contains traversal patterns or absolute paths.
+    """
+    if path is None:
+        raise ValueError("ruta_s3 cannot be None")
+    if ".." in path:
+        raise ValueError(f"Invalid S3 path (traversal detected): {path}")
+    if path.startswith("/"):
+        raise ValueError(f"Invalid S3 path (absolute path not allowed): {path}")
+    return path
+
+
 def _handle_buscar_producto_tool(
     tool_call: dict[str, Any],
 ) -> tuple[str, bool]:
@@ -444,7 +465,6 @@ def _process_leer_ficha_tecnica(
     if function_name != "leer_ficha_tecnica":
         raise ValueError(f"Unknown tool: {function_name}")
 
-    # Parse tool arguments
     arguments = _parse_tool_arguments(tool_call)
     ruta_s3 = arguments.get("ruta_s3")
     categoria = arguments.get("categoria")
@@ -466,7 +486,6 @@ def _process_leer_ficha_tecnica(
         session_id,
     )
 
-    # If ruta_s3 is not provided, try to find it via catalog search
     if not ruta_s3:
         logger.info(
             "No ruta_s3 provided, searching catalog: categoria=%s, "
@@ -485,7 +504,6 @@ def _process_leer_ficha_tecnica(
 
         try:
             catalog = get_catalog()
-            # Search by categoria and optionally fabricante/modelo
             modelo_contiene = modelo if modelo else None
             results = catalog.search(
                 categoria=categoria,
@@ -501,7 +519,6 @@ def _process_leer_ficha_tecnica(
                 )
 
             if len(results) == 1:
-                # Single product found, use its ruta_s3
                 ruta_s3 = results[0].ruta_s3
                 validate_s3_path(ruta_s3)
                 logger.info(
@@ -510,7 +527,6 @@ def _process_leer_ficha_tecnica(
                     session_id,
                 )
             else:
-                # Multiple products found - select first one deterministically
                 ruta_s3 = results[0].ruta_s3
                 validate_s3_path(ruta_s3)
                 logger.warning(
@@ -529,11 +545,11 @@ def _process_leer_ficha_tecnica(
             )
             raise ValueError(f"Failed to search catalog: {e}") from e
 
-    # Download PDF from S3
+    ruta_s3 = _validate_ruta_s3(ruta_s3)
+
     try:
         pdf_bytes = s3_client.download_pdf(ruta_s3)
     except S3DownloadError:
-        # Fallback: if direct download fails, search catalog using other parameters
         logger.info(
             "Direct download failed for ruta_s3=%s, trying catalog fallback: "
             "categoria=%s, fabricante=%s, modelo=%s, session_id=%s",
@@ -554,7 +570,6 @@ def _process_leer_ficha_tecnica(
             )
 
             if len(results) == 1:
-                # Single product found, use its ruta_s3 and retry
                 ruta_s3 = results[0].ruta_s3
                 validate_s3_path(ruta_s3)
                 logger.info(
@@ -564,7 +579,6 @@ def _process_leer_ficha_tecnica(
                 )
                 pdf_bytes = s3_client.download_pdf(ruta_s3)
             elif len(results) > 1:
-                # Multiple products found - pick first one as fallback (deterministic)
                 ruta_s3 = results[0].ruta_s3
                 validate_s3_path(ruta_s3)
                 logger.warning(
@@ -576,22 +590,17 @@ def _process_leer_ficha_tecnica(
                 )
                 pdf_bytes = s3_client.download_pdf(ruta_s3)
             else:
-                # No results found in catalog fallback
                 raise ValueError(
                     "No se encontraron productos en el catálogo con los criterios "
                     "especificados. El archivo solicitado no está disponible."
                 )
         else:
-            # No categoria to search with, re-raise original error
             raise
 
-    # Generate filename from ruta_s3
     filename = ruta_s3.split("/")[-1] if "/" in ruta_s3 else ruta_s3
 
-    # Upload PDF to OpenAI
     file_id = file_inputs_client.upload_pdf(pdf_bytes, filename)
 
-    # Second LLM call with file
     try:
         response = llm_client.get_llm_response_with_file(
             message=user_message,
@@ -600,9 +609,180 @@ def _process_leer_ficha_tecnica(
         )
         return response, [ruta_s3]
     finally:
-        # Clean up: delete the uploaded file
         try:
             file_inputs_client.delete_file(file_id)
+        except Exception as e:
+            logger.warning(
+                "Failed to delete file: file_id=%s, session_id=%s, error=%s",
+                file_id,
+                session_id,
+                e,
+            )
+
+
+async def _process_leer_ficha_tecnica_async(
+    tool_call: dict[str, Any],
+    user_message: str,
+    session_id: str,
+) -> tuple[str, list[str]]:
+    """Process a tool call for reading a technical datasheet asynchronously.
+
+    Args:
+        tool_call: The tool call dict from OpenAI response.
+        user_message: The original user message.
+        session_id: The session identifier.
+
+    Returns:
+        Tuple of (llm_response_text, list_of_s3_paths_used).
+
+    Raises:
+        S3DownloadError: If the PDF cannot be downloaded from S3.
+        FileUploadError: If the PDF cannot be uploaded to OpenAI.
+        LLMServiceError: If the LLM call fails.
+        ValueError: If ruta_s3 is missing and no products found in catalog.
+    """
+    function_name = tool_call.get("function", {}).get("name")
+    if function_name != "leer_ficha_tecnica":
+        raise ValueError(f"Unknown tool: {function_name}")
+
+    arguments = _parse_tool_arguments(tool_call)
+    ruta_s3 = arguments.get("ruta_s3")
+    categoria = arguments.get("categoria")
+    fabricante = arguments.get("fabricante")
+    modelo = arguments.get("modelo")
+
+    logger.debug(
+        "Tool call parameters: function=%s, ruta_s3=%s, categoria=%s, "
+        "fabricante=%s, modelo=%s, session_id=%s",
+        function_name,
+        ruta_s3,
+        categoria,
+        fabricante,
+        modelo,
+        session_id,
+    )
+
+    if not ruta_s3:
+        logger.info(
+            "No ruta_s3 provided, searching catalog: categoria=%s, "
+            "fabricante=%s, modelo=%s, session_id=%s",
+            categoria,
+            fabricante,
+            modelo,
+            session_id,
+        )
+
+        if not categoria:
+            raise ValueError(
+                "Missing ruta_s3 in tool arguments. When ruta_s3 is not "
+                "provided, categoria is required to search the catalog."
+            )
+
+        try:
+            catalog = get_catalog()
+            modelo_contiene = modelo if modelo else None
+            results = catalog.search(
+                categoria=categoria,
+                fabricante=fabricante,
+                modelo_contiene=modelo_contiene,
+            )
+
+            if not results:
+                raise ValueError(
+                    f"No products found in catalog for categoria='{categoria}'"
+                    + (f", fabricante='{fabricante}'" if fabricante else "")
+                    + (f", modelo containing '{modelo}'" if modelo else "")
+                )
+
+            if len(results) == 1:
+                ruta_s3 = results[0].ruta_s3
+                logger.info(
+                    "Found single product, using ruta_s3=%s, session_id=%s",
+                    ruta_s3,
+                    session_id,
+                )
+            else:
+                ruta_s3 = results[0].ruta_s3
+                logger.warning(
+                    "Multiple products found when resolving ruta_s3, selecting first: "
+                    "ruta_s3=%s, session_id=%s, available=%d, products=%s",
+                    ruta_s3,
+                    session_id,
+                    len(results),
+                    [p.nombre_comercial for p in results],
+                )
+        except CatalogError as e:
+            logger.error(
+                "Catalog error when resolving ruta_s3: session_id=%s, error=%s",
+                session_id,
+                e,
+            )
+            raise ValueError(f"Failed to search catalog: {e}") from e
+
+    ruta_s3 = _validate_ruta_s3(ruta_s3)
+
+    try:
+        pdf_bytes = await s3_client.download_pdf_async(ruta_s3)
+    except S3DownloadError:
+        logger.info(
+            "Direct download failed for ruta_s3=%s, trying catalog fallback: "
+            "categoria=%s, fabricante=%s, modelo=%s, session_id=%s",
+            ruta_s3,
+            categoria,
+            fabricante,
+            modelo,
+            session_id,
+        )
+
+        if categoria:
+            catalog = get_catalog()
+            modelo_contiene = modelo if modelo else None
+            results = catalog.search(
+                categoria=categoria,
+                fabricante=fabricante,
+                modelo_contiene=modelo_contiene,
+            )
+
+            if len(results) == 1:
+                ruta_s3 = results[0].ruta_s3
+                logger.info(
+                    "Fallback successful, using ruta_s3=%s, session_id=%s",
+                    ruta_s3,
+                    session_id,
+                )
+                pdf_bytes = await s3_client.download_pdf_async(ruta_s3)
+            elif len(results) > 1:
+                ruta_s3 = results[0].ruta_s3
+                logger.warning(
+                    "Multiple products found during fallback, selecting first: "
+                    "ruta_s3=%s, session_id=%s, available_products=%d",
+                    ruta_s3,
+                    session_id,
+                    len(results),
+                )
+                pdf_bytes = await s3_client.download_pdf_async(ruta_s3)
+            else:
+                raise ValueError(
+                    "No se encontraron productos en el catálogo con los criterios "
+                    "especificados. El archivo solicitado no está disponible."
+                )
+        else:
+            raise
+
+    filename = ruta_s3.split("/")[-1] if "/" in ruta_s3 else ruta_s3
+
+    file_id = await file_inputs_client.upload_pdf_async(pdf_bytes, filename)
+
+    try:
+        response = await llm_client.get_llm_response_with_file_async(
+            message=user_message,
+            file_id=file_id,
+            session_id=session_id,
+        )
+        return response, [ruta_s3]
+    finally:
+        try:
+            await file_inputs_client.delete_file_async(file_id)
         except Exception as e:
             logger.warning(
                 "Failed to delete file: file_id=%s, session_id=%s, error=%s",
@@ -617,7 +797,7 @@ _process_tool_call = _process_leer_ficha_tecnica
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat_endpoint(
+async def chat_endpoint(
     request: ChatRequest,
     api_key: Annotated[str, Depends(verify_api_key)],
     llm_client: Annotated[LLMClient, Depends(get_llm_client)],
@@ -759,7 +939,7 @@ def chat_endpoint(
                 llm_client.model,
                 iteration,
             )
-            llm_response = llm_client.get_llm_response_with_tools(
+            llm_response = await llm_client.get_llm_response_with_tools_async(
                 message=user_input,
                 session_id=session_id,
                 system_prompt=system_prompt_with_profile,
@@ -857,7 +1037,7 @@ def chat_endpoint(
                         )
 
                     elif function_name == "leer_ficha_tecnica":
-                        final_response, new_source_docs = _process_leer_ficha_tecnica(
+                        final_response, new_source_docs = await _process_leer_ficha_tecnica_async(
                             tool_call=tool_call,
                             user_message=expanded_query,
                             session_id=session_id,

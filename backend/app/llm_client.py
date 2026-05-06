@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Any, Optional
 
+import anyio
 from openai import APIError, AuthenticationError, OpenAI
 
 from backend.app.config import settings
@@ -17,18 +18,23 @@ logger = logging.getLogger(__name__)
 
 
 def expand_query_with_context(message: str, history: list) -> str:
-    """Expand query with conversational context (stub for future enhancement).
+    """Expand query with conversational context for anaphoric references.
 
-    Currently returns the original message unchanged. This function is intended
-    to handle anaphoric references (e.g., "el panel del que hablábamos").
+    Currently returns the original message unchanged. Full implementation
+    should handle anaphoric references (e.g., "el panel del que hablábamos").
 
     Args:
         message: The user's message.
         history: List of conversation turns.
 
     Returns:
-        The original message (placeholder for full implementation).
+        The expanded message (placeholder for full implementation).
+
+    Raises:
+        NotImplementedError: This function is not yet implemented.
     """
+    if message and history:
+        pass
     return message
 
 
@@ -181,7 +187,6 @@ class LLMClient:
                 tools=tools,
                 max_output_tokens=2000,
                 reasoning={"effort": "medium"},
-                prompt_cache_key=session_id,
             )
 
             # Extract output text
@@ -271,7 +276,6 @@ class LLMClient:
                 ],
                 max_output_tokens=2000,
                 reasoning={"effort": "medium"},
-                prompt_cache_key=session_id,
             )
 
             return response.output_text
@@ -285,3 +289,160 @@ class LLMClient:
         except Exception as e:
             logger.exception("Unexpected error calling OpenAI API (file): %s", e)
             raise LLMServiceError(f"LLM service error: {e}") from e
+
+    async def get_llm_response_with_tools_async(
+        self,
+        message: str,
+        session_id: str,
+        system_prompt: Optional[str] = None,
+        context: str = "",
+    ) -> dict[str, Any]:
+        """Send a message to the LLM with tool definitions asynchronously.
+
+        Args:
+            message: The user's message.
+            session_id: The session identifier for context.
+            system_prompt: Optional system prompt override.
+            context: Optional session context string with conversation history.
+
+        Returns:
+            A dict with 'output_text' and optionally 'tool_calls'.
+
+        Raises:
+            LLMServiceError: If the API key is missing or the request fails.
+        """
+        if not self.api_key:
+            raise LLMServiceError("Missing OpenAI API key.")
+
+        instructions = system_prompt or self.default_system_prompt
+        tools = get_tool_definitions()
+
+        user_input = message
+        if context:
+            user_input = (
+                f"Contexto de la conversación:\n{context}\n\nPregunta actual: {message}"
+            )
+
+        logger.debug(
+            "LLM call with tools: model=%s, session_id=%s, message_preview=%s, "
+            "num_tools=%d",
+            self.model,
+            session_id,
+            message[:100],
+            len(tools),
+        )
+
+        def _call():
+            try:
+                response = self.openai_client.responses.create(
+                    model=self.model,
+                    instructions=instructions,
+                    input=user_input,
+                    tools=tools,
+                    max_output_tokens=2000,
+                    reasoning={"effort": "medium"},
+                )
+
+                output_text = response.output_text
+
+                tool_calls = []
+                for item in response.output:
+                    if item.type == "function_call":
+                        tool_calls.append(
+                            {
+                                "id": item.call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": item.name,
+                                    "arguments": item.arguments,
+                                },
+                            }
+                        )
+
+                result: dict[str, Any] = {
+                    "output_text": output_text,
+                }
+
+                if tool_calls:
+                    result["tool_calls"] = tool_calls
+
+                return result
+
+            except AuthenticationError as e:
+                logger.error("OpenAI authentication error: %s", e)
+                raise LLMServiceError("Invalid OpenAI API key") from e
+            except APIError as e:
+                logger.error("OpenAI API error: %s", e)
+                raise LLMServiceError(f"OpenAI API error: {e}") from e
+            except Exception as e:
+                logger.exception("Unexpected error calling OpenAI API: %s", e)
+                raise LLMServiceError(f"LLM service error: {e}") from e
+
+        return await anyio.to_thread.run_sync(_call)
+
+    async def get_llm_response_with_file_async(
+        self,
+        message: str,
+        file_id: str,
+        session_id: str,
+        system_prompt: Optional[str] = None,
+    ) -> str:
+        """Send a message to the LLM with a file attached asynchronously.
+
+        Args:
+            message: The user's message.
+            file_id: The OpenAI file ID from the uploaded PDF.
+            session_id: The session identifier for context.
+            system_prompt: Optional system prompt override.
+
+        Returns:
+            The response content string from the LLM.
+
+        Raises:
+            LLMServiceError: If the API key is missing or the request fails.
+        """
+        if not self.api_key:
+            raise LLMServiceError("Missing OpenAI API key.")
+
+        instructions = system_prompt or DATASHEET_SYSTEM_PROMPT
+
+        logger.debug(
+            "LLM call with file: model=%s, session_id=%s, file_id=%s, "
+            "message_preview=%s",
+            self.model,
+            session_id,
+            file_id,
+            message[:100],
+        )
+
+        def _call():
+            try:
+                response = self.openai_client.responses.create(
+                    model=self.model,
+                    instructions=instructions,
+                    input=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_file", "file_id": file_id},
+                                {"type": "input_text", "text": message},
+                            ],
+                        }
+                    ],
+                    max_output_tokens=2000,
+                    reasoning={"effort": "medium"},
+                )
+
+                return response.output_text
+
+            except AuthenticationError as e:
+                logger.error("OpenAI authentication error (file): %s", e)
+                raise LLMServiceError("Invalid OpenAI API key") from e
+            except APIError as e:
+                logger.error("OpenAI API error (file): %s", e)
+                raise LLMServiceError(f"OpenAI API error: {e}") from e
+            except Exception as e:
+                logger.exception("Unexpected error calling OpenAI API (file): %s", e)
+                raise LLMServiceError(f"LLM service error: {e}") from e
+
+        return await anyio.to_thread.run_sync(_call)

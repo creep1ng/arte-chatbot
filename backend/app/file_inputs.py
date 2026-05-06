@@ -8,6 +8,7 @@ import io
 import logging
 from typing import Optional
 
+import anyio
 from openai import OpenAI
 from openai import APIError, AuthenticationError, BadRequestError
 
@@ -129,3 +130,91 @@ class FileInputsClient:
         except Exception as e:
             logger.exception("Unexpected error deleting file: %s", e)
             raise FileUploadError(f"Unexpected error: {e}") from e
+
+    async def upload_pdf_async(self, pdf_bytes: bytes, filename: str) -> str:
+        """Upload a PDF file to OpenAI Files API asynchronously.
+
+        Args:
+            pdf_bytes: Raw bytes of the PDF file.
+            filename: Name for the file (e.g., "jinko-tiger-pro-460w.pdf").
+
+        Returns:
+            The file_id from OpenAI that can be used in Chat Completions.
+
+        Raises:
+            FileUploadError: If the upload fails.
+        """
+        if not self.api_key:
+            raise FileUploadError("OpenAI API key not configured")
+
+        def _upload():
+            try:
+                logger.debug(
+                    "File upload initiated: filename=%s, size_bytes=%d",
+                    filename,
+                    len(pdf_bytes),
+                )
+                logger.info("Uploading PDF to OpenAI Files API: %s", filename)
+
+                file_obj = io.BytesIO(pdf_bytes)
+                file_obj.name = filename
+
+                response = self.client.files.create(
+                    file=file_obj,
+                    purpose="user_data",
+                )
+
+                file_id = response.id
+                logger.debug(
+                    "File upload complete: file_id=%s, filename=%s",
+                    file_id,
+                    filename,
+                )
+                logger.info("Successfully uploaded file with ID: %s", file_id)
+                return file_id
+
+            except AuthenticationError as e:
+                logger.error("OpenAI authentication error: %s", e)
+                raise FileUploadError("Invalid OpenAI API key") from e
+            except BadRequestError as e:
+                logger.error("OpenAI bad request error: %s", e)
+                raise FileUploadError(f"Invalid file format or request: {e}") from e
+            except APIError as e:
+                logger.error("OpenAI API error: %s", e)
+                raise FileUploadError(f"OpenAI API error: {e}") from e
+            except Exception as e:
+                logger.exception("Unexpected error uploading file: %s", e)
+                raise FileUploadError(f"Unexpected error: {e}") from e
+
+        return await anyio.to_thread.run_sync(_upload)
+
+    async def delete_file_async(self, file_id: str) -> None:
+        """Delete a file from OpenAI Files API asynchronously.
+
+        Args:
+            file_id: The file ID to delete.
+
+        Raises:
+            FileUploadError: If the deletion fails.
+        """
+        if not self.api_key:
+            raise FileUploadError("OpenAI API key not configured")
+
+        def _delete():
+            try:
+                logger.debug("File deletion initiated: file_id=%s", file_id)
+                logger.info("Deleting OpenAI file: %s", file_id)
+                self.client.files.delete(file_id)
+                logger.debug("File deletion complete: file_id=%s", file_id)
+                logger.info("Successfully deleted file: %s", file_id)
+            except AuthenticationError as e:
+                logger.error("OpenAI authentication error: %s", e)
+                raise FileUploadError("Invalid OpenAI API key") from e
+            except APIError as e:
+                logger.error("OpenAI API error deleting file: %s", e)
+                raise FileUploadError(f"Error deleting file: {e}") from e
+            except Exception as e:
+                logger.exception("Unexpected error deleting file: %s", e)
+                raise FileUploadError(f"Unexpected error: {e}") from e
+
+        await anyio.to_thread.run_sync(_delete)
