@@ -152,13 +152,13 @@ class S3Client:
                     "S3 file not found: bucket=%s, key=%s", self.bucket_name, s3_key
                 )
                 return False
-            logger.error(
-                "S3 client error in file_exists: bucket=%s, key=%s, error_code=%s",
+            logger.warning(
+                "S3 client error in file_exists (non-404): bucket=%s, key=%s, error_code=%s",
                 self.bucket_name,
                 s3_key,
                 error_code,
             )
-            raise S3DownloadError(f"S3 error checking file existence: {error_code}") from e
+            return False
 
     async def download_pdf_async(self, s3_key: str) -> bytes:
         """Download a PDF file from S3 asynchronously.

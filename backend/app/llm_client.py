@@ -29,9 +29,6 @@ def expand_query_with_context(message: str, history: list) -> str:
 
     Returns:
         The expanded message (placeholder for full implementation).
-
-    Raises:
-        NotImplementedError: This function is not yet implemented.
     """
     if message and history:
         pass
