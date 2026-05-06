@@ -217,6 +217,35 @@ class TestChatEndpointUnit:
         assert data["escalate"] is True
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_returns_fuera_de_dominio_intent(self, mock_llm) -> None:
+        """Test intent_type 'fuera_de_dominio' is returned for off-topic queries."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: fuera_de_dominio] No puedo responder eso.",
+        }
+        response = client.post(
+            "/chat", json={"message": "Cuéntame sobre la última película de Marvel"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["intent_type"] == "fuera_de_dominio"
+        assert data["escalate"] is False
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_chat_fuera_de_dominio_returns_safe_message(self, mock_llm) -> None:
+        """Test that fuera_de_dominio intent returns the safe out-of-domain message."""
+        mock_llm.return_value = {
+            "output_text": "[INTENT: fuera_de_dominio] Pregunta sobre otro tema.",
+        }
+        response = client.post(
+            "/chat", json={"message": "Cómo está el clima hoy?"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["intent_type"] == "fuera_de_dominio"
+        assert data["escalate"] is False
+        assert "energía solar" in data["response"].lower()
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_intent_marker_stripped_from_response(self, mock_llm) -> None:
         """Test that [INTENT: ...] marker is stripped from response text."""
         mock_llm.return_value = {
