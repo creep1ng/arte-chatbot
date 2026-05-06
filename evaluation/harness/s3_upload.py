@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import boto3
-from botocore.exceptions import Boto3Error
+from boto3.exceptions import Boto3Error
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,12 @@ def upload_results(output_dir: Path, prefix: str) -> list[str]:
         logger.warning("AWS credentials not found, skipping S3 upload")
         return None
 
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=AWS_REGION,
+    )
     uploaded: list[str] = []
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
@@ -110,11 +116,11 @@ def upload_results(output_dir: Path, prefix: str) -> list[str]:
         try:
             s3_client.upload_file(str(file_path), AWS_BUCKET_NAME, s3_key)
             logger.info("Uploaded %s to s3://%s/%s", file_path.name, AWS_BUCKET_NAME, s3_key)
-            uploaded_keys.append(s3_key)
+            uploaded.append(s3_key)
         except Boto3Error as e:
             logger.error("Failed to upload %s: %s", file_path.name, e)
 
-    return uploaded_keys
+    return uploaded
 
 
 def upload_results_with_metadata(
