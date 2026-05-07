@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from backend.main import app, llm_client, s3_client, file_inputs_client
 from backend.app.auth import verify_api_key
 from backend.app.schemas import SourceDocument
+from backend.tests.conftest import make_llm_response
 
 client = TestClient(app)
 
@@ -51,9 +52,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_escalate_for_cotizacion(self, mock_llm) -> None:
         """Test escalation flag for cotización via intent classification."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: escalate_quote] Un agente de ventas te contactará pronto.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: escalate_quote] Un agente de ventas te contactará pronto.",
+        )
         response = client.post(
             "/chat", json={"message": "Necesito una cotización de paneles"}
         )
@@ -66,9 +67,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_escalate_for_pedido(self, mock_llm) -> None:
         """Test escalation flag for pedido via intent classification."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: escalate_order] Procesaremos tu pedido.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: escalate_order] Procesaremos tu pedido.",
+        )
         response = client.post("/chat", json={"message": "Quiero hacer un pedido"})
         assert response.status_code == 200
         data = response.json()
@@ -79,9 +80,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_escalate_for_garantia(self, mock_llm) -> None:
         """Test escalation flag for technical issue via intent classification."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: escalate_technical] Un técnico revisará tu caso.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: escalate_technical] Un técnico revisará tu caso.",
+        )
         response = client.post(
             "/chat", json={"message": "Tengo un problema con la garantía"}
         )
@@ -93,7 +94,7 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_no_escalate_for_normal_message(self, mock_llm) -> None:
         """Test no escalation for normal messages."""
-        mock_llm.return_value = {"output_text": "[INTENT: FAQ] Mocked LLM Response"}
+        mock_llm.return_value = make_llm_response(text="[INTENT: FAQ] Mocked LLM Response")
         response = client.post(
             "/chat", json={"message": "¿Cuánta potencia tiene el panel de 400W?"}
         )
@@ -106,7 +107,7 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_session_id(self, mock_llm) -> None:
         """Test that session_id is returned in response."""
-        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
+        mock_llm.return_value = make_llm_response(text="Mocked LLM Response")
         response = client.post("/chat", json={"message": "Hola"})
         assert response.status_code == 200
         data = response.json()
@@ -116,7 +117,7 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_accepts_custom_session_id(self, mock_llm) -> None:
         """Test that custom session_id can be provided."""
-        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
+        mock_llm.return_value = make_llm_response(text="Mocked LLM Response")
         response = client.post(
             "/chat", json={"message": "Hola", "session_id": "my-session-123"}
         )
@@ -129,7 +130,7 @@ class TestChatEndpointUnit:
     def test_chat_uses_session_context(self, mock_session_manager, mock_llm):
         """Test that the chat endpoint uses session context."""
         # Configurar mocks
-        mock_llm.return_value = {"output_text": "Mocked LLM Response"}
+        mock_llm.return_value = make_llm_response(text="Mocked LLM Response")
         mock_session_manager.get_context_string.return_value = (
             "Turno 1:\nUsuario: Pregunta anterior\nAsistente: Respuesta anterior"
         )
@@ -163,9 +164,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_escalation_message(self, mock_llm) -> None:
         """Test that escalation response includes the escalation message."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: escalate_quote] Un agente te contactará.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: escalate_quote] Un agente te contactará.",
+        )
         response = client.post("/chat", json={"message": "Quiero una cotización"})
         assert response.status_code == 200
         data = response.json()
@@ -177,9 +178,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_intent_type_product_info(self, mock_llm) -> None:
         """Test intent_type 'product_info' for product queries."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: product_info] El panel tiene 400W de potencia.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: product_info] El panel tiene 400W de potencia.",
+        )
         response = client.post(
             "/chat", json={"message": "¿Qué potencia tiene el panel de 400W?"}
         )
@@ -191,9 +192,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_intent_type_escalate_quote(self, mock_llm) -> None:
         """Test intent_type 'escalate_quote' triggers escalation."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: escalate_quote] Te contactará un agente.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: escalate_quote] Te contactará un agente.",
+        )
         response = client.post(
             "/chat", json={"message": "Necesito un presupuesto"}
         )
@@ -205,9 +206,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_intent_type_escalate_order(self, mock_llm) -> None:
         """Test intent_type 'escalate_order' triggers escalation."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: escalate_order] Procesaremos tu pedido.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: escalate_order] Procesaremos tu pedido.",
+        )
         response = client.post(
             "/chat", json={"message": "Quiero comprar paneles"}
         )
@@ -219,9 +220,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_fuera_de_dominio_intent(self, mock_llm) -> None:
         """Test intent_type 'fuera_de_dominio' is returned for off-topic queries."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: fuera_de_dominio] No puedo responder eso.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: fuera_de_dominio] No puedo responder eso.",
+        )
         response = client.post(
             "/chat", json={"message": "Cuéntame sobre la última película de Marvel"}
         )
@@ -233,9 +234,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_fuera_de_dominio_returns_safe_message(self, mock_llm) -> None:
         """Test that fuera_de_dominio intent returns the safe out-of-domain message."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: fuera_de_dominio] Pregunta sobre otro tema.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: fuera_de_dominio] Pregunta sobre otro tema.",
+        )
         response = client.post(
             "/chat", json={"message": "Cómo está el clima hoy?"}
         )
@@ -248,9 +249,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_intent_marker_stripped_from_response(self, mock_llm) -> None:
         """Test that [INTENT: ...] marker is stripped from response text."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: FAQ] Los paneles monocristalinos son más eficientes.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Los paneles monocristalinos son más eficientes.",
+        )
         response = client.post(
             "/chat", json={"message": "¿Qué tipo de panel me conviene?"}
         )
@@ -353,9 +354,9 @@ class TestChatEndpointWithToolCall:
     ) -> None:
         """Test chat endpoint with tool call in response."""
         # First LLM call returns tool call, second call should return no tool calls (normal response)
-        tool_call_response = {
-            "output_text": "",
-            "tool_calls": [
+        tool_call_response = make_llm_response(
+            text="",
+            tool_calls=[
                 {
                     "id": "call_abc123",
                     "type": "function",
@@ -365,12 +366,11 @@ class TestChatEndpointWithToolCall:
                     },
                 }
             ],
-        }
+        )
         
-        normal_response = {
-            "output_text": "El panel Jinko Tiger Pro 460W tiene una potencia de 460W.",
-            "tool_calls": [],
-        }
+        normal_response = make_llm_response(
+            text="El panel Jinko Tiger Pro 460W tiene una potencia de 460W.",
+        )
         
         mock_llm.side_effect = [tool_call_response, normal_response]
 
@@ -385,8 +385,8 @@ class TestChatEndpointWithToolCall:
         with patch(
             "backend.main.llm_client.get_llm_response_with_file"
         ) as mock_llm_file:
-            mock_llm_file.return_value = (
-                "El panel Jinko Tiger Pro 460W tiene una potencia de 460W."
+            mock_llm_file.return_value = make_llm_response(
+                text="El panel Jinko Tiger Pro 460W tiene una potencia de 460W."
             )
 
             response = client.post(
@@ -411,9 +411,9 @@ class TestChatEndpointWithToolCall:
         from backend.app.s3_client import S3DownloadError
 
         # Mock LLM response with tool call - first call returns tool call, second should return normal response
-        tool_call_response = {
-            "output_text": "",
-            "tool_calls": [
+        tool_call_response = make_llm_response(
+            text="",
+            tool_calls=[
                 {
                     "id": "call_abc123",
                     "type": "function",
@@ -423,12 +423,11 @@ class TestChatEndpointWithToolCall:
                     },
                 }
             ],
-        }
+        )
         
-        normal_response = {
-            "output_text": "No pude acceder al archivo solicitado.",
-            "tool_calls": [],
-        }
+        normal_response = make_llm_response(
+            text="No pude acceder al archivo solicitado.",
+        )
         
         mock_llm.side_effect = [tool_call_response, normal_response]
 
@@ -461,9 +460,9 @@ class TestChatEndpointWithToolCall:
         from backend.app.file_inputs import FileUploadError
 
         # Mock LLM response with tool call (Responses API format)
-        mock_llm.return_value = {
-            "output_text": "",
-            "tool_calls": [
+        mock_llm.return_value = make_llm_response(
+            text="",
+            tool_calls=[
                 {
                     "id": "call_abc123",
                     "type": "function",
@@ -473,7 +472,7 @@ class TestChatEndpointWithToolCall:
                     },
                 }
             ],
-        }
+        )
 
         # Mock S3 download success
         mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
@@ -499,9 +498,9 @@ class TestChatEndpointWithToolCall:
     ) -> None:
         """Test chat endpoint cleans up uploaded files after second LLM call."""
         # Mock LLM response with tool call - first call returns tool call, second should return normal response
-        tool_call_response = {
-            "output_text": "",
-            "tool_calls": [
+        tool_call_response = make_llm_response(
+            text="",
+            tool_calls=[
                 {
                     "id": "call_abc123",
                     "type": "function",
@@ -511,12 +510,9 @@ class TestChatEndpointWithToolCall:
                     },
                 }
             ],
-        }
+        )
         
-        normal_response = {
-            "output_text": "Test response",
-            "tool_calls": [],
-        }
+        normal_response = make_llm_response(text="Test response")
         
         mock_llm.side_effect = [tool_call_response, normal_response]
 
@@ -530,7 +526,7 @@ class TestChatEndpointWithToolCall:
         with patch(
             "backend.main.llm_client.get_llm_response_with_file"
         ) as mock_llm_file:
-            mock_llm_file.return_value = "Test response"
+            mock_llm_file.return_value = make_llm_response(text="Test response")
 
             response = client.post(
                 "/chat",
@@ -546,9 +542,9 @@ class TestChatEndpointWithToolCall:
     ) -> None:
         """Test chat endpoint returns normal response when no tool call."""
         # Mock LLM response without tool call (Responses API format)
-        mock_llm.return_value = {
-            "output_text": "Soy el asistente de Arte Soluciones Energéticas. ¿En qué puedo ayudarte?",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="Soy el asistente de Arte Soluciones Energéticas. ¿En qué puedo ayudarte?",
+        )
 
         response = client.post("/chat", json={"message": "Hola"})
 
@@ -561,9 +557,7 @@ class TestChatEndpointWithToolCall:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_endpoint_passes_session_id_to_llm(self, mock_llm: MagicMock) -> None:
         """Test chat endpoint passes session_id to LLM client."""
-        mock_llm.return_value = {
-            "output_text": "Test response",
-        }
+        mock_llm.return_value = make_llm_response(text="Test response")
 
         custom_session = "custom-session-abc123"
         response = client.post(
@@ -583,10 +577,7 @@ class TestSourceDocumentsBehavior:
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_source_documents_empty_on_no_tool_call(self, mock_llm: MagicMock) -> None:
-        mock_llm.return_value = {
-            "output_text": "Respuesta sin herramientas",
-            "tool_calls": [],
-        }
+        mock_llm.return_value = make_llm_response(text="Respuesta sin herramientas")
 
         response = client.post(
             "/chat",
@@ -618,15 +609,15 @@ class TestSourceDocumentsBehavior:
         }
 
         # First LLM call returns tool call, second returns normal response
-        tool_call_response = {"output_text": "", "tool_calls": [leer_tool_call]}
-        normal_response = {"output_text": "Contenido ficha", "tool_calls": []}
+        tool_call_response = make_llm_response(text="", tool_calls=[leer_tool_call])
+        normal_response = make_llm_response(text="Contenido ficha")
         
         mock_llm.side_effect = [tool_call_response, normal_response]
         mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
         mock_file_inputs.upload_pdf.return_value = "file-abc123"
 
         with patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
-            mock_llm_file.return_value = "Contenido ficha"
+            mock_llm_file.return_value = make_llm_response(text="Contenido ficha")
             
             response = client.post(
                 "/chat",
@@ -702,9 +693,9 @@ class TestAgenticLoopBehavior:
 
         # Mock LLM side effects: first call buscar, second call leer, third call returns final response
         mock_llm.side_effect = [
-            {"output_text": "", "tool_calls": [buscar_tool_call]},
-            {"output_text": "", "tool_calls": [leer_tool_call]},
-            {"output_text": "Ficha técnica procesada", "tool_calls": []},
+            make_llm_response(text="", tool_calls=[buscar_tool_call]),
+            make_llm_response(text="", tool_calls=[leer_tool_call]),
+            make_llm_response(text="Ficha técnica procesada"),
         ]
 
         mock_search.return_value = [
@@ -723,7 +714,7 @@ class TestAgenticLoopBehavior:
             
             mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
             mock_file_inputs.upload_pdf.return_value = "file-abc123"
-            mock_llm_file.return_value = "Ficha técnica procesada"
+            mock_llm_file.return_value = make_llm_response(text="Ficha técnica procesada")
 
             response = client.post(
                 "/chat",
@@ -740,10 +731,9 @@ class TestAgenticLoopBehavior:
     def test_agentic_loop_stops_when_no_tool_calls(self, mock_llm: MagicMock) -> None:
         """Ensure loop returns immediately when the model does not request tools."""
 
-        mock_llm.return_value = {
-            "output_text": "Respuesta directa",
-            "tool_calls": [],
-        }
+        mock_llm.return_value = make_llm_response(
+            text="Respuesta directa",
+        )
 
         response = client.post(
             "/chat",
@@ -767,9 +757,9 @@ class TestAgenticLoopBehavior:
     ) -> None:
         """Verify the loop stops after reaching MAX_AGENTIC_ITERATIONS."""
 
-        looping_response = {
-            "output_text": "Sigo buscando opciones",
-            "tool_calls": [
+        looping_response = make_llm_response(
+            text="Sigo buscando opciones",
+            tool_calls=[
                 {
                     "id": "call_loop",
                     "type": "function",
@@ -783,7 +773,7 @@ class TestAgenticLoopBehavior:
                     },
                 }
             ],
-        }
+        )
 
         # Mock returns the looping response multiple times (for 2+ iterations)
         mock_llm.side_effect = [looping_response, looping_response, looping_response]
@@ -819,8 +809,8 @@ class TestAgenticLoopBehavior:
         }
 
         # First LLM call returns leer tool call, second call returns normal response
-        tool_call_response = {"output_text": "", "tool_calls": [leer_tool_call]}
-        normal_response = {"output_text": "Información obtenida directamente", "tool_calls": []}
+        tool_call_response = make_llm_response(text="", tool_calls=[leer_tool_call])
+        normal_response = make_llm_response(text="Información obtenida directamente")
         
         mock_llm.side_effect = [tool_call_response, normal_response]
 
@@ -830,7 +820,7 @@ class TestAgenticLoopBehavior:
             
             mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
             mock_file_inputs.upload_pdf.return_value = "file-abc123"
-            mock_llm_file.return_value = "Información obtenida directamente"
+            mock_llm_file.return_value = make_llm_response(text="Información obtenida directamente")
 
             response = client.post(
                 "/chat",
@@ -863,7 +853,7 @@ class TestProcessToolCall:
         with patch(
             "backend.main.llm_client.get_llm_response_with_file"
         ) as mock_llm_file:
-            mock_llm_file.return_value = "El panel tiene 460W de potencia."
+            mock_llm_file.return_value = make_llm_response(text="El panel tiene 460W de potencia.")
 
             tool_call = {
                 "id": "call_123",
