@@ -26,34 +26,23 @@ from backend.app.logging_config import setup_logging
 # Configure logging before anything else (reads LOG_LEVEL from centralized settings)
 setup_logging()
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from rag import (
-    DEFAULT_ESCALATION_MESSAGE,
-    default_detector,
-)
+from backend.app.auth import verify_api_key
+from backend.app.catalog import CatalogError, get_catalog
+from backend.app.config import settings
+from backend.app.file_inputs import FileInputsClient, FileUploadError
+from backend.app.greeting import maybe_prepend_greeting
 from backend.app.llm_client import (
+    _WHATSAPP_SPLIT_INSTRUCTIONS,
+    ARTE_SYSTEM_PROMPT,
     LLMClient,
     LLMServiceError,
-    ARTE_SYSTEM_PROMPT,
     expand_query_with_context,
 )
-from backend.app.schemas import SourceDocument
-from backend.app.auth import verify_api_key
-from backend.app.s3_client import S3Client, S3DownloadError
-from backend.app.file_inputs import FileInputsClient, FileUploadError
-from backend.app.tools import get_tool_definitions
-from backend.app.tools import validate_s3_path
-from backend.app.session import session_manager
-from backend.app.catalog import CatalogError, get_catalog
-from backend.app.user_profiler import infer_user_profile, PROFILE_INSTRUCTIONS
-from backend.app.config import settings
-from backend.app.greeting import maybe_prepend_greeting
-from backend.app.whatsapp_formatter import format_for_whatsapp
-from backend.app.message_splitter import process_split_messages
 from backend.app.message_buffer import (
     add_to_buffer,
     flush_buffer,
@@ -61,7 +50,17 @@ from backend.app.message_buffer import (
     is_buffering,
     schedule_flush,
 )
-from backend.app.llm_client import _WHATSAPP_SPLIT_INSTRUCTIONS
+from backend.app.message_splitter import process_split_messages
+from backend.app.s3_client import S3Client, S3DownloadError
+from backend.app.schemas import LLMResponse, SourceDocument
+from backend.app.session import session_manager
+from backend.app.tools import get_tool_definitions, validate_s3_path
+from backend.app.user_profiler import PROFILE_INSTRUCTIONS, infer_user_profile
+from backend.app.whatsapp_formatter import format_for_whatsapp
+from rag import (
+    DEFAULT_ESCALATION_MESSAGE,
+    default_detector,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -452,7 +451,7 @@ async def _process_leer_ficha_tecnica(
     llm_client: LLMClient,
     s3_client: S3Client,
     file_inputs_client: FileInputsClient,
-) -> tuple[str, list[str]]:
+) -> tuple[LLMResponse, list[str]]:
     """Process a tool call for reading a technical datasheet.
 
     Args:
@@ -461,7 +460,7 @@ async def _process_leer_ficha_tecnica(
         session_id: The session identifier.
 
     Returns:
-        Tuple of (llm_response_text, list_of_s3_paths_used).
+        Tuple of (LLMResponse, list_of_s3_paths_used).
 
     Raises:
         S3DownloadError: If the PDF cannot be downloaded from S3.
@@ -618,7 +617,9 @@ async def _process_leer_ficha_tecnica(
     filename = ruta_s3.split("/")[-1] if "/" in ruta_s3 else ruta_s3
 
     # Upload PDF to OpenAI
-    file_id = await asyncio.to_thread(file_inputs_client.upload_pdf, pdf_bytes, filename)
+    file_id = await asyncio.to_thread(
+        file_inputs_client.upload_pdf, pdf_bytes, filename
+    )
 
     # Second LLM call with file
     try:
@@ -628,7 +629,7 @@ async def _process_leer_ficha_tecnica(
             file_id=file_id,
             session_id=session_id,
         )
-        return llm_response.text, [ruta_s3]
+        return llm_response, [ruta_s3]
     finally:
         # Clean up: delete the uploaded file
         try:
@@ -646,9 +647,7 @@ async def _process_leer_ficha_tecnica(
 _process_tool_call = _process_leer_ficha_tecnica
 
 
-async def _on_buffer_window_expired(
-    session_id: str, joined_message: str
-) -> None:
+async def _on_buffer_window_expired(session_id: str, joined_message: str) -> None:
     """V1 callback when buffer window expires.
 
     In V1, the client is responsible for sending is_final=true to trigger
@@ -774,6 +773,9 @@ async def chat_endpoint(
             source_documents=[],
             num_sources=0,
             user_profile=inferred_profile,
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
         )
 
     # Expandir query con contexto anafórico
@@ -802,6 +804,11 @@ async def chat_endpoint(
         iteration = 0
         tool_results_summary = ""
         last_output_text = ""
+
+        # Token accumulation across all LLM calls in this request
+        acc_input_tokens = 0
+        acc_output_tokens = 0
+        acc_total_tokens = 0
 
         while iteration < MAX_AGENTIC_ITERATIONS:
             iteration += 1
@@ -853,6 +860,11 @@ async def chat_endpoint(
             last_output_text = llm_response.text
             tool_calls = llm_response.tool_calls
 
+            # Accumulate tokens from this LLM call
+            acc_input_tokens += llm_response.input_tokens
+            acc_output_tokens += llm_response.output_tokens
+            acc_total_tokens += llm_response.total_tokens
+
             if not tool_calls:
                 # No tool call needed - check intent type for escalation
                 content = llm_response.text
@@ -865,6 +877,12 @@ async def chat_endpoint(
                         answer=DEFAULT_ESCALATION_MESSAGE,
                         source_documents=[],
                     )
+                    session_manager.add_token_usage(
+                        session_id,
+                        acc_input_tokens,
+                        acc_output_tokens,
+                        acc_total_tokens,
+                    )
                     return ChatResponse(
                         response=DEFAULT_ESCALATION_MESSAGE,
                         escalate=True,
@@ -873,6 +891,9 @@ async def chat_endpoint(
                         session_id=session_id,
                         source_documents=source_docs,
                         num_sources=len(source_docs),
+                        input_tokens=acc_input_tokens,
+                        output_tokens=acc_output_tokens,
+                        total_tokens=acc_total_tokens,
                     )
 
                 if intent_type == "fuera_de_dominio":
@@ -882,6 +903,12 @@ async def chat_endpoint(
                         answer=OUT_OF_DOMAIN_MESSAGE,
                         source_documents=[],
                     )
+                    session_manager.add_token_usage(
+                        session_id,
+                        acc_input_tokens,
+                        acc_output_tokens,
+                        acc_total_tokens,
+                    )
                     return ChatResponse(
                         response=OUT_OF_DOMAIN_MESSAGE,
                         escalate=False,
@@ -890,6 +917,9 @@ async def chat_endpoint(
                         source_documents=source_docs,
                         num_sources=len(source_docs),
                         user_profile=inferred_profile,
+                        input_tokens=acc_input_tokens,
+                        output_tokens=acc_output_tokens,
+                        total_tokens=acc_total_tokens,
                     )
 
                 # P1: Apply WhatsApp formatting if enabled
@@ -929,6 +959,9 @@ async def chat_endpoint(
                     answer=response_text,
                     source_documents=[],
                 )
+                session_manager.add_token_usage(
+                    session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+                )
                 return ChatResponse(
                     response=response_text,
                     escalate=False,
@@ -939,6 +972,9 @@ async def chat_endpoint(
                     user_profile=inferred_profile,
                     messages=split_messages,
                     delays_ms=split_delays,
+                    input_tokens=acc_input_tokens,
+                    output_tokens=acc_output_tokens,
+                    total_tokens=acc_total_tokens,
                 )
 
             # Process tool calls and collect results
@@ -974,7 +1010,10 @@ async def chat_endpoint(
                         )
 
                     elif function_name == "leer_ficha_tecnica":
-                        final_response, new_source_docs = await _process_leer_ficha_tecnica(
+                        (
+                            ficha_response,
+                            new_source_docs,
+                        ) = await _process_leer_ficha_tecnica(
                             tool_call=tool_call,
                             user_message=expanded_query,
                             session_id=session_id,
@@ -982,6 +1021,11 @@ async def chat_endpoint(
                             s3_client=s3_client,
                             file_inputs_client=file_inputs_client,
                         )
+                        # Accumulate tokens from nested file LLM call
+                        acc_input_tokens += ficha_response.input_tokens
+                        acc_output_tokens += ficha_response.output_tokens
+                        acc_total_tokens += ficha_response.total_tokens
+
                         # Track source documents
                         source_docs.extend(
                             [SourceDocument(ruta=ruta) for ruta in new_source_docs]
@@ -991,7 +1035,7 @@ async def chat_endpoint(
                             {
                                 "tool_call_id": tool_call_id,
                                 "function_name": function_name,
-                                "content": final_response,
+                                "content": ficha_response.text,
                                 "success": True,
                             }
                         )
@@ -1103,6 +1147,9 @@ async def chat_endpoint(
                     answer=error_content,
                     source_documents=[],
                 )
+                session_manager.add_token_usage(
+                    session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+                )
                 return ChatResponse(
                     response=error_content,
                     escalate=False,
@@ -1110,6 +1157,9 @@ async def chat_endpoint(
                     source_documents=source_docs,
                     num_sources=len(source_docs),
                     user_profile=inferred_profile,
+                    input_tokens=acc_input_tokens,
+                    output_tokens=acc_output_tokens,
+                    total_tokens=acc_total_tokens,
                 )
 
             # Build tool results summary for next iteration
@@ -1140,6 +1190,9 @@ async def chat_endpoint(
                 answer=DEFAULT_ESCALATION_MESSAGE,
                 source_documents=[],
             )
+            session_manager.add_token_usage(
+                session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+            )
             return ChatResponse(
                 response=DEFAULT_ESCALATION_MESSAGE,
                 escalate=True,
@@ -1148,8 +1201,14 @@ async def chat_endpoint(
                 session_id=session_id,
                 source_documents=source_docs,
                 num_sources=len(source_docs),
+                input_tokens=acc_input_tokens,
+                output_tokens=acc_output_tokens,
+                total_tokens=acc_total_tokens,
             )
 
+        session_manager.add_token_usage(
+            session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+        )
         return ChatResponse(
             response=(
                 "Se alcanzó el límite de iteraciones. Por favor, reformula "
@@ -1161,6 +1220,9 @@ async def chat_endpoint(
             source_documents=source_docs,
             num_sources=len(source_docs),
             user_profile=inferred_profile,
+            input_tokens=acc_input_tokens,
+            output_tokens=acc_output_tokens,
+            total_tokens=acc_total_tokens,
         )
 
     except LLMServiceError as e:

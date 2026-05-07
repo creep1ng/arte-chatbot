@@ -868,6 +868,159 @@ class TestAgenticLoopBehavior:
         assert data["response"] == "Información obtenida directamente"
 
 
+class TestTokenAccumulation:
+    """Tests verifying token accumulation across the agentic loop."""
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_single_call_tokens_in_chat_response(self, mock_llm: MagicMock) -> None:
+        """Test that a single LLM call populates token fields in ChatResponse."""
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Respuesta simple",
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+        )
+
+        response = client.post(
+            "/chat",
+            json={"message": "¿Qué es un panel solar?", "session_id": "tok-s1"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["input_tokens"] == 100
+        assert data["output_tokens"] == 50
+        assert data["total_tokens"] == 150
+
+    @patch("backend.main.get_catalog")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_multi_iteration_tokens_accumulate(self, mock_llm: MagicMock, mock_get_catalog: MagicMock) -> None:
+        """Test that tokens accumulate across multiple agentic loop iterations."""
+        buscar_tool_call = {
+            "id": "call_buscar",
+            "type": "function",
+            "function": {
+                "name": "buscar_producto",
+                "arguments": json.dumps({"categoria": "paneles"}),
+            },
+        }
+
+        # First call: 100 in, 50 out (with tool call)
+        # Second call: 200 in, 80 out (final response)
+        mock_llm.side_effect = [
+            make_llm_response(text="", tool_calls=[buscar_tool_call], input_tokens=100, output_tokens=50, total_tokens=150),
+            make_llm_response(text="[INTENT: FAQ] Resultado de búsqueda", input_tokens=200, output_tokens=80, total_tokens=280),
+        ]
+        mock_catalog = MagicMock()
+        mock_catalog.search.return_value = []
+        mock_get_catalog.return_value = mock_catalog
+
+        response = client.post(
+            "/chat",
+            json={"message": "Busca paneles", "session_id": "tok-s2"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["input_tokens"] == 300  # 100 + 200
+        assert data["output_tokens"] == 130  # 50 + 80
+        assert data["total_tokens"] == 430  # 150 + 280
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.s3_client")
+    @patch("backend.main.file_inputs_client")
+    def test_nested_file_tokens_propagate(
+        self,
+        mock_file_inputs: MagicMock,
+        mock_s3: MagicMock,
+        mock_llm: MagicMock,
+    ) -> None:
+        """Test that tokens from nested get_llm_response_with_file propagate."""
+        leer_tool_call = {
+            "id": "call_leer",
+            "type": "function",
+            "function": {
+                "name": "leer_ficha_tecnica",
+                "arguments": json.dumps({"ruta_s3": "paneles/test.pdf"}),
+            },
+        }
+
+        # First call: tool call, 100 in, 50 out
+        tool_response = make_llm_response(
+            text="", tool_calls=[leer_tool_call],
+            input_tokens=100, output_tokens=50, total_tokens=150,
+        )
+        # Final call after tool: 200 in, 80 out
+        final_response = make_llm_response(
+            text="[INTENT: FAQ] Información del panel",
+            input_tokens=200, output_tokens=80, total_tokens=280,
+        )
+
+        mock_llm.side_effect = [tool_response, final_response]
+        mock_s3.download_pdf.return_value = b"%PDF-1.4 test"
+        mock_file_inputs.upload_pdf.return_value = "file-abc"
+        mock_file_inputs.delete_file.return_value = None
+
+        # File LLM call: 300 in, 120 out
+        with patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
+            mock_llm_file.return_value = make_llm_response(
+                text="Contenido ficha",
+                input_tokens=300, output_tokens=120, total_tokens=420,
+            )
+
+            response = client.post(
+                "/chat",
+                json={"message": "Ficha del panel", "session_id": "tok-s3"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        # 100 (main call 1) + 300 (file call) + 200 (main call 2) = 600
+        assert data["input_tokens"] == 600
+        # 50 + 120 + 80 = 250
+        assert data["output_tokens"] == 250
+        # 150 + 420 + 280 = 850
+        assert data["total_tokens"] == 850
+
+    def test_escalation_returns_zero_tokens(self) -> None:
+        """Test that escalation (no LLM call) returns zero tokens."""
+        response = client.post(
+            "/chat",
+            json={"message": "Necesito una cotización", "session_id": "tok-s4"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["escalate"] is True
+        # Escalation happens before any LLM call, so tokens should be 0
+        assert data["input_tokens"] == 0
+        assert data["output_tokens"] == 0
+        assert data["total_tokens"] == 0
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_tokens_accumulate_in_session_manager(self, mock_llm: MagicMock) -> None:
+        """Test that token usage is stored in session_manager."""
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Respuesta",
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+        )
+
+        session_id = "tok-s5"
+        response = client.post(
+            "/chat",
+            json={"message": "Test", "session_id": session_id},
+        )
+
+        assert response.status_code == 200
+        from backend.main import session_manager as sm
+        totals = sm.get_token_totals(session_id)
+        assert totals.input_tokens == 100
+        assert totals.output_tokens == 50
+        assert totals.total_tokens == 150
+
+
 class TestProcessToolCall:
     """Tests for the _process_leer_ficha_tecnica function."""
 
@@ -908,7 +1061,7 @@ class TestProcessToolCall:
                 file_inputs_client=mock_file_inputs,
             )
 
-        assert "460W" in result
+        assert "460W" in result.text
         assert source_docs == ["paneles/jinko.pdf"]
         mock_file_inputs.delete_file.assert_called_once_with("file-xyz789")
 
