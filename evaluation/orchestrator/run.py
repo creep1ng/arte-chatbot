@@ -29,6 +29,7 @@ from evaluation.orchestrator.analyzers import (
     GeneralAnalyzer,
     HallucinationAnalyzer,
     IntentAnalyzer,
+    WhatsAppAnalyzer,
 )
 from evaluation.orchestrator.executor import check_api_health, execute_batch
 from evaluation.orchestrator.settings import orchestrator_settings
@@ -115,6 +116,7 @@ def run_analyzers(raw_results: list[dict[str, object]]) -> dict[str, dict[str, o
         IntentAnalyzer(),
         EscalationAnalyzer(),
         HallucinationAnalyzer(),
+        WhatsAppAnalyzer(),
     ]
 
     analyses = {}
@@ -171,6 +173,7 @@ def print_summary(
         IntentAnalyzer(),
         EscalationAnalyzer(),
         HallucinationAnalyzer(),
+        WhatsAppAnalyzer(),
     ]
 
     for analyzer in analyzers:
