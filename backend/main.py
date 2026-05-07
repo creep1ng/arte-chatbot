@@ -5,6 +5,7 @@ FastAPI server with /health and /chat endpoints.
 
 import asyncio
 import logging
+import random
 
 logging.basicConfig(
     level=logging.INFO,
@@ -270,6 +271,51 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _handle_enviar_mensajes(
+    arguments: dict[str, Any],
+) -> tuple[list[str], list[int]]:
+    """Handle an enviar_mensajes tool call.
+
+    Validates message count (1-4), per-message length (≤1000 chars),
+    and clamps delays to [msg_delay_min_ms, msg_delay_max_ms].
+    Missing delays are filled with random values within range.
+
+    Args:
+        arguments: The parsed tool arguments dict.
+
+    Returns:
+        Tuple of (mensajes, clamped_delays).
+
+    Raises:
+        ValueError: If validation fails.
+    """
+    mensajes = arguments.get("mensajes", [])
+    delays_ms = arguments.get("delays_ms", [])
+
+    if not mensajes:
+        raise ValueError("Se requiere al menos 1 mensaje")
+    if len(mensajes) > 4:
+        raise ValueError("Máximo 4 mensajes permitidos")
+    for i, msg in enumerate(mensajes):
+        if len(msg) > 1000:
+            raise ValueError(
+                f"Mensaje {i + 1} excede 1000 caracteres ({len(msg)})"
+            )
+
+    min_delay = settings.msg_delay_min_ms
+    max_delay = settings.msg_delay_max_ms
+    clamped_delays: list[int] = []
+    for i in range(len(mensajes) - 1):
+        raw_delay = (
+            delays_ms[i]
+            if i < len(delays_ms)
+            else random.randint(min_delay, max_delay)
+        )
+        clamped_delays.append(max(min_delay, min(max_delay, raw_delay)))
+
+    return mensajes, clamped_delays
 
 
 def _handle_buscar_producto_tool(
@@ -737,6 +783,8 @@ async def chat_endpoint(
         iteration = 0
         tool_results_summary = ""
         last_output_text = ""
+        split_messages: list[str] = []
+        split_delays: list[int] = []
 
         while iteration < MAX_AGENTIC_ITERATIONS:
             iteration += 1
@@ -912,6 +960,39 @@ async def chat_endpoint(
                             }
                         )
 
+                    elif function_name == "enviar_mensajes":
+                        try:
+                            mensajes, delays = _handle_enviar_mensajes(arguments)
+                            response_text = "\n\n".join(mensajes)
+                            # Format each message individually if formatter enabled
+                            if settings.whatsapp_formatter_enabled:
+                                mensajes = [
+                                    format_for_whatsapp(m) for m in mensajes
+                                ]
+                                response_text = "\n\n".join(mensajes)
+                            # Set response fields and break (terminal)
+                            split_messages = mensajes
+                            split_delays = delays
+                            break  # Terminal tool
+                        except ValueError as e:
+                            # Return error to LLM and continue loop
+                            logger.warning(
+                                "enviar_mensajes validation error: "
+                                "request_id=%s, session_id=%s, error=%s",
+                                request_id,
+                                session_id,
+                                e,
+                            )
+                            tool_results.append(
+                                {
+                                    "tool_call_id": tool_call_id,
+                                    "function_name": function_name,
+                                    "content": str(e),
+                                    "success": False,
+                                }
+                            )
+                            continue
+
                     else:
                         logger.warning(
                             "Unknown tool called: %s, request_id=%s, session_id=%s",
@@ -1008,6 +1089,10 @@ async def chat_endpoint(
                         }
                     )
 
+            # If enviar_mensajes was called (terminal), break the agentic loop
+            if split_messages:
+                break
+
             # Check if all tools failed - if so, return error response
             if all(not r["success"] for r in tool_results):
                 error_content = "\n".join(
@@ -1037,6 +1122,27 @@ async def chat_endpoint(
                 "Tool results collected: num_results=%d, iteration=%d",
                 len(tool_results),
                 iteration,
+            )
+
+        # If enviar_mensajes produced split messages, return them directly
+        if split_messages:
+            response_text = "\n\n".join(split_messages)
+            session_manager.add_turn(
+                session_id=session_id,
+                question=request.message,
+                answer=response_text,
+                source_documents=[],
+            )
+            return ChatResponse(
+                response=response_text,
+                escalate=False,
+                intent_type="FAQ",
+                session_id=session_id,
+                source_documents=source_docs,
+                num_sources=len(source_docs),
+                user_profile=inferred_profile,
+                messages=split_messages,
+                delays_ms=split_delays,
             )
 
         # Max iterations reached - check if final response indicates escalation

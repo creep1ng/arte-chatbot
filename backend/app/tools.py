@@ -1,10 +1,13 @@
 """Tool definitions for OpenAI function calling in Arte Chatbot.
 
 This module provides the tool schemas for the `leer_ficha_tecnica` function
-that allows the LLM to retrieve and analyze technical datasheets from S3.
+that allows the LLM to retrieve and analyze technical datasheets from S3,
+and `enviar_mensajes` for conversational splitting.
 """
 
 from typing import Any
+
+from backend.app.config import settings
 
 # Valid categories for technical datasheets
 DATASHEET_CATEGORIES = [
@@ -166,7 +169,47 @@ BUSCAR_PRODUCTO_TOOL: dict[str, Any] = {
 }
 
 
-# List of all available tools
+# Tool definition for sending split messages in WhatsApp conversations
+ENVIAR_MENSAJES_TOOL: dict[str, Any] = {
+    "type": "function",
+    "name": "enviar_mensajes",
+    "function": {
+        "name": "enviar_mensajes",
+        "description": (
+            "Divide la respuesta en mensajes cortos para WhatsApp. "
+            "Úsala cuando quieras enviar múltiples mensajes secuenciales "
+            "al usuario. Máximo 4 mensajes, cada uno ≤ 1000 caracteres. "
+            "Para FAQ, usa mensajes de ≤ 300 caracteres."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "mensajes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "description": (
+                        "Lista de mensajes a enviar (máx 4, cada uno ≤ 1000 chars)"
+                    ),
+                },
+                "delays_ms": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": (
+                        "Retraso entre mensajes en milisegundos. "
+                        "Longitud = len(mensajes) - 1. Rango: 3000-5000ms."
+                    ),
+                },
+            },
+            "required": ["mensajes"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+# List of all available tools (base tools, always present)
 AVAILABLE_TOOLS: list[dict[str, Any]] = [
     LEER_FICHA_TECNICA_TOOL,
     BUSCAR_PRODUCTO_TOOL,
@@ -176,7 +219,12 @@ AVAILABLE_TOOLS: list[dict[str, Any]] = [
 def get_tool_definitions() -> list[dict[str, Any]]:
     """Return the list of tool definitions for OpenAI Responses API.
 
+    Conditionally includes enviar_mensajes when split_messages_enabled is True.
+
     Returns:
         List of tool definitions in OpenAI Responses API format.
     """
-    return AVAILABLE_TOOLS
+    tools = [BUSCAR_PRODUCTO_TOOL, LEER_FICHA_TECNICA_TOOL]
+    if settings.split_messages_enabled:
+        tools.append(ENVIAR_MENSAJES_TOOL)
+    return tools

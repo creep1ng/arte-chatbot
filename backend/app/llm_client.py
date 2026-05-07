@@ -99,6 +99,38 @@ DATASHEET_SYSTEM_PROMPT = (
     "estén disponibles."
 )
 
+_WHATSAPP_FORMAT_INSTRUCTIONS = (
+    "\n\n## Formato para WhatsApp\n"
+    "- No uses markdown que WhatsApp no soporte (sin ##, sin **, sin ```, sin []()).\n"
+    "- Usa *texto* para negritas y _texto_ para cursiva (formato nativo de WhatsApp).\n"
+    "- Usa viñetas con • en lugar de - o *.\n"
+    "- Mantén respuestas concisas y fáciles de leer en móvil.\n"
+    "\n"
+    "## División de mensajes (enviar_mensajes)\n"
+    "- Cuando la respuesta sea larga (>500 caracteres), divide en mensajes cortos.\n"
+    "- Usa la herramienta enviar_mensajes para enviar hasta 4 mensajes secuenciales.\n"
+    "- Para preguntas FAQ: mensajes de ≤300 caracteres.\n"
+    "- Para información de productos: mensajes de ≤1000 caracteres.\n"
+    "- Cada mensaje debe ser auto-contenido (tiene sentido por sí solo).\n"
+    "- No repitas información entre mensajes.\n"
+    "- El primer mensaje debe captar la atención; el último debe incluir un cierre o pregunta."
+)
+
+
+def get_system_prompt() -> str:
+    """Build the system prompt with optional WhatsApp instructions.
+
+    Appends WhatsApp formatting and splitting instructions when
+    split_messages_enabled is True.
+
+    Returns:
+        The full system prompt string.
+    """
+    prompt = ARTE_SYSTEM_PROMPT
+    if settings.split_messages_enabled:
+        prompt += _WHATSAPP_FORMAT_INSTRUCTIONS
+    return prompt
+
 
 class LLMServiceError(Exception):
     """Raised when the LLM service returns an error."""
