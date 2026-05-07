@@ -51,6 +51,7 @@ from backend.app.session import session_manager
 from backend.app.catalog import CatalogError, get_catalog
 from backend.app.user_profiler import infer_user_profile, PROFILE_INSTRUCTIONS
 from backend.app.config import settings
+from backend.app.greeting import maybe_prepend_greeting
 from backend.app.whatsapp_formatter import format_for_whatsapp
 
 logger = logging.getLogger(__name__)
@@ -830,6 +831,14 @@ async def chat_endpoint(
                 response_text = cleaned_content
                 if settings.whatsapp_formatter_enabled:
                     response_text = format_for_whatsapp(cleaned_content)
+
+                # P3: Prepend greeting on first contact if enabled
+                response_text = maybe_prepend_greeting(
+                    session_id=session_id,
+                    response_text=response_text,
+                    intent_type=intent_type,
+                    escalate=False,
+                )
 
                 session_manager.add_turn(
                     session_id=session_id,
