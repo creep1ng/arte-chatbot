@@ -118,6 +118,20 @@ class Settings(BaseSettings):
         description="Buffer window in seconds for multi-message accumulation",
     )
 
+    # Conversation Logging
+    conversation_logging_enabled: bool = Field(
+        default=False,
+        description="Enable async conversation logging to S3",
+    )
+    conversation_log_prefix: str = Field(
+        default="conversations",
+        description="S3 key prefix for conversation log files",
+    )
+    git_commit_hash: str = Field(
+        default="",
+        description="Git commit hash for traceability in conversation logs",
+    )
+
     @model_validator(mode="after")
     def _validate_delay_bounds(self) -> "Settings":
         """Ensure msg_delay_min_ms <= msg_delay_max_ms."""
