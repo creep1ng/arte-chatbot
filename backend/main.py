@@ -54,6 +54,13 @@ from backend.app.config import settings
 from backend.app.greeting import maybe_prepend_greeting
 from backend.app.whatsapp_formatter import format_for_whatsapp
 from backend.app.message_splitter import process_split_messages
+from backend.app.message_buffer import (
+    add_to_buffer,
+    flush_buffer,
+    get_buffer_count,
+    is_buffering,
+    schedule_flush,
+)
 from backend.app.llm_client import _WHATSAPP_SPLIT_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
@@ -636,6 +643,23 @@ async def _process_leer_ficha_tecnica(
 _process_tool_call = _process_leer_ficha_tecnica
 
 
+async def _on_buffer_window_expired(
+    session_id: str, joined_message: str
+) -> None:
+    """V1 callback when buffer window expires.
+
+    In V1, the client is responsible for sending is_final=true to trigger
+    processing. When the window expires without is_final, buffered messages
+    are discarded. This is acceptable for V1 — the client must cooperate.
+    """
+    logger.info(
+        "Buffer window expired for session %s: %d chars accumulated, "
+        "discarded (V1 — client must send is_final=true)",
+        session_id,
+        len(joined_message),
+    )
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(
     request: ChatRequest,
@@ -655,6 +679,38 @@ async def chat_endpoint(
     """
     session_id = request.session_id or str(uuid.uuid4())
     request_id = str(uuid.uuid4())
+
+    # P4: Multi-message buffer — intercept before normal processing
+    if settings.multi_message_buffer_enabled:
+        current_count = get_buffer_count(session_id)
+
+        if request.is_final or current_count >= 4:
+            # is_final or overflow → flush buffer + current message, process.
+            # add_to_buffer returns the joined text on overflow (>= max_messages),
+            # or None if below max (is_final case — flush manually).
+            overflow_result = await add_to_buffer(session_id, request.message)
+            joined = overflow_result or await flush_buffer(session_id)
+            if joined:
+                # Replace message with joined buffer for normal processing
+                request = ChatRequest(
+                    message=joined,
+                    session_id=session_id,
+                    is_final=request.is_final,
+                )
+        else:
+            # First message or already buffering → buffer and return 202
+            await add_to_buffer(session_id, request.message)
+            schedule_flush(
+                session_id,
+                settings.buffer_window_seconds,
+                _on_buffer_window_expired,
+            )
+            return JSONResponse(
+                status_code=202,
+                content=BufferingResponse(
+                    session_id=session_id,
+                ).model_dump(),
+            )
 
     logger.debug(
         "Incoming request: request_id=%s, session_id=%s, message_preview=%s",
