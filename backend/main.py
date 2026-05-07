@@ -5,6 +5,7 @@ FastAPI server with /health and /chat endpoints.
 
 import asyncio
 import logging
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,6 +15,7 @@ logging.basicConfig(
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
 # Load environment variables from .env file
@@ -34,6 +36,7 @@ from pydantic import BaseModel, Field
 from backend.app.auth import verify_api_key
 from backend.app.catalog import CatalogError, get_catalog
 from backend.app.config import settings
+from backend.app.conversation_logger import ConversationLogEntry, ConversationLogger
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.greeting import maybe_prepend_greeting
 from backend.app.llm_client import (
@@ -161,6 +164,15 @@ llm_client = LLMClient()
 s3_client = S3Client()
 file_inputs_client = FileInputsClient()
 
+# Conversation logger (lazy, gated by settings flag)
+conversation_logger: Optional[ConversationLogger] = None
+if settings.conversation_logging_enabled:
+    conversation_logger = ConversationLogger(
+        s3_client=s3_client,
+        bucket=settings.aws_bucket_name,
+        prefix=settings.conversation_log_prefix,
+    )
+
 
 def get_llm_client() -> LLMClient:
     """Dependency that provides a LLMClient instance."""
@@ -190,6 +202,43 @@ def get_catalog_search() -> Any:
 
 
 MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
+
+
+def _fire_conversation_log(
+    session_id: str,
+    user_message: str,
+    bot_response: str,
+    intent_type: str,
+    escalate: bool,
+    source_documents: list[str],
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    response_time_ms: float,
+    user_profile: Optional[str] = None,
+) -> None:
+    """Fire-and-forget conversation log. Never blocks or raises."""
+    if conversation_logger is None:
+        return
+    turn_number = len(session_manager.get_history(session_id))
+    entry = ConversationLogEntry(
+        session_id=session_id,
+        turn_number=turn_number,
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        user_message=user_message,
+        bot_response=bot_response,
+        intent_type=intent_type,
+        escalate=escalate,
+        source_documents=source_documents,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        response_time_ms=response_time_ms,
+        model=llm_client.model,
+        git_commit_hash=settings.git_commit_hash,
+        user_profile=user_profile,
+    )
+    asyncio.create_task(conversation_logger.log_turn(entry))
 
 
 class ChatRequest(BaseModel):
@@ -681,6 +730,7 @@ async def chat_endpoint(
     """
     session_id = request.session_id or str(uuid.uuid4())
     request_id = str(uuid.uuid4())
+    request_start = time.time()
 
     # P4: Multi-message buffer — intercept before normal processing
     if settings.multi_message_buffer_enabled:
@@ -763,6 +813,20 @@ async def chat_endpoint(
             question=request.message,
             answer=DEFAULT_ESCALATION_MESSAGE,
             source_documents=[],
+        )
+        response_time_ms = (time.time() - request_start) * 1000
+        _fire_conversation_log(
+            session_id=session_id,
+            user_message=request.message,
+            bot_response=DEFAULT_ESCALATION_MESSAGE,
+            intent_type="escalate_technical",
+            escalate=True,
+            source_documents=[],
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+            response_time_ms=response_time_ms,
+            user_profile=inferred_profile,
         )
         return ChatResponse(
             response=DEFAULT_ESCALATION_MESSAGE,
@@ -883,6 +947,20 @@ async def chat_endpoint(
                         acc_output_tokens,
                         acc_total_tokens,
                     )
+                    response_time_ms = (time.time() - request_start) * 1000
+                    _fire_conversation_log(
+                        session_id=session_id,
+                        user_message=request.message,
+                        bot_response=DEFAULT_ESCALATION_MESSAGE,
+                        intent_type=intent_type,
+                        escalate=True,
+                        source_documents=[s.ruta for s in source_docs],
+                        input_tokens=acc_input_tokens,
+                        output_tokens=acc_output_tokens,
+                        total_tokens=acc_total_tokens,
+                        response_time_ms=response_time_ms,
+                        user_profile=inferred_profile,
+                    )
                     return ChatResponse(
                         response=DEFAULT_ESCALATION_MESSAGE,
                         escalate=True,
@@ -908,6 +986,20 @@ async def chat_endpoint(
                         acc_input_tokens,
                         acc_output_tokens,
                         acc_total_tokens,
+                    )
+                    response_time_ms = (time.time() - request_start) * 1000
+                    _fire_conversation_log(
+                        session_id=session_id,
+                        user_message=request.message,
+                        bot_response=OUT_OF_DOMAIN_MESSAGE,
+                        intent_type=intent_type,
+                        escalate=False,
+                        source_documents=[],
+                        input_tokens=acc_input_tokens,
+                        output_tokens=acc_output_tokens,
+                        total_tokens=acc_total_tokens,
+                        response_time_ms=response_time_ms,
+                        user_profile=inferred_profile,
                     )
                     return ChatResponse(
                         response=OUT_OF_DOMAIN_MESSAGE,
@@ -961,6 +1053,20 @@ async def chat_endpoint(
                 )
                 session_manager.add_token_usage(
                     session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+                )
+                response_time_ms = (time.time() - request_start) * 1000
+                _fire_conversation_log(
+                    session_id=session_id,
+                    user_message=request.message,
+                    bot_response=response_text,
+                    intent_type=intent_type,
+                    escalate=False,
+                    source_documents=[s.ruta for s in source_docs],
+                    input_tokens=acc_input_tokens,
+                    output_tokens=acc_output_tokens,
+                    total_tokens=acc_total_tokens,
+                    response_time_ms=response_time_ms,
+                    user_profile=inferred_profile,
                 )
                 return ChatResponse(
                     response=response_text,
@@ -1150,6 +1256,20 @@ async def chat_endpoint(
                 session_manager.add_token_usage(
                     session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
                 )
+                response_time_ms = (time.time() - request_start) * 1000
+                _fire_conversation_log(
+                    session_id=session_id,
+                    user_message=request.message,
+                    bot_response=error_content,
+                    intent_type="error_tool_failure",
+                    escalate=False,
+                    source_documents=[s.ruta for s in source_docs],
+                    input_tokens=acc_input_tokens,
+                    output_tokens=acc_output_tokens,
+                    total_tokens=acc_total_tokens,
+                    response_time_ms=response_time_ms,
+                    user_profile=inferred_profile,
+                )
                 return ChatResponse(
                     response=error_content,
                     escalate=False,
@@ -1193,6 +1313,20 @@ async def chat_endpoint(
             session_manager.add_token_usage(
                 session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
             )
+            response_time_ms = (time.time() - request_start) * 1000
+            _fire_conversation_log(
+                session_id=session_id,
+                user_message=request.message,
+                bot_response=DEFAULT_ESCALATION_MESSAGE,
+                intent_type=intent_type,
+                escalate=True,
+                source_documents=[s.ruta for s in source_docs],
+                input_tokens=acc_input_tokens,
+                output_tokens=acc_output_tokens,
+                total_tokens=acc_total_tokens,
+                response_time_ms=response_time_ms,
+                user_profile=inferred_profile,
+            )
             return ChatResponse(
                 response=DEFAULT_ESCALATION_MESSAGE,
                 escalate=True,
@@ -1208,6 +1342,23 @@ async def chat_endpoint(
 
         session_manager.add_token_usage(
             session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+        )
+        response_time_ms = (time.time() - request_start) * 1000
+        _fire_conversation_log(
+            session_id=session_id,
+            user_message=request.message,
+            bot_response=(
+                "Se alcanzó el límite de iteraciones. Por favor, reformula "
+                "tu pregunta o contacta al equipo de ventas."
+            ),
+            intent_type=intent_type,
+            escalate=False,
+            source_documents=[s.ruta for s in source_docs],
+            input_tokens=acc_input_tokens,
+            output_tokens=acc_output_tokens,
+            total_tokens=acc_total_tokens,
+            response_time_ms=response_time_ms,
+            user_profile=inferred_profile,
         )
         return ChatResponse(
             response=(

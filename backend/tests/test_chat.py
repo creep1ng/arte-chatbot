@@ -7,7 +7,7 @@ import os
 import uuid
 import pytest
 import requests
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
 from backend.main import app, llm_client, s3_client, file_inputs_client
@@ -1139,3 +1139,169 @@ class TestBuscarProductoTool:
             tipo="mono",
             modelo_contiene=None,
         )
+
+
+# ---------------------------------------------------------------------------
+# Conversation Logging Wiring Tests
+# ---------------------------------------------------------------------------
+
+
+class TestConversationLoggingWiring:
+    """Tests that conversation_logger.log_turn is called on each return path."""
+
+    @patch("backend.main.conversation_logger")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_log_turn_called_on_normal_response(
+        self, mock_llm: MagicMock, mock_conv_logger: MagicMock
+    ) -> None:
+        """Conversation logger is called for normal FAQ response."""
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Los paneles son eficientes.",
+            input_tokens=50,
+            output_tokens=30,
+            total_tokens=80,
+        )
+        mock_conv_logger.log_turn = AsyncMock()
+
+        response = client.post(
+            "/chat", json={"message": "¿Son buenos los paneles?"}
+        )
+        assert response.status_code == 200
+
+        # log_turn should have been called
+        mock_conv_logger.log_turn.assert_called_once()
+        call_args = mock_conv_logger.log_turn.call_args
+        entry = call_args[0][0]
+        assert entry.session_id is not None
+        assert entry.turn_number >= 1
+        assert entry.intent_type == "FAQ"
+        assert entry.escalate is False
+
+    @patch("backend.main.conversation_logger")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_log_turn_called_on_escalation(
+        self, mock_llm: MagicMock, mock_conv_logger: MagicMock
+    ) -> None:
+        """Conversation logger is called for escalation response."""
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: escalate_technical] Un técnico te contactará.",
+        )
+        mock_conv_logger.log_turn = AsyncMock()
+
+        response = client.post(
+            "/chat", json={"message": "Tengo un problema con la garantía"}
+        )
+        assert response.status_code == 200
+
+        mock_conv_logger.log_turn.assert_called_once()
+        entry = mock_conv_logger.log_turn.call_args[0][0]
+        assert entry.escalate is True
+        assert entry.intent_type == "escalate_technical"
+
+    @patch("backend.main.conversation_logger")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_log_turn_called_on_fuera_de_dominio(
+        self, mock_llm: MagicMock, mock_conv_logger: MagicMock
+    ) -> None:
+        """Conversation logger is called for out-of-domain response."""
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: fuera_de_dominio] No puedo responder eso.",
+        )
+        mock_conv_logger.log_turn = AsyncMock()
+
+        response = client.post(
+            "/chat", json={"message": "¿Cuál es el mejor restaurante?"}
+        )
+        assert response.status_code == 200
+
+        mock_conv_logger.log_turn.assert_called_once()
+        entry = mock_conv_logger.log_turn.call_args[0][0]
+        assert entry.intent_type == "fuera_de_dominio"
+
+    @patch("backend.main.conversation_logger")
+    def test_log_turn_called_on_early_escalation(
+        self, mock_conv_logger: MagicMock
+    ) -> None:
+        """Conversation logger is called for early escalation (before LLM call)."""
+        mock_conv_logger.log_turn = AsyncMock()
+
+        response = client.post(
+            "/chat", json={"message": "Necesito una cotización de 100 paneles"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["escalate"] is True
+
+        mock_conv_logger.log_turn.assert_called_once()
+        entry = mock_conv_logger.log_turn.call_args[0][0]
+        assert entry.escalate is True
+
+    @patch("backend.main.conversation_logger")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_log_turn_entry_has_token_counts(
+        self, mock_llm: MagicMock, mock_conv_logger: MagicMock
+    ) -> None:
+        """Log entry contains accumulated token counts."""
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Respuesta.",
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+        )
+        mock_conv_logger.log_turn = AsyncMock()
+
+        response = client.post("/chat", json={"message": "test"})
+        assert response.status_code == 200
+
+        entry = mock_conv_logger.log_turn.call_args[0][0]
+        assert entry.input_tokens == 100
+        assert entry.output_tokens == 50
+        assert entry.total_tokens == 150
+
+    @patch("backend.main.conversation_logger")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_log_turn_entry_has_response_time(
+        self, mock_llm: MagicMock, mock_conv_logger: MagicMock
+    ) -> None:
+        """Log entry contains response_time_ms as a positive number."""
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Respuesta.",
+        )
+        mock_conv_logger.log_turn = AsyncMock()
+
+        response = client.post("/chat", json={"message": "test"})
+        assert response.status_code == 200
+
+        entry = mock_conv_logger.log_turn.call_args[0][0]
+        assert entry.response_time_ms >= 0
+
+    @patch("backend.main.conversation_logger")
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_log_turn_entry_has_model(
+        self, mock_llm: MagicMock, mock_conv_logger: MagicMock
+    ) -> None:
+        """Log entry contains the LLM model identifier."""
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Respuesta.",
+        )
+        mock_conv_logger.log_turn = AsyncMock()
+
+        response = client.post("/chat", json={"message": "test"})
+        assert response.status_code == 200
+
+        entry = mock_conv_logger.log_turn.call_args[0][0]
+        assert isinstance(entry.model, str)
+        assert len(entry.model) > 0
+
+    @patch("backend.main.conversation_logger", None)
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
+    def test_no_error_when_logger_is_none(
+        self, mock_llm: MagicMock
+    ) -> None:
+        """Chat endpoint works normally when conversation_logger is None."""
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Respuesta.",
+        )
+
+        response = client.post("/chat", json={"message": "test"})
+        assert response.status_code == 200
