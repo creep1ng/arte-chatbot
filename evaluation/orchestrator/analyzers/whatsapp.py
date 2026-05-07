@@ -26,7 +26,27 @@ DEFAULT_FORBIDDEN_PATTERNS: list[str] = [
     r"^\s*\d+\.\s+.+",        # Ordered list items at line start
     r">\s+.+",                # Blockquotes at line start
     r"\[.+?\]\(https?://\S+\)",  # Markdown links: [text](url)
+    # GFM table detection: any row with pipes + separator row with :--- alignment
+    # Handles any number of columns, optional leading/trailing pipes, alignment markers
+    r"(?:^|\n)\|?[^\n|]*(?:\|[^\n|]+)+\|?\s*\n\|?[\s:]*[-]{3,}[\s:]*(?:\|[\s:]*[-]{3,}[\s:]*)*\|?",
 ]
+
+# Incoherent response patterns — regex-based (not exact string match).
+# Used by _is_coherent_response() and _is_correctly_buffered().
+_INCOHERENT_PATTERNS: list[str] = [
+    r"\berror\b",
+    r"no (entiendo|comprendo|puedo (responder|ayudar))",
+    r"lo siento,?\s+no",
+    r"no tengo (información|datos|acceso)",
+    r"no (estoy|estamos) (seguro|capaz)",
+    r"fuera de (mi )?(alcance|dominio)",
+    r"no aplica",
+    r"sin resultados",
+]
+
+# Minimum keyword overlap ratio between query and response.
+_KEYWORD_OVERLAP_THRESHOLD = 0.10  # 10%
+_BUFFER_KEYWORD_OVERLAP_THRESHOLD = 0.05  # 5% (more lenient for multi-message input)
 
 # Greeting patterns (Spanish) that indicate a proper first-contact greeting.
 GREETING_PATTERNS: list[str] = [
@@ -281,22 +301,29 @@ class WhatsAppAnalyzer(BaseAnalyzer):
     ) -> bool:
         """Heuristic check for response coherence.
 
-        A coherent response is non-empty, has reasonable length, and does
-        not contain obvious signs of fragmentation or error.
+        A coherent response is non-empty, has reasonable length, does
+        not contain obvious incoherent signals, and has keyword overlap
+        with the original query.
         """
         if not response or len(response.strip()) < 10:
             return False
 
-        # Response should not be just an error or acknowledgment
-        lower = response.lower()
-        incoherent_signals = [
-            "error",
-            "no entiendo",
-            "no puedo responder",
-        ]
-        for signal in incoherent_signals:
-            if lower.strip() == signal:
+        # Check for incoherent signal patterns (substring, not exact match)
+        lower = response.lower().strip()
+        for pattern in _INCOHERENT_PATTERNS:
+            if re.search(pattern, lower):
                 return False
+
+        # Keyword overlap: response should share ≥10% of significant
+        # query words (≥4 chars) to be considered relevant.
+        query = result.get("query", "")
+        if query:
+            query_words = set(re.findall(r'\w{4,}', query.lower()))
+            response_words = set(re.findall(r'\w{4,}', response.lower()))
+            if query_words:
+                overlap = len(query_words & response_words) / len(query_words)
+                if overlap < _KEYWORD_OVERLAP_THRESHOLD:
+                    return False
 
         return True
 
@@ -306,8 +333,11 @@ class WhatsAppAnalyzer(BaseAnalyzer):
     ) -> bool:
         """Heuristic check for correct buffering and joining.
 
-        A correctly buffered response is non-empty, has no errors, and
-        addresses content from the multi-message input.
+        A correctly buffered response:
+        - Is non-empty and non-trivial
+        - Does not contain incoherent signal patterns
+        - Has keyword overlap with the combined input messages
+        - Is proportional to input complexity
         """
         if not response or not response.strip():
             return False
@@ -315,9 +345,34 @@ class WhatsAppAnalyzer(BaseAnalyzer):
         if not input_messages:
             return False
 
-        # Minimum quality: response exists, is non-trivial, and
-        # input_messages were successfully consumed (non-empty list).
-        return len(response.strip()) > 10 and len(input_messages) > 0
+        response_clean = response.strip()
+
+        # Minimum length
+        if len(response_clean) < 10:
+            return False
+
+        # Check for incoherent patterns
+        lower = response_clean.lower()
+        for pattern in _INCOHERENT_PATTERNS:
+            if re.search(pattern, lower):
+                return False
+
+        # Keyword overlap with input messages
+        all_input = " ".join(input_messages).lower()
+        input_keywords = set(re.findall(r'\w{4,}', all_input))
+        response_keywords = set(re.findall(r'\w{4,}', lower))
+
+        if input_keywords:
+            overlap = len(input_keywords & response_keywords) / len(input_keywords)
+            if overlap < _BUFFER_KEYWORD_OVERLAP_THRESHOLD:
+                return False
+
+        # Proportionality: complex input → non-trivial response
+        input_len = sum(len(m) for m in input_messages)
+        if input_len > 200 and len(response_clean) < 20:
+            return False
+
+        return True
 
     # ------------------------------------------------------------------
     # Summary
