@@ -209,11 +209,14 @@ ENVIAR_MENSAJES_TOOL: dict[str, Any] = {
 }
 
 
-# List of all available tools (base tools, always present)
-AVAILABLE_TOOLS: list[dict[str, Any]] = [
+# List of base tools - always present regardless of feature flags
+BASE_TOOLS: list[dict[str, Any]] = [
     LEER_FICHA_TECNICA_TOOL,
     BUSCAR_PRODUCTO_TOOL,
 ]
+
+# Backward compatibility alias
+AVAILABLE_TOOLS = BASE_TOOLS
 
 
 def get_tool_definitions() -> list[dict[str, Any]]:

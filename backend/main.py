@@ -1133,10 +1133,11 @@ async def chat_endpoint(
                 answer=response_text,
                 source_documents=[],
             )
+            resolved_intent_type, _ = _extract_intent_type(last_output_text)
             return ChatResponse(
                 response=response_text,
-                escalate=False,
-                intent_type="FAQ",
+                escalate=resolved_intent_type in ESCALATE_INTENTS,
+                intent_type=resolved_intent_type,
                 session_id=session_id,
                 source_documents=source_docs,
                 num_sources=len(source_docs),
