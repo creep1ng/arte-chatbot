@@ -208,6 +208,9 @@ class ChatResponse(BaseModel):
     user_profile: Optional[str] = None
     messages: list[str] = Field(default_factory=list)
     delays_ms: list[int] = Field(default_factory=list)
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
 
 
 class BufferingResponse(BaseModel):

@@ -265,6 +265,42 @@ class TestChatEndpointUnit:
         schema = ChatResponse.model_json_schema()
         assert "intent_type" in schema["properties"]
 
+    def test_chat_response_schema_includes_token_fields(self) -> None:
+        """Test that ChatResponse schema includes optional token fields."""
+        from backend.main import ChatResponse
+        schema = ChatResponse.model_json_schema()
+        props = schema["properties"]
+        assert "input_tokens" in props
+        assert "output_tokens" in props
+        assert "total_tokens" in props
+
+    def test_chat_response_token_fields_default_to_none(self) -> None:
+        """Test that ChatResponse token fields default to None for backward compat."""
+        from backend.main import ChatResponse
+
+        resp = ChatResponse(
+            response="test",
+            session_id="s1",
+        )
+        assert resp.input_tokens is None
+        assert resp.output_tokens is None
+        assert resp.total_tokens is None
+
+    def test_chat_response_token_fields_accept_values(self) -> None:
+        """Test that ChatResponse accepts explicit token values."""
+        from backend.main import ChatResponse
+
+        resp = ChatResponse(
+            response="test",
+            session_id="s1",
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+        )
+        assert resp.input_tokens == 100
+        assert resp.output_tokens == 50
+        assert resp.total_tokens == 150
+
 
 # Integration Tests
 
