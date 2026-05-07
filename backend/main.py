@@ -619,13 +619,13 @@ async def _process_leer_ficha_tecnica(
 
     # Second LLM call with file
     try:
-        response = await asyncio.to_thread(
+        llm_response = await asyncio.to_thread(
             llm_client.get_llm_response_with_file,
             message=user_message,
             file_id=file_id,
             session_id=session_id,
         )
-        return response, [ruta_s3]
+        return llm_response.text, [ruta_s3]
     finally:
         # Clean up: delete the uploaded file
         try:
