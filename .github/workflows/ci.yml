@@ -184,16 +184,10 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
-      - name: Debug AWS env vars
-        run: |
-          echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-NOT SET}"
-          echo "AWS_SESSION_TOKEN set: $(test -n "${AWS_SESSION_TOKEN:-}" && echo yes || echo no)"
-
       - name: Run evaluation harness
         env:
           EVAL_S3_PREFIX: evaluation/ci/${{ github.ref_name }}/${{ github.run_id }}/
         run: |
-          uv run python -c 'import os; print("Python AWS_ACCESS_KEY_ID:", os.getenv("AWS_ACCESS_KEY_ID", "NOT SET")[:8] if os.getenv("AWS_ACCESS_KEY_ID") else "NOT SET"); print("Python AWS_SESSION_TOKEN:", "SET" if os.getenv("AWS_SESSION_TOKEN") else "NOT SET")'
           uv run python -m evaluation.harness.run
 
       - name: Upload evaluation results

@@ -94,6 +94,7 @@ def upload_results(output_dir: Path, prefix: str) -> list[str]:
     """
     access_key = os.getenv("AWS_ACCESS_KEY_ID")
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    session_token = os.getenv("AWS_SESSION_TOKEN")
 
     if not access_key or not secret_key:
         logger.warning("AWS credentials not found, skipping S3 upload")
@@ -103,6 +104,7 @@ def upload_results(output_dir: Path, prefix: str) -> list[str]:
         "s3",
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
+        aws_session_token=session_token,
         region_name=AWS_REGION,
     )
     uploaded: list[str] = []
@@ -152,12 +154,14 @@ def upload_results_with_metadata(
 
     access_key = os.getenv("AWS_ACCESS_KEY_ID")
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    session_token = os.getenv("AWS_SESSION_TOKEN")
 
     if access_key and secret_key:
         s3_client = boto3.client(
             "s3",
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
+            aws_session_token=session_token,
             region_name=AWS_REGION,
         )
         s3_key = f"{prefix.rstrip('/')}/metadata.json"
