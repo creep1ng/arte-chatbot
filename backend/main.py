@@ -785,12 +785,12 @@ async def chat_endpoint(
                 context=context_string,
             )
 
-            last_output_text = llm_response.get("output_text", "")
-            tool_calls = llm_response.get("tool_calls", [])
+            last_output_text = llm_response.text
+            tool_calls = llm_response.tool_calls
 
             if not tool_calls:
                 # No tool call needed - check intent type for escalation
-                content = llm_response.get("output_text", "")
+                content = llm_response.text
                 intent_type, cleaned_content = _extract_intent_type(content)
 
                 if intent_type in ESCALATE_INTENTS:
