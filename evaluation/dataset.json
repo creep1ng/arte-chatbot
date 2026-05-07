@@ -198,5 +198,70 @@
     "expected_intent_type": "FAQ",
     "should_escalate": false,
     "complexity": "low"
+  },
+  {
+    "id": "wa001",
+    "query": "¿Qué garantía tienen los paneles solares que venden y cuál es el proceso para hacer efectiva la garantía?",
+    "expected_intent": "FAQ",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "medium",
+    "expected_message_count": 3,
+    "forbidden_patterns": []
+  },
+  {
+    "id": "wa002",
+    "query": "Necesito información completa sobre el panel JA Solar JAM72S30-545/MR incluyendo potencia, eficiencia, dimensiones, peso y garantía",
+    "expected_intent": "technical_specs",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "medium",
+    "expected_message_count": 2,
+    "forbidden_patterns": []
+  },
+  {
+    "id": "wa003",
+    "query": "Mi inversor Huawei está mostrando un error SUN_03 y no está inyectando energía a la red, necesito soporte técnico urgente",
+    "expected_intent": "escalate_technical",
+    "expected_intent_type": "escalate_technical",
+    "should_escalate": true,
+    "complexity": "high",
+    "expected_message_count": 1,
+    "forbidden_patterns": []
+  },
+  {
+    "id": "wa004",
+    "query": "Hola, me recomendaron Arte Soluciones para instalar paneles solares en mi empresa",
+    "expected_intent": "FAQ",
+    "expected_intent_type": "FAQ",
+    "should_escalate": false,
+    "complexity": "low",
+    "expected_greeting": true,
+    "forbidden_patterns": []
+  },
+  {
+    "id": "wa005",
+    "query": "Tengo paneles solares de 500W y un inversor de 10kW",
+    "expected_intent": "technical_support",
+    "expected_intent_type": "product_info",
+    "should_escalate": false,
+    "complexity": "medium",
+    "input_messages": [
+      "Hola, buenas tardes",
+      "Tengo una consulta sobre mi sistema solar",
+      "Tengo paneles solares de 500W y un inversor de 10kW",
+      "¿Qué capacidad de batería me recomiendan?"
+    ],
+    "forbidden_patterns": []
+  },
+  {
+    "id": "wa006",
+    "query": "Quiero saber los precios de los paneles de 550W y si tienen stock disponible para entrega inmediata",
+    "expected_intent": "escalate_quote",
+    "expected_intent_type": "escalate_quote",
+    "should_escalate": true,
+    "complexity": "medium",
+    "expected_message_count": 2,
+    "forbidden_patterns": ["\\|[^|]+\\|[^|]+\\|"]
   }
 ]

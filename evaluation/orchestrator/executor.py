@@ -54,6 +54,11 @@ async def execute_single_query(
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "num_sources": 0,
         "source_documents": [],
+        # WhatsApp-specific fields (P5 evaluation)
+        "input_messages": query_data.get("input_messages", []),
+        "expected_greeting": query_data.get("expected_greeting"),
+        "expected_message_count": query_data.get("expected_message_count"),
+        "forbidden_patterns": query_data.get("forbidden_patterns", []),
     }
 
     try:
