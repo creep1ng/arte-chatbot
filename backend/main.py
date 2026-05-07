@@ -53,6 +53,8 @@ from backend.app.user_profiler import infer_user_profile, PROFILE_INSTRUCTIONS
 from backend.app.config import settings
 from backend.app.greeting import maybe_prepend_greeting
 from backend.app.whatsapp_formatter import format_for_whatsapp
+from backend.app.message_splitter import process_split_messages
+from backend.app.llm_client import _WHATSAPP_SPLIT_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -683,6 +685,10 @@ async def chat_endpoint(
     )
     system_prompt_with_profile = f"{ARTE_SYSTEM_PROMPT}\n\n## Adaptación al perfil del usuario\n{profile_instructions}"
 
+    # P2: Append WhatsApp split instructions if enabled
+    if settings.split_messages_enabled:
+        system_prompt_with_profile += _WHATSAPP_SPLIT_INSTRUCTIONS
+
     # Detect escalation
     escalation_result = default_detector.detect(request.message)
 
@@ -832,14 +838,31 @@ async def chat_endpoint(
                 if settings.whatsapp_formatter_enabled:
                     response_text = format_for_whatsapp(cleaned_content)
 
+                # P2: Prompt-based message splitting
+                split_messages, split_delays = process_split_messages(
+                    text=response_text,
+                    intent_type=intent_type,
+                    llm_regenerate_fn=None,  # Regeneration not implemented yet
+                )
+
                 # P3: Prepend greeting on first contact if enabled
                 escalate = intent_type in ESCALATE_INTENTS
-                response_text = maybe_prepend_greeting(
-                    session_id=session_id,
-                    response_text=response_text,
-                    intent_type=intent_type,
-                    escalate=escalate,
-                )
+                if split_messages:
+                    # Greeting goes into the first split message
+                    split_messages[0] = maybe_prepend_greeting(
+                        session_id=session_id,
+                        response_text=split_messages[0],
+                        intent_type=intent_type,
+                        escalate=escalate,
+                    )
+                    response_text = "\n\n".join(split_messages)
+                else:
+                    response_text = maybe_prepend_greeting(
+                        session_id=session_id,
+                        response_text=response_text,
+                        intent_type=intent_type,
+                        escalate=escalate,
+                    )
 
                 session_manager.add_turn(
                     session_id=session_id,
@@ -855,6 +878,8 @@ async def chat_endpoint(
                     source_documents=source_docs,
                     num_sources=len(source_docs),
                     user_profile=inferred_profile,
+                    messages=split_messages,
+                    delays_ms=split_delays,
                 )
 
             # Process tool calls and collect results
