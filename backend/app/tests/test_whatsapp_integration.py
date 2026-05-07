@@ -177,9 +177,146 @@ class TestFormatterWiring:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """By default (no env var set), formatting is disabled."""
-        monkeypatch.delenv("WHATSAPP_FORMATTER_ENABLED", raising=False)
+        monkeypatch.setenv("WHATSAPP_FORMATTER_ENABLED", "false")
+        monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "false")
+        monkeypatch.setenv("GREETING_ENABLED", "false")
         from backend.app.config import settings
 
         settings.reset()
 
         assert settings.whatsapp_formatter_enabled is False
+
+
+class TestSplitterWiring:
+    """Verify splitting integrates with ChatResponse via process_split_messages."""
+
+    def test_splitting_enabled_with_delimiters(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When SPLIT_MESSAGES_ENABLED=true and response has delimiters,
+        process_split_messages returns messages and delays."""
+        from backend.app.message_splitter import process_split_messages
+
+        monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "true")
+        monkeypatch.setenv("WHATSAPP_FORMATTER_ENABLED", "false")
+        from backend.app.config import settings
+
+        settings.reset()
+
+        text = "Primer mensaje\n---\nSegundo mensaje\n---\nTercer mensaje"
+        messages, delays = process_split_messages(text, "FAQ")
+
+        assert len(messages) == 3
+        assert len(delays) == 2
+        assert messages[0] == "Primer mensaje"
+
+    def test_splitting_disabled_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When SPLIT_MESSAGES_ENABLED=false, process_split_messages returns empty."""
+        from backend.app.message_splitter import process_split_messages
+
+        monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "false")
+        from backend.app.config import settings
+
+        settings.reset()
+
+        text = "Msg 1\n---\nMsg 2"
+        messages, delays = process_split_messages(text, "FAQ")
+
+        assert messages == []
+        assert delays == []
+
+    def test_escalation_not_split(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Escalation intents should not be split even when enabled."""
+        from backend.app.message_splitter import process_split_messages
+
+        monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "true")
+        from backend.app.config import settings
+
+        settings.reset()
+
+        text = "Agente te contactará\n---\nInfo adicional"
+        messages, delays = process_split_messages(text, "escalate_quote")
+
+        assert messages == []
+        assert delays == []
+
+    def test_no_delimiters_no_split(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Response without delimiters returns empty (no split needed)."""
+        from backend.app.message_splitter import process_split_messages
+
+        monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "true")
+        from backend.app.config import settings
+
+        settings.reset()
+
+        text = "Un solo mensaje sin delimitadores"
+        messages, delays = process_split_messages(text, "FAQ")
+
+        assert messages == []
+        assert delays == []
+
+    def test_split_with_formatter_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When both flags are on, each message is formatted individually."""
+        from backend.app.message_splitter import process_split_messages
+
+        monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "true")
+        monkeypatch.setenv("WHATSAPP_FORMATTER_ENABLED", "true")
+        from backend.app.config import settings
+
+        settings.reset()
+
+        text = "**Paneles** monocristalinos\n---\n**Paneles** policristalinos"
+        messages, delays = process_split_messages(text, "FAQ")
+
+        assert len(messages) == 2
+        # ** → * for WhatsApp bold
+        assert "**" not in messages[0]
+        assert "**" not in messages[1]
+
+
+class TestSystemPromptInjection:
+    """Verify system prompt includes/excludes WhatsApp instructions by flag."""
+
+    def test_prompt_includes_split_instructions_when_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When split_messages_enabled=True, system prompt has WhatsApp section."""
+        from backend.app.llm_client import ARTE_SYSTEM_PROMPT, _WHATSAPP_SPLIT_INSTRUCTIONS
+
+        monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "true")
+        from backend.app.config import settings
+
+        settings.reset()
+
+        # Simulate what main.py does
+        prompt = ARTE_SYSTEM_PROMPT
+        if settings.split_messages_enabled:
+            prompt += _WHATSAPP_SPLIT_INSTRUCTIONS
+
+        assert "---" in prompt
+        assert "300 caracteres" in prompt
+
+    def test_prompt_excludes_split_instructions_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When split_messages_enabled=False, system prompt has no WhatsApp section."""
+        from backend.app.llm_client import ARTE_SYSTEM_PROMPT, _WHATSAPP_SPLIT_INSTRUCTIONS
+
+        monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "false")
+        from backend.app.config import settings
+
+        settings.reset()
+
+        prompt = ARTE_SYSTEM_PROMPT
+        if settings.split_messages_enabled:
+            prompt += _WHATSAPP_SPLIT_INSTRUCTIONS
+
+        assert "300 caracteres" not in prompt

@@ -90,6 +90,32 @@ ARTE_SYSTEM_PROMPT = (
     "- Ejemplo: [INTENT: escalate_quote][CONFIDENCE: 0.98] Un agente de ventas te contactará..."
 )
 
+_WHATSAPP_SPLIT_INSTRUCTIONS = (
+    "\n\n## Formato para WhatsApp y división de mensajes\n"
+    "- No uses markdown que WhatsApp no soporte (sin ##, sin **, sin ```, sin []()).\n"
+    "- Usa *texto* para negritas y _texto_ para cursiva.\n"
+    "- Usa viñetas con • en lugar de - o *.\n"
+    "- Mantén respuestas concisas y fáciles de leer en móvil.\n"
+    "- Divide tu respuesta en mensajes cortos usando `---` como separador "
+    "en una línea propia.\n"
+    "- Para preguntas generales (FAQ): máximo 300 caracteres por mensaje, "
+    "2-3 mensajes.\n"
+    "- Para información de productos: máximo 800 caracteres por mensaje.\n"
+    "- Cada mensaje debe tener sentido por sí solo.\n"
+    "- No repitas información entre mensajes.\n"
+    "- El primer mensaje debe captar la atención; el último debe incluir "
+    "un cierre o pregunta.\n"
+    "- NO uses separadores para respuestas de escalamiento "
+    "(cotización, pedido, problema técnico).\n"
+    "- Ejemplo de formato:\n"
+    "  Los paneles monocristalinos tienen mejor rendimiento en espacios "
+    "reducidos.\n"
+    "  ---\n"
+    "  Los policristalinos son más económicos pero necesitan más espacio.\n"
+    "  ---\n"
+    "  ¿Te gustaría más detalles sobre algún modelo en particular?"
+)
+
 DATASHEET_SYSTEM_PROMPT = (
     "Eres un asistente técnico de Arte Soluciones Energéticas. "
     "Responde ÚNICAMENTE con base en los datos disponibles en la ficha técnica adjunta. "

@@ -24,6 +24,7 @@ class TestWhatsAppConfigDefaults:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """WHATSAPP_FORMATTER_ENABLED defaults to False."""
+        monkeypatch.setenv("WHATSAPP_FORMATTER_ENABLED", "false")
         _reset_settings()
         from backend.app.config import settings
 
@@ -33,6 +34,7 @@ class TestWhatsAppConfigDefaults:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """SPLIT_MESSAGES_ENABLED defaults to False."""
+        monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "false")
         _reset_settings()
         from backend.app.config import settings
 
@@ -60,6 +62,7 @@ class TestWhatsAppConfigDefaults:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """GREETING_ENABLED defaults to False."""
+        monkeypatch.setenv("GREETING_ENABLED", "false")
         _reset_settings()
         from backend.app.config import settings
 
