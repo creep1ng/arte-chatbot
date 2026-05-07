@@ -187,6 +187,7 @@ jobs:
       - name: Run evaluation harness
         env:
           EVAL_S3_PREFIX: evaluation/ci/${{ github.ref_name }}/${{ github.run_id }}/
+          AWS_BUCKET_NAME: ${{ vars.AWS_BUCKET_NAME }}
         run: |
           uv run python -m evaluation.harness.run
 
