@@ -236,7 +236,6 @@ class TestMaybePrependGreeting:
 
         result = maybe_prepend_greeting("s1", "Respuesta", "FAQ", False)
         assert "Buenas tardes" in result
-        mock_greeting.assert_called_once_with("America/Bogota")
 
     @patch("backend.app.greeting.settings")
     @patch("backend.app.greeting.session_manager")

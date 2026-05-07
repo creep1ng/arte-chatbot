@@ -833,11 +833,12 @@ async def chat_endpoint(
                     response_text = format_for_whatsapp(cleaned_content)
 
                 # P3: Prepend greeting on first contact if enabled
+                escalate = intent_type in ESCALATE_INTENTS
                 response_text = maybe_prepend_greeting(
                     session_id=session_id,
                     response_text=response_text,
                     intent_type=intent_type,
-                    escalate=False,
+                    escalate=escalate,
                 )
 
                 session_manager.add_turn(

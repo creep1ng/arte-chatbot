@@ -229,9 +229,9 @@ class TestTransformationOrder:
         """Fenced code block backticks must be stripped, not treated as inline."""
         md = "```\n`inner`\n```"
         result = format_for_whatsapp(md)
-        # The fenced block should be stripped; inner backtick should survive
-        # because it's inside the code block content, not inline code
         assert "```" not in result
+        assert "`inner`" not in result
+        assert "inner" in result
 
     def test_bold_before_italic(self) -> None:
         """Bold markers processed before italic to avoid conflict with *."""
