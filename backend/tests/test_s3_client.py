@@ -6,7 +6,7 @@ Tests the S3 client for downloading technical datasheets from AWS S3.
 import os
 import pytest
 from unittest.mock import patch, MagicMock
-from backend.app.s3_client import S3Client, S3DownloadError
+from backend.app.s3_client import S3Client, S3DownloadError, S3UploadError
 
 
 class TestS3ClientInitialization:
@@ -233,3 +233,106 @@ class TestS3DownloadError:
         """Test S3DownloadError preserves error message."""
         error = S3DownloadError("Custom error message")
         assert str(error) == "Custom error message"
+
+
+class TestS3UploadError:
+    """Tests for S3UploadError exception."""
+
+    def test_s3_upload_error_is_exception(self) -> None:
+        """Test S3UploadError inherits from Exception."""
+        error = S3UploadError("Test upload error")
+        assert isinstance(error, Exception)
+
+    def test_s3_upload_error_message(self) -> None:
+        """Test S3UploadError preserves error message."""
+        error = S3UploadError("Upload failed")
+        assert str(error) == "Upload failed"
+
+
+class TestS3PutObject:
+    """Tests for put_object method."""
+
+    @patch("backend.app.s3_client.boto3")
+    def test_put_object_success(self, mock_boto3: MagicMock) -> None:
+        """Test put_object calls S3 with correct parameters on success."""
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+
+        client = S3Client(bucket_name="test-bucket")
+        data = b'{"session_id": "abc-123"}'
+
+        client.put_object(
+            key="conversations/abc-123/1_2026-05-07T20:39:00Z.json",
+            data=data,
+        )
+
+        mock_s3.put_object.assert_called_once_with(
+            Bucket="test-bucket",
+            Key="conversations/abc-123/1_2026-05-07T20:39:00Z.json",
+            Body=data,
+            ContentType="application/json",
+        )
+
+    @patch("backend.app.s3_client.boto3")
+    def test_put_object_custom_content_type(self, mock_boto3: MagicMock) -> None:
+        """Test put_object respects custom content_type parameter."""
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+
+        client = S3Client(bucket_name="test-bucket")
+        client.put_object(
+            key="test.txt",
+            data=b"hello",
+            content_type="text/plain",
+        )
+
+        mock_s3.put_object.assert_called_once_with(
+            Bucket="test-bucket",
+            Key="test.txt",
+            Body=b"hello",
+            ContentType="text/plain",
+        )
+
+    @patch("backend.app.s3_client.boto3")
+    def test_put_object_raises_on_client_error(self, mock_boto3: MagicMock) -> None:
+        """Test put_object raises S3UploadError on ClientError."""
+        from botocore.exceptions import ClientError
+
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        error_response = {
+            "Error": {"Code": "AccessDenied", "Message": "Access Denied"}
+        }
+        mock_s3.put_object.side_effect = ClientError(error_response, "PutObject")
+
+        client = S3Client(bucket_name="test-bucket")
+
+        with pytest.raises(S3UploadError) as exc_info:
+            client.put_object(key="test.json", data=b"{}")
+
+        assert "S3 upload failed" in str(exc_info.value)
+
+    @patch("backend.app.s3_client.boto3")
+    def test_put_object_raises_on_no_credentials(self, mock_boto3: MagicMock) -> None:
+        """Test put_object raises S3UploadError when credentials missing."""
+        from botocore.exceptions import NoCredentialsError
+
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        mock_s3.put_object.side_effect = NoCredentialsError()
+
+        client = S3Client(bucket_name="test-bucket")
+
+        with pytest.raises(S3UploadError) as exc_info:
+            client.put_object(key="test.json", data=b"{}")
+
+        assert "credentials" in str(exc_info.value).lower()
+
+    def test_put_object_raises_when_no_bucket(self) -> None:
+        """Test put_object raises S3UploadError when bucket not configured."""
+        client = S3Client(bucket_name="")
+
+        with pytest.raises(S3UploadError) as exc_info:
+            client.put_object(key="test.json", data=b"{}")
+
+        assert "bucket name not configured" in str(exc_info.value)

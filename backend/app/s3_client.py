@@ -22,6 +22,12 @@ class S3DownloadError(Exception):
     pass
 
 
+class S3UploadError(Exception):
+    """Raised when S3 upload operations fail."""
+
+    pass
+
+
 class S3Client:
     """Client for interacting with AWS S3 to download PDF files."""
 
@@ -149,3 +155,47 @@ class S3Client:
                 "S3 file not found: bucket=%s, key=%s", self.bucket_name, s3_key
             )
             return False
+
+    def put_object(
+        self,
+        key: str,
+        data: bytes,
+        content_type: str = "application/json",
+    ) -> None:
+        """Upload data to S3.
+
+        Args:
+            key: The S3 key (path) for the object.
+            data: Raw bytes to upload.
+            content_type: MIME type of the object. Defaults to application/json.
+
+        Raises:
+            S3UploadError: If the upload fails.
+        """
+        if not self.bucket_name:
+            raise S3UploadError("S3 bucket name not configured")
+
+        try:
+            logger.debug(
+                "S3 upload initiated: bucket=%s, key=%s, size_bytes=%d",
+                self.bucket_name,
+                key,
+                len(data),
+            )
+            self.client.put_object(
+                Bucket=self.bucket_name,
+                Key=key,
+                Body=data,
+                ContentType=content_type,
+            )
+            logger.info("Uploaded %d bytes to %s", len(data), key)
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            logger.error("S3 upload client error (%s): %s", error_code, e)
+            raise S3UploadError(f"S3 upload failed: {e}") from e
+        except NoCredentialsError:
+            logger.error("AWS credentials not available for upload")
+            raise S3UploadError("AWS credentials not configured") from None
+        except Exception as e:
+            logger.exception("Unexpected error uploading to S3: %s", e)
+            raise S3UploadError(f"Unexpected S3 upload error: {e}") from e
