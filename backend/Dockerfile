@@ -1,6 +1,9 @@
 # ARTE Chatbot Backend Dockerfile
 FROM python:3.11-slim
 
+ARG GIT_COMMIT_HASH=unknown
+ENV GIT_COMMIT_HASH=$GIT_COMMIT_HASH
+
 # Set working directory
 WORKDIR /app
 

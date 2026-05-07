@@ -5,6 +5,8 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     image: arte-chatbot-backend
+    args:
+        - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}
     container_name: arte-chatbot-backend
     ports:
       - "8000:8000"
@@ -25,6 +27,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}
     container_name: arte-chatbot-frontend
     ports:
       - "3000:3000"
@@ -32,6 +36,7 @@ services:
       - .env
     environment:
       - API_URL=http://localhost:8000
+      - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}
     depends_on:
       - backend
     restart: unless-stopped
