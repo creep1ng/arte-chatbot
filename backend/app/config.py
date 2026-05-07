@@ -11,7 +11,7 @@ import time.
 
 from typing import Any, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +30,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # OpenAI
@@ -70,6 +71,75 @@ class Settings(BaseSettings):
         default=0.10,
         description="Maximum acceptable false negative rate (10%)",
     )
+
+    # WhatsApp — Formatting (P1)
+    whatsapp_formatter_enabled: bool = Field(
+        default=False,
+        description="Enable WhatsApp markdown-to-native formatting filter",
+    )
+
+    # WhatsApp — Conversational Splitting (P2)
+    split_messages_enabled: bool = Field(
+        default=False,
+        description="Enable enviar_mensajes tool for conversational splitting",
+    )
+    msg_delay_min_ms: int = Field(
+        default=3000,
+        ge=1000,
+        le=10000,
+        description="Minimum delay between split messages in milliseconds",
+    )
+    msg_delay_max_ms: int = Field(
+        default=5000,
+        ge=1000,
+        le=15000,
+        description="Maximum delay between split messages in milliseconds",
+    )
+
+    # WhatsApp — Greeting (P3)
+    greeting_enabled: bool = Field(
+        default=False,
+        description="Enable first-contact greeting",
+    )
+    greeting_timezone: str = Field(
+        default="America/Bogota",
+        description="IANA timezone for time-of-day greeting",
+    )
+
+    # WhatsApp — Multi-Message Buffer (P4)
+    multi_message_buffer_enabled: bool = Field(
+        default=False,
+        description="Enable multi-message input buffering",
+    )
+    buffer_window_seconds: int = Field(
+        default=5,
+        ge=1,
+        le=15,
+        description="Buffer window in seconds for multi-message accumulation",
+    )
+
+    @model_validator(mode="after")
+    def _validate_delay_bounds(self) -> "Settings":
+        """Ensure msg_delay_min_ms <= msg_delay_max_ms."""
+        if self.msg_delay_min_ms > self.msg_delay_max_ms:
+            raise ValueError(
+                f"msg_delay_min_ms ({self.msg_delay_min_ms}) must be <= "
+                f"msg_delay_max_ms ({self.msg_delay_max_ms})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_greeting_timezone(self) -> "Settings":
+        """Ensure greeting_timezone is a valid IANA timezone."""
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(self.greeting_timezone)
+        except (KeyError, ZoneInfoNotFoundError):
+            raise ValueError(
+                f"Invalid IANA timezone: {self.greeting_timezone}"
+            )
+        return self
 
 
 class _SettingsProxy:
