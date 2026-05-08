@@ -13,6 +13,7 @@ env:
   PYTHON_VERSION: "3.11"
   DOCKER_COMPOSE_FILE: docker-compose.yml
   KILO_MODEL: kilo/bytedance-seed/dola-seed-2.0-pro:free
+  BACKEND_IMAGE_NAME: arte-chatbot-backend
 
 jobs:
   lint:
@@ -57,8 +58,29 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-docker-${{ hashFiles('pyproject.toml', 'uv.lock', 'backend/Dockerfile') }}
+          restore-keys: |
+            ${{ runner.os }}-docker-
+
       - name: Build Docker image
-        run: docker compose build backend --no-cache
+        run: |
+          docker compose build backend \
+            --cache-from=type=local,src=/tmp/.buildx-cache \
+            --cache-to=type=local,dest=/tmp/.buildx-cache
+
+      - name: Export Docker image
+        run: docker save ${{ env.BACKEND_IMAGE_NAME }} -o backend-image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: backend-image.tar
+          retention-days: 1
 
   test-health:
     name: Test /health Endpoint
@@ -71,15 +93,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Create .env file for Docker Compose
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: ./artifact
+
+      - name: Load Docker image
+        run: docker load -i ./artifact/backend-image.tar
+
+      - name: Mask secrets
         run: |
-          cat > .env <<EOF
-          CHAT_API_KEY=${{ secrets.CHAT_API_KEY }}
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-          EOF
+          echo "::add-mask::${{ secrets.CHAT_API_KEY }}"
+          echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"
 
       - name: Start containers
-        run: docker compose up -d backend
+        env:
+          CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          CHAT_API_KEY="${CHAT_API_KEY}" \
+          OPENAI_API_KEY="${OPENAI_API_KEY}" \
+          docker compose up -d backend
 
       - name: Wait for service to be ready
         run: |
@@ -143,15 +178,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Create .env file for Docker Compose
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: ./artifact
+
+      - name: Load Docker image
+        run: docker load -i ./artifact/backend-image.tar
+
+      - name: Mask secrets
         run: |
-          cat > .env <<EOF
-          CHAT_API_KEY=${{ secrets.CHAT_API_KEY }}
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-          EOF
+          echo "::add-mask::${{ secrets.CHAT_API_KEY }}"
+          echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"
 
       - name: Start containers
-        run: docker compose up -d backend
+        env:
+          CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          CHAT_API_KEY="${CHAT_API_KEY}" \
+          OPENAI_API_KEY="${OPENAI_API_KEY}" \
+          docker compose up -d backend
 
       - name: Wait for service to be ready
         run: |
