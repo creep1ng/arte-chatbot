@@ -4,6 +4,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    image: arte-chatbot-backend
     container_name: arte-chatbot-backend
     ports:
       - "8000:8000"

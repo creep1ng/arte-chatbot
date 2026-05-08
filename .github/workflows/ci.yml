@@ -13,7 +13,6 @@ env:
   PYTHON_VERSION: "3.11"
   DOCKER_COMPOSE_FILE: docker-compose.yml
   KILO_MODEL: kilo/bytedance-seed/dola-seed-2.0-pro:free
-  BACKEND_IMAGE_NAME: arte-chatbot-backend
 
 jobs:
   lint:
@@ -62,7 +61,7 @@ jobs:
         run: docker compose build backend
 
       - name: Export Docker image
-        run: docker save ${{ env.BACKEND_IMAGE_NAME }} -o backend-image.tar
+        run: docker save arte-chatbot-backend -o backend-image.tar
 
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
@@ -105,7 +104,7 @@ jobs:
           CHAT_API_KEY=${CHAT_API_KEY}
           OPENAI_API_KEY=${OPENAI_API_KEY}
           EOF
-          docker compose up -d backend
+          docker compose up -d --no-build backend
           rm -f .env
 
       - name: Wait for service to be ready
@@ -120,7 +119,7 @@ jobs:
             sleep 2
           done
           echo "Service failed to start in time"
-          docker compose logs backend
+          docker logs arte-chatbot-backend
           exit 1
 
       - name: Test /health endpoint returns 200
@@ -147,11 +146,11 @@ jobs:
 
       - name: Show container logs on success
         if: success()
-        run: docker compose logs backend
+        run: docker logs arte-chatbot-backend
 
       - name: Show container logs on failure
         if: failure()
-        run: docker compose logs backend
+        run: docker logs arte-chatbot-backend
 
   evaluation:
     name: Run Evaluation Harness
@@ -193,7 +192,7 @@ jobs:
           CHAT_API_KEY=${CHAT_API_KEY}
           OPENAI_API_KEY=${OPENAI_API_KEY}
           EOF
-          docker compose up -d backend
+          docker compose up -d --no-build backend
           rm -f .env
 
       - name: Wait for service to be ready
@@ -208,7 +207,7 @@ jobs:
             sleep 2
           done
           echo "Service failed to start in time"
-          docker compose logs backend
+          docker logs arte-chatbot-backend
           exit 1
 
       - name: Set up Python
@@ -244,7 +243,7 @@ jobs:
 
       - name: Show container logs on failure
         if: failure()
-        run: docker compose logs backend
+        run: docker logs arte-chatbot-backend
 
   cleanup:
     name: Cleanup Containers
