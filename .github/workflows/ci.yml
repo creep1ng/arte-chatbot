@@ -58,7 +58,17 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Docker image
-        run: docker compose build backend --no-cache
+        run: docker compose build backend
+
+      - name: Export Docker image
+        run: docker save arte-chatbot-backend -o backend-image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: backend-image.tar
+          retention-days: 1
 
   test-health:
     name: Test /health Endpoint
@@ -71,15 +81,31 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Create .env file for Docker Compose
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: ./artifact
+
+      - name: Load Docker image
+        run: docker load -i ./artifact/backend-image.tar
+
+      - name: Mask secrets
+        run: |
+          echo "::add-mask::${{ secrets.CHAT_API_KEY }}"
+          echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"
+
+      - name: Create temporary .env and start containers
+        env:
+          CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           cat > .env <<EOF
-          CHAT_API_KEY=${{ secrets.CHAT_API_KEY }}
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          CHAT_API_KEY=${CHAT_API_KEY}
+          OPENAI_API_KEY=${OPENAI_API_KEY}
           EOF
-
-      - name: Start containers
-        run: docker compose up -d backend
+          docker compose up -d --no-build backend
+          rm -f .env
 
       - name: Wait for service to be ready
         run: |
@@ -93,7 +119,7 @@ jobs:
             sleep 2
           done
           echo "Service failed to start in time"
-          docker compose logs backend
+          docker logs arte-chatbot-backend
           exit 1
 
       - name: Test /health endpoint returns 200
@@ -120,11 +146,11 @@ jobs:
 
       - name: Show container logs on success
         if: success()
-        run: docker compose logs backend
+        run: docker logs arte-chatbot-backend
 
       - name: Show container logs on failure
         if: failure()
-        run: docker compose logs backend
+        run: docker logs arte-chatbot-backend
 
   evaluation:
     name: Run Evaluation Harness
@@ -143,15 +169,31 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Create .env file for Docker Compose
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: ./artifact
+
+      - name: Load Docker image
+        run: docker load -i ./artifact/backend-image.tar
+
+      - name: Mask secrets
+        run: |
+          echo "::add-mask::${{ secrets.CHAT_API_KEY }}"
+          echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"
+
+      - name: Create temporary .env and start containers
+        env:
+          CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           cat > .env <<EOF
-          CHAT_API_KEY=${{ secrets.CHAT_API_KEY }}
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          CHAT_API_KEY=${CHAT_API_KEY}
+          OPENAI_API_KEY=${OPENAI_API_KEY}
           EOF
-
-      - name: Start containers
-        run: docker compose up -d backend
+          docker compose up -d --no-build backend
+          rm -f .env
 
       - name: Wait for service to be ready
         run: |
@@ -165,7 +207,7 @@ jobs:
             sleep 2
           done
           echo "Service failed to start in time"
-          docker compose logs backend
+          docker logs arte-chatbot-backend
           exit 1
 
       - name: Set up Python
@@ -186,6 +228,8 @@ jobs:
 
       - name: Run evaluation harness
         env:
+          CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           EVAL_S3_PREFIX: evaluation/ci/${{ github.ref_name }}/${{ github.run_id }}/
           AWS_BUCKET_NAME: ${{ secrets.AWS_BUCKET_NAME }}
         run: |
@@ -201,7 +245,7 @@ jobs:
 
       - name: Show container logs on failure
         if: failure()
-        run: docker compose logs backend
+        run: docker logs arte-chatbot-backend
 
   cleanup:
     name: Cleanup Containers
