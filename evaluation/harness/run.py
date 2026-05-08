@@ -341,7 +341,7 @@ async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
         elif uploaded_keys:
             print(f"✓ Successfully uploaded {len(uploaded_keys)} files to S3:")
             for key in uploaded_keys:
-                print(f"  - s3://{harness_settings.AWS_BUCKET_NAME}/{key}")
+                print(f"  - s3://{harness_settings.aws_bucket_name}/{key}")
         else:
             print("⚠ No files available for upload")
 
