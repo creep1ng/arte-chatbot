@@ -96,14 +96,17 @@ jobs:
           echo "::add-mask::${{ secrets.CHAT_API_KEY }}"
           echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"
 
-      - name: Start containers
+      - name: Create temporary .env and start containers
         env:
           CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          CHAT_API_KEY="${CHAT_API_KEY}" \
-          OPENAI_API_KEY="${OPENAI_API_KEY}" \
+          cat > .env <<EOF
+          CHAT_API_KEY=${CHAT_API_KEY}
+          OPENAI_API_KEY=${OPENAI_API_KEY}
+          EOF
           docker compose up -d backend
+          rm -f .env
 
       - name: Wait for service to be ready
         run: |
@@ -181,14 +184,17 @@ jobs:
           echo "::add-mask::${{ secrets.CHAT_API_KEY }}"
           echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"
 
-      - name: Start containers
+      - name: Create temporary .env and start containers
         env:
           CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          CHAT_API_KEY="${CHAT_API_KEY}" \
-          OPENAI_API_KEY="${OPENAI_API_KEY}" \
+          cat > .env <<EOF
+          CHAT_API_KEY=${CHAT_API_KEY}
+          OPENAI_API_KEY=${OPENAI_API_KEY}
+          EOF
           docker compose up -d backend
+          rm -f .env
 
       - name: Wait for service to be ready
         run: |
