@@ -4,9 +4,9 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+          - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}
     image: arte-chatbot-backend
-    args:
-        - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}
     container_name: arte-chatbot-backend
     ports:
       - "8000:8000"
