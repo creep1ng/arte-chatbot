@@ -144,7 +144,17 @@ class LLMClient:
             api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")
         )
         self.model = model
-        self.default_system_prompt = ARTE_SYSTEM_PROMPT
+
+        # Build system prompt: base + WhatsApp formatting when enabled
+        whatsapp_enabled = os.getenv("WHATSAPP_FORMATTER_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if whatsapp_enabled:
+            self.default_system_prompt = ARTE_SYSTEM_PROMPT + _WHATSAPP_SPLIT_INSTRUCTIONS
+        else:
+            self.default_system_prompt = ARTE_SYSTEM_PROMPT
 
         # OpenAI SDK client
         self._openai_client: Optional[OpenAI] = None
