@@ -114,6 +114,7 @@ class Settings(BaseSettings):
     buffer_window_seconds: int = Field(
         default=5,
         ge=1,
+        le=15,
         description="Buffer window in seconds for multi-message accumulation",
     )
 
