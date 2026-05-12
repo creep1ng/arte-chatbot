@@ -11,6 +11,7 @@ from typing import Any, Optional
 from openai import APIError, AuthenticationError, OpenAI
 
 from backend.app.config import settings
+from backend.app.schemas import LLMResponse
 from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ class LLMClient:
         session_id: str,
         system_prompt: Optional[str] = None,
         context: str = "",
-    ) -> dict[str, Any]:
+    ) -> LLMResponse:
         """Send a message to the LLM with tool definitions using Responses API.
 
         Args:
@@ -186,7 +187,7 @@ class LLMClient:
             context: Optional session context string with conversation history.
 
         Returns:
-            A dict with 'output_text' and optionally 'tool_calls'.
+            An LLMResponse with text, tool_calls, and token usage.
 
         Raises:
             LLMServiceError: If the API key is missing or the request fails.
@@ -242,14 +243,18 @@ class LLMClient:
                         }
                     )
 
-            result: dict[str, Any] = {
-                "output_text": output_text,
-            }
+            # Extract token usage (response.usage can be None)
+            input_tokens = response.usage.input_tokens if response.usage else 0
+            output_tokens = response.usage.output_tokens if response.usage else 0
+            total_tokens = response.usage.total_tokens if response.usage else 0
 
-            if tool_calls:
-                result["tool_calls"] = tool_calls
-
-            return result
+            return LLMResponse(
+                text=output_text,
+                tool_calls=tool_calls,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+            )
 
         except AuthenticationError as e:
             logger.error("OpenAI authentication error: %s", e)
@@ -267,7 +272,7 @@ class LLMClient:
         file_id: str,
         session_id: str,
         system_prompt: Optional[str] = None,
-    ) -> str:
+    ) -> LLMResponse:
         """Send a message to the LLM with a file attached using Responses API.
 
         Args:
@@ -277,7 +282,7 @@ class LLMClient:
             system_prompt: Optional system prompt override.
 
         Returns:
-            The response content string from the LLM.
+            An LLMResponse with text and token usage.
 
         Raises:
             LLMServiceError: If the API key is missing or the request fails.
@@ -314,7 +319,17 @@ class LLMClient:
                 prompt_cache_key=session_id,
             )
 
-            return response.output_text
+            # Extract token usage (response.usage can be None)
+            input_tokens = response.usage.input_tokens if response.usage else 0
+            output_tokens = response.usage.output_tokens if response.usage else 0
+            total_tokens = response.usage.total_tokens if response.usage else 0
+
+            return LLMResponse(
+                text=response.output_text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+            )
 
         except AuthenticationError as e:
             logger.error("OpenAI authentication error (file): %s", e)

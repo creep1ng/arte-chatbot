@@ -7,13 +7,15 @@ cat > /usr/share/nginx/html/config.js <<EOF
 window.ARTE_CONFIG = {
   API_URL: "${API_URL:-http://localhost:8000}",
   CHAT_API_KEY: "",
-  LLM_MODEL: "${LLM_MODEL:-unknown}"
+  LLM_MODEL: "${LLM_MODEL:-unknown}",
+  GIT_COMMIT_HASH: "${GIT_COMMIT_HASH:-unknown}"
 };
 EOF
 
 echo "[entrypoint] config.js generated:"
 echo "[entrypoint]   API_URL=${API_URL:-http://localhost:8000}"
 echo "[entrypoint]   LLM_MODEL=${LLM_MODEL:-unknown}"
+echo "[entrypoint]   GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}"
 echo "[entrypoint]   CHAT_API_KEY=(not set - requires manual input)"
 
 # Start nginx

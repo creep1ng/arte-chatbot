@@ -13,6 +13,7 @@ from backend.app.llm_client import (
     ARTE_SYSTEM_PROMPT,
     DATASHEET_SYSTEM_PROMPT,
 )
+from backend.app.schemas import LLMResponse
 from backend.app import llm_client as llm_client_module
 
 
@@ -49,7 +50,7 @@ class TestLLMClientWithTools:
     def test_get_llm_response_with_tools_returns_tool_calls(
         self, mock_openai_class: MagicMock
     ) -> None:
-        """Test get_llm_response_with_tools returns dict with tool_calls when LLM invokes tool."""
+        """Test get_llm_response_with_tools returns LLMResponse with tool_calls when LLM invokes tool."""
         # Setup mock
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -72,16 +73,16 @@ class TestLLMClientWithTools:
             session_id="test-session-123",
         )
 
-        assert "output_text" in result
-        assert "tool_calls" in result
-        assert len(result["tool_calls"]) == 1
-        assert result["tool_calls"][0]["function"]["name"] == "leer_ficha_tecnica"
+        assert isinstance(result, LLMResponse)
+        assert result.text == ""
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["function"]["name"] == "leer_ficha_tecnica"
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_tools_no_tool_calls(
         self, mock_openai_class: MagicMock
     ) -> None:
-        """Test get_llm_response_with_tools returns dict without tool_calls for normal messages."""
+        """Test get_llm_response_with_tools returns LLMResponse without tool_calls for normal messages."""
         # Setup mock
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -106,10 +107,10 @@ class TestLLMClientWithTools:
             session_id="test-session-123",
         )
 
-        assert "output_text" in result
-        assert "tool_calls" not in result
+        assert isinstance(result, LLMResponse)
+        assert result.tool_calls == []
         assert (
-            result["output_text"]
+            result.text
             == "Hola, soy el asistente de Arte Soluciones Energéticas."
         )
 
@@ -185,6 +186,96 @@ class TestLLMClientWithTools:
         assert "Missing OpenAI API key" in str(exc_info.value)
 
 
+class TestLLMClientWithToolsReturnsLLMResponse:
+    """Tests that get_llm_response_with_tools returns LLMResponse with token extraction."""
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_returns_llm_response_type_with_tokens(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        """Test returns LLMResponse with extracted token usage."""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+
+        mock_function_call = MagicMock()
+        mock_function_call.type = "function_call"
+        mock_function_call.call_id = "call_abc123"
+        mock_function_call.name = "leer_ficha_tecnica"
+        mock_function_call.arguments = '{"ruta_s3": "paneles/test.pdf"}'
+
+        mock_response = MagicMock()
+        mock_response.output_text = ""
+        mock_response.output = [mock_function_call]
+        mock_response.usage.input_tokens = 100
+        mock_response.usage.output_tokens = 50
+        mock_response.usage.total_tokens = 150
+        mock_client.responses.create.return_value = mock_response
+
+        client = LLMClient(api_key="sk-test-key")
+        result = client.get_llm_response_with_tools(
+            message="Test", session_id="test-session"
+        )
+
+        assert isinstance(result, LLMResponse)
+        assert result.text == ""
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["function"]["name"] == "leer_ficha_tecnica"
+        assert result.input_tokens == 100
+        assert result.output_tokens == 50
+        assert result.total_tokens == 150
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_usage_none_defaults_to_zero(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        """Test LLMResponse defaults token fields to 0 when usage is None."""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.output_text = "Test response"
+        mock_response.output = [MagicMock(type="message")]
+        mock_response.usage = None
+        mock_client.responses.create.return_value = mock_response
+
+        client = LLMClient(api_key="sk-test-key")
+        result = client.get_llm_response_with_tools(
+            message="Test", session_id="test-session"
+        )
+
+        assert isinstance(result, LLMResponse)
+        assert result.text == "Test response"
+        assert result.tool_calls == []
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert result.total_tokens == 0
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_no_tool_calls_returns_empty_list(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        """Test LLMResponse.tool_calls is empty list when no function calls."""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.output_text = "Normal response"
+        mock_response.output = [MagicMock(type="message")]
+        mock_response.usage.input_tokens = 50
+        mock_response.usage.output_tokens = 25
+        mock_response.usage.total_tokens = 75
+        mock_client.responses.create.return_value = mock_response
+
+        client = LLMClient(api_key="sk-test-key")
+        result = client.get_llm_response_with_tools(
+            message="Test", session_id="test-session"
+        )
+
+        assert isinstance(result, LLMResponse)
+        assert result.text == "Normal response"
+        assert result.tool_calls == []
+
+
 class TestLLMClientWithFile:
     """Tests for get_llm_response_with_file method."""
 
@@ -209,7 +300,7 @@ class TestLLMClientWithFile:
             session_id="test-session-123",
         )
 
-        assert result == "El panel tiene una potencia de 460W..."
+        assert result.text == "El panel tiene una potencia de 460W..."
 
         # Verify the call was made with correct parameters
         call_kwargs = mock_client.responses.create.call_args.kwargs
@@ -264,6 +355,61 @@ class TestLLMClientWithFile:
             )
 
         assert "Missing OpenAI API key" in str(exc_info.value)
+
+
+class TestLLMClientWithFileReturnsLLMResponse:
+    """Tests that get_llm_response_with_file returns LLMResponse with token extraction."""
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_returns_llm_response_with_tokens(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        """Test returns LLMResponse with extracted token usage from file method."""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.output_text = "Panel specs from PDF"
+        mock_response.usage.input_tokens = 200
+        mock_response.usage.output_tokens = 100
+        mock_response.usage.total_tokens = 300
+        mock_client.responses.create.return_value = mock_response
+
+        client = LLMClient(api_key="sk-test-key")
+        result = client.get_llm_response_with_file(
+            message="Specs?", file_id="file-123", session_id="test-session"
+        )
+
+        assert isinstance(result, LLMResponse)
+        assert result.text == "Panel specs from PDF"
+        assert result.tool_calls == []
+        assert result.input_tokens == 200
+        assert result.output_tokens == 100
+        assert result.total_tokens == 300
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_usage_none_defaults_to_zero(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        """Test LLMResponse defaults to 0 tokens when usage is None."""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.output_text = "Response text"
+        mock_response.usage = None
+        mock_client.responses.create.return_value = mock_response
+
+        client = LLMClient(api_key="sk-test-key")
+        result = client.get_llm_response_with_file(
+            message="Test", file_id="file-123", session_id="test-session"
+        )
+
+        assert isinstance(result, LLMResponse)
+        assert result.text == "Response text"
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert result.total_tokens == 0
 
 
 class TestSystemPrompts:

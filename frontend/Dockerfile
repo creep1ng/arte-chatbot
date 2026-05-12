@@ -1,5 +1,8 @@
 FROM nginx:1.27-alpine
 
+ARG GIT_COMMIT_HASH=unknown
+ENV GIT_COMMIT_HASH=$GIT_COMMIT_HASH
+
 # Remove default nginx config
 RUN rm /etc/nginx/conf.d/default.conf
 

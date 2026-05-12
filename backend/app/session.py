@@ -18,12 +18,27 @@ class ChatTurn(BaseModel):
     source_documents: List[str] = []
 
 
+class TokenTotals(BaseModel):
+    """Acumulador de tokens consumidos por sesión.
+
+    Attributes:
+        input_tokens: Total de tokens de entrada consumidos.
+        output_tokens: Total de tokens de salida generados.
+        total_tokens: Total de tokens (input + output).
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
 class SessionManager:
     """Gestiona las sesiones de conversación."""
 
     def __init__(self, max_turns: int = 20):
         self.sessions: Dict[str, List[ChatTurn]] = {}
         self.profiles: Dict[str, str] = {}
+        self.token_totals: Dict[str, TokenTotals] = {}
         self.max_turns = max_turns
         self._lock = threading.Lock()
 
@@ -109,6 +124,8 @@ class SessionManager:
                 del self.sessions[session_id]
             if session_id in self.profiles:
                 del self.profiles[session_id]
+            if session_id in self.token_totals:
+                del self.token_totals[session_id]
 
     def set_user_profile(self, session_id: str, profile: str) -> None:
         """
@@ -132,6 +149,42 @@ class SessionManager:
             El perfil de usuario si existe, None en caso contrario
         """
         return self.profiles.get(session_id)
+
+    def add_token_usage(
+        self,
+        session_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+    ) -> None:
+        """Acumula el uso de tokens para una sesión.
+
+        Thread-safe: opera bajo el mismo ``_lock`` que el resto del gestor.
+
+        Args:
+            session_id: Identificador único de la sesión.
+            input_tokens: Tokens de entrada a acumular.
+            output_tokens: Tokens de salida a acumular.
+            total_tokens: Total de tokens a acumular.
+        """
+        with self._lock:
+            if session_id not in self.token_totals:
+                self.token_totals[session_id] = TokenTotals()
+            self.token_totals[session_id].input_tokens += input_tokens
+            self.token_totals[session_id].output_tokens += output_tokens
+            self.token_totals[session_id].total_tokens += total_tokens
+
+    def get_token_totals(self, session_id: str) -> TokenTotals:
+        """Obtiene los totales de tokens acumulados de una sesión.
+
+        Args:
+            session_id: Identificador único de la sesión.
+
+        Returns:
+            TokenTotals con los valores acumulados, o TokenTotals() en ceros
+            si la sesión no existe.
+        """
+        return self.token_totals.get(session_id, TokenTotals())
 
     def get_session_count(self) -> int:
         """
