@@ -146,13 +146,17 @@ class LLMClient:
         self.model = model
 
         # Build system prompt: base + WhatsApp formatting when enabled
-        whatsapp_enabled = os.getenv("WHATSAPP_FORMATTER_ENABLED", "").lower() in (
+        whatsapp_enabled = os.getenv(
+            "WHATSAPP_FORMATTER_ENABLED", ""
+        ).strip().lower() in (
             "1",
             "true",
             "yes",
         )
         if whatsapp_enabled:
-            self.default_system_prompt = ARTE_SYSTEM_PROMPT + _WHATSAPP_SPLIT_INSTRUCTIONS
+            self.default_system_prompt = (
+                ARTE_SYSTEM_PROMPT + _WHATSAPP_SPLIT_INSTRUCTIONS
+            )
         else:
             self.default_system_prompt = ARTE_SYSTEM_PROMPT
 
