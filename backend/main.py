@@ -51,6 +51,7 @@ from backend.app.message_buffer import (
     flush_buffer,
     get_buffer_count,
     is_buffering,
+    pop_pending_result,
     schedule_flush,
 )
 from backend.app.message_splitter import process_split_messages
@@ -275,6 +276,55 @@ class BufferingResponse(BaseModel):
 
     status: str = "buffering"
     session_id: str
+    poll_url: Optional[str] = Field(
+        default=None,
+        description="URL to poll for the processed result after window expires",
+    )
+
+
+class BufferResultResponse(BaseModel):
+    """Response returned when polling a buffered result."""
+
+    status: str = Field(
+        default="pending",
+        description="One of: pending, ready, not_found",
+    )
+    session_id: str
+    result: Optional[str] = Field(
+        default=None,
+        description="The joined message when status is ready",
+    )
+
+
+@app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
+async def get_buffer_result(session_id: str) -> BufferResultResponse:
+    """Poll for buffered message processing result.
+
+    After a 202 response from /chat, the client should poll this endpoint.
+    When the buffer window expires, the joined message is stored and
+    available for pickup. Once retrieved, the result is cleared.
+    """
+    from backend.app.message_buffer import pop_pending_result
+
+    result = pop_pending_result(session_id)
+    if result is None:
+        # Check if session is still buffering (window hasn't expired yet)
+        from backend.app.message_buffer import is_buffering
+
+        if is_buffering(session_id):
+            return BufferResultResponse(
+                status="pending",
+                session_id=session_id,
+            )
+        return BufferResultResponse(
+            status="not_found",
+            session_id=session_id,
+        )
+    return BufferResultResponse(
+        status="ready",
+        session_id=session_id,
+        result=result,
+    )
 
 
 @app.get("/health")
@@ -699,13 +749,12 @@ _process_tool_call = _process_leer_ficha_tecnica
 async def _on_buffer_window_expired(session_id: str, joined_message: str) -> None:
     """V1 callback when buffer window expires.
 
-    In V1, the client is responsible for sending is_final=true to trigger
-    processing. When the window expires without is_final, buffered messages
-    are discarded. This is acceptable for V1 — the client must cooperate.
+    The result is already stored in _pending_results by flush_buffer.
+    This callback exists only to satisfy the FlushCallback signature.
     """
     logger.info(
         "Buffer window expired for session %s: %d chars accumulated, "
-        "discarded (V1 — client must send is_final=true)",
+        "result stored for polling",
         session_id,
         len(joined_message),
     )
@@ -761,6 +810,7 @@ async def chat_endpoint(
                 status_code=202,
                 content=BufferingResponse(
                     session_id=session_id,
+                    poll_url=f"/buffer-result/{session_id}",
                 ).model_dump(),
             )
 

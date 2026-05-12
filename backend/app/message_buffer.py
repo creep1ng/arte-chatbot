@@ -20,6 +20,9 @@ _buffer: dict[str, list[tuple[str, datetime]]] = {}
 # Active debounce tasks per session
 _buffer_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
 
+# Pending buffer results: session_id -> (joined_message, timestamp)
+_pending_results: dict[str, tuple[str, datetime]] = {}
+
 
 async def add_to_buffer(
     session_id: str, message: str, max_messages: int = 5
@@ -52,6 +55,9 @@ async def add_to_buffer(
 async def flush_buffer(session_id: str) -> Optional[str]:
     """Flush buffer and return joined message. None if empty.
 
+    Also stores the result in _pending_results so callers can retrieve it
+    after the async window expiration callback fires.
+
     Args:
         session_id: The session identifier.
 
@@ -64,7 +70,9 @@ async def flush_buffer(session_id: str) -> Optional[str]:
         task.cancel()
     if not messages:
         return None
-    return "\n".join(msg for msg, _ in messages)
+    joined = "\n".join(msg for msg, _ in messages)
+    _pending_results[session_id] = (joined, datetime.now(timezone.utc))
+    return joined
 
 
 def is_buffering(session_id: str) -> bool:
@@ -103,6 +111,24 @@ def clear_buffer(session_id: str) -> None:
     task = _buffer_tasks.pop(session_id, None)
     if task and not task.done():
         task.cancel()
+
+
+def pop_pending_result(session_id: str) -> Optional[str]:
+    """Pop and return a pending buffer result for a session.
+
+    Used by the /buffer-result endpoint to retrieve the processed buffer
+    result after the window expires. Returns None if no pending result.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        The joined message if available, None otherwise.
+    """
+    result = _pending_results.pop(session_id, None)
+    if result:
+        return result[0]
+    return None
 
 
 FlushCallback = Callable[[str, str], Awaitable[None]]

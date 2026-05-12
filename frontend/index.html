@@ -770,7 +770,7 @@
         const startTime = performance.now();
 
         try {
-          const response = await fetch(`${API_URL}/chat`, {
+          let response = await fetch(`${API_URL}/chat`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
