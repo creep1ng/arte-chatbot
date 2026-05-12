@@ -779,7 +779,7 @@
             body: JSON.stringify(body),
           });
 
-          const elapsed = performance.now() - startTime;
+          let elapsed = performance.now() - startTime;
 
           if (!response.ok) {
             let errorDetail = `HTTP ${response.status}`;
@@ -793,6 +793,82 @@
             addMessage(`Error: ${errorDetail}`, "error");
             setProcessing(false);
             return;
+          }
+
+          // --- Handle 202 buffering response ---
+          if (response.status === 202) {
+            const bufferData = await response.json();
+            if (bufferData.session_id) {
+              sessionId = bufferData.session_id;
+            }
+
+            // Update typing label to indicate buffering state
+            typingLabel.textContent = "Agrupando mensajes...";
+
+            // Poll /buffer-result until the window expires and result is ready
+            let joinedMessage = null;
+            const maxAttempts = 60; // ~90s max (60 × 1.5s)
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+              await new Promise((resolve) => setTimeout(resolve, 1500));
+              try {
+                const pollRes = await fetch(
+                  `${API_URL}/buffer-result/${sessionId}`,
+                  { headers: { "X-API-Key": apiKey } }
+                );
+                if (pollRes.ok) {
+                  const pollData = await pollRes.json();
+                  if (pollData.status === "ready" && pollData.result) {
+                    joinedMessage = pollData.result;
+                    break;
+                  }
+                  if (pollData.status === "not_found") {
+                    // Session gone — shouldn't happen but bail out
+                    break;
+                  }
+                  // status === "pending" → keep polling
+                }
+              } catch (_) {
+                // Network error on poll — retry on next attempt
+              }
+            }
+
+            if (!joinedMessage) {
+              hideTyping();
+              addMessage(
+                "Error: no se pudieron agrupar los mensajes.",
+                "error"
+              );
+              setProcessing(false);
+              return;
+            }
+
+            // Resend the joined message as final to trigger LLM processing
+            typingLabel.textContent = "Generando respuesta...";
+            response = await fetch(`${API_URL}/chat`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-API-Key": apiKey,
+              },
+              body: JSON.stringify({
+                message: joinedMessage,
+                session_id: sessionId,
+                is_final: true,
+              }),
+            });
+            elapsed = performance.now() - startTime;
+
+            if (!response.ok) {
+              let errorDetail = `HTTP ${response.status}`;
+              try {
+                const errBody = await response.json();
+                if (errBody.detail) errorDetail = errBody.detail;
+              } catch (_) {}
+              hideTyping();
+              addMessage(`Error: ${errorDetail}`, "error");
+              setProcessing(false);
+              return;
+            }
           }
 
           const data = await response.json();
