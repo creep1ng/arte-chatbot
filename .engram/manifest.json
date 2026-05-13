@@ -24,6 +24,14 @@
       "sessions": 1,
       "memories": 1,
       "prompts": 0
+    },
+    {
+      "id": "d91b9850",
+      "created_by": "creep",
+      "created_at": "2026-05-12T04:47:32Z",
+      "sessions": 0,
+      "memories": 1,
+      "prompts": 0
     }
   ]
 }

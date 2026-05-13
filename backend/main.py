@@ -48,11 +48,18 @@ from backend.app.llm_client import (
 )
 from backend.app.message_buffer import (
     add_to_buffer,
+    clear_pending_chat_response,
+    clear_processing,
     flush_buffer,
     get_buffer_count,
     is_buffering,
+    is_processing,
+    pop_pending_chat_response,
     schedule_flush,
+    set_pending_chat_response,
+    set_processing,
 )
+
 from backend.app.message_splitter import process_split_messages
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.schemas import LLMResponse, SourceDocument
@@ -275,6 +282,58 @@ class BufferingResponse(BaseModel):
 
     status: str = "buffering"
     session_id: str
+    poll_url: Optional[str] = Field(
+        default=None,
+        description="URL to poll for the processed result after window expires",
+    )
+
+
+class BufferResultResponse(BaseModel):
+    """Response returned when polling a buffered result."""
+
+    status: str = Field(
+        default="pending",
+        description="One of: pending, ready, not_found",
+    )
+    session_id: str
+    result: Optional[str] = Field(
+        default=None,
+        description="The joined message when status is ready",
+    )
+
+
+@app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
+async def get_buffer_result(session_id: str) -> BufferResultResponse:
+    """Poll for buffered message processing result.
+
+    After a 202 response from /chat, the client should poll this endpoint.
+    When the buffer window expires, the backend processes the joined message
+    with the chatbot and stores the response for pickup.
+    """
+    chat_response_json = pop_pending_chat_response(session_id)
+    if chat_response_json:
+        return BufferResultResponse(
+            status="ready",
+            session_id=session_id,
+            result=chat_response_json,
+        )
+
+    if is_buffering(session_id):
+        return BufferResultResponse(
+            status="pending",
+            session_id=session_id,
+        )
+
+    if is_processing(session_id):
+        return BufferResultResponse(
+            status="pending",
+            session_id=session_id,
+        )
+
+    return BufferResultResponse(
+        status="not_found",
+        session_id=session_id,
+    )
 
 
 @app.get("/health")
@@ -695,80 +754,23 @@ async def _process_leer_ficha_tecnica(
 # Alias for backward compatibility with tests
 _process_tool_call = _process_leer_ficha_tecnica
 
-
-async def _on_buffer_window_expired(session_id: str, joined_message: str) -> None:
-    """V1 callback when buffer window expires.
-
-    In V1, the client is responsible for sending is_final=true to trigger
-    processing. When the window expires without is_final, buffered messages
-    are discarded. This is acceptable for V1 — the client must cooperate.
-    """
-    logger.info(
-        "Buffer window expired for session %s: %d chars accumulated, "
-        "discarded (V1 — client must send is_final=true)",
-        session_id,
-        len(joined_message),
-    )
-
-
-@app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(
-    request: ChatRequest,
-    api_key: Annotated[str, Depends(verify_api_key)],
-    llm_client: Annotated[LLMClient, Depends(get_llm_client)],
-    s3_client: Annotated[S3Client, Depends(get_s3_client)],
-    file_inputs_client: Annotated[FileInputsClient, Depends(get_file_inputs_client)],
-):
-    """
-    Chat endpoint that handles user messages.
-
-    Implements an agentic loop pattern with tool calling:
-    1. LLM call checks if tools need to be invoked
-    2. Process tool calls (buscar_producto or leer_ficha_tecnica)
-    3. Loop back to LLM with tool results until no more tools called
-    4. Return final response
-    """
-    session_id = request.session_id or str(uuid.uuid4())
-    request_id = str(uuid.uuid4())
+async def _process_chat_message(
+    session_id: str,
+    message: str,
+    llm_client: LLMClient,
+    s3_client: S3Client,
+    file_inputs_client: FileInputsClient,
+    request_id: Optional[str] = None,
+) -> ChatResponse:
+    """Core chat processing logic shared between endpoint and buffer callback."""
+    request_id = request_id or str(uuid.uuid4())
     request_start = time.time()
-
-    # P4: Multi-message buffer — intercept before normal processing
-    if settings.multi_message_buffer_enabled:
-        current_count = get_buffer_count(session_id)
-
-        if request.is_final or current_count >= 4:
-            # is_final or overflow → flush buffer + current message, process.
-            # add_to_buffer returns the joined text on overflow (>= max_messages),
-            # or None if below max (is_final case — flush manually).
-            overflow_result = await add_to_buffer(session_id, request.message)
-            joined = overflow_result or await flush_buffer(session_id)
-            if joined:
-                # Replace message with joined buffer for normal processing
-                request = ChatRequest(
-                    message=joined,
-                    session_id=session_id,
-                    is_final=request.is_final,
-                )
-        else:
-            # First message or already buffering → buffer and return 202
-            await add_to_buffer(session_id, request.message)
-            schedule_flush(
-                session_id,
-                settings.buffer_window_seconds,
-                _on_buffer_window_expired,
-            )
-            return JSONResponse(
-                status_code=202,
-                content=BufferingResponse(
-                    session_id=session_id,
-                ).model_dump(),
-            )
 
     logger.debug(
         "Incoming request: request_id=%s, session_id=%s, message_preview=%s",
         request_id,
         session_id,
-        request.message[:100],
+        message[:100],
     )
 
     # Infer user profile if not already inferred for this session
@@ -798,7 +800,7 @@ async def chat_endpoint(
         system_prompt_with_profile += _WHATSAPP_SPLIT_INSTRUCTIONS
 
     # Detect escalation
-    escalation_result = default_detector.detect(request.message)
+    escalation_result = default_detector.detect(message)
 
     if escalation_result.escalate:
         logger.info(
@@ -807,17 +809,16 @@ async def chat_endpoint(
             session_id,
             escalation_result.reason,
         )
-        # Guardamos la consulta en la sesión aunque vayamos a escalar
         session_manager.add_turn(
             session_id=session_id,
-            question=request.message,
+            question=message,
             answer=DEFAULT_ESCALATION_MESSAGE,
             source_documents=[],
         )
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
             session_id=session_id,
-            user_message=request.message,
+            user_message=message,
             bot_response=DEFAULT_ESCALATION_MESSAGE,
             intent_type="escalate_technical",
             escalate=True,
@@ -844,17 +845,14 @@ async def chat_endpoint(
 
     # Expandir query con contexto anafórico
     history = session_manager.get_history(session_id)
-    expanded_query = expand_query_with_context(request.message, history)
+    expanded_query = expand_query_with_context(message, history)
 
     logger.debug(
         "Query expandida: original='%s', expandida='%s', session_id=%s",
-        request.message[:100],
+        message[:100],
         expanded_query[:100],
         session_id,
     )
-
-    # Escalation is now determined by LLM intent_type classification (US-05)
-    # No keyword-based detection. The LLM prefixes responses with [INTENT: <type>].
 
     system_message = {"role": "system", "content": system_prompt_with_profile}
     conversation_history: list[dict[str, Any]] = [
@@ -864,12 +862,9 @@ async def chat_endpoint(
     source_docs: list[SourceDocument] = []
 
     try:
-        # Agentic loop: keep calling LLM until no more tool calls
         iteration = 0
         tool_results_summary = ""
         last_output_text = ""
-
-        # Token accumulation across all LLM calls in this request
         acc_input_tokens = 0
         acc_output_tokens = 0
         acc_total_tokens = 0
@@ -883,12 +878,9 @@ async def chat_endpoint(
                 session_id,
             )
 
-            # Obtener contexto de la sesión para mejorar el prompt
             context_string = session_manager.get_context_string(session_id)
 
-            # Build user input with context and tool results if available
             if iteration == 1:
-                # First iteration: use expanded message with context
                 user_input = expanded_query
                 if context_string:
                     user_input = (
@@ -896,7 +888,6 @@ async def chat_endpoint(
                         f"Pregunta actual: {expanded_query}"
                     )
             else:
-                # Subsequent iterations: include previous tool results
                 user_input = (
                     f"Resultados de las herramientas invocadas anteriormente:\n"
                     f"{tool_results_summary}\n\n"
@@ -904,7 +895,6 @@ async def chat_endpoint(
                     f"Considera los resultados anteriores y proporciona una respuesta final."
                 )
 
-            # First LLM call with tools
             logger.debug(
                 "Calling LLM with tools: request_id=%s, session_id=%s, "
                 "model=%s, iteration=%d",
@@ -924,20 +914,18 @@ async def chat_endpoint(
             last_output_text = llm_response.text
             tool_calls = llm_response.tool_calls
 
-            # Accumulate tokens from this LLM call
             acc_input_tokens += llm_response.input_tokens
             acc_output_tokens += llm_response.output_tokens
             acc_total_tokens += llm_response.total_tokens
 
             if not tool_calls:
-                # No tool call needed - check intent type for escalation
                 content = llm_response.text
                 intent_type, cleaned_content = _extract_intent_type(content)
 
                 if intent_type in ESCALATE_INTENTS:
                     session_manager.add_turn(
                         session_id=session_id,
-                        question=request.message,
+                        question=message,
                         answer=DEFAULT_ESCALATION_MESSAGE,
                         source_documents=[],
                     )
@@ -950,7 +938,7 @@ async def chat_endpoint(
                     response_time_ms = (time.time() - request_start) * 1000
                     _fire_conversation_log(
                         session_id=session_id,
-                        user_message=request.message,
+                        user_message=message,
                         bot_response=DEFAULT_ESCALATION_MESSAGE,
                         intent_type=intent_type,
                         escalate=True,
@@ -977,7 +965,7 @@ async def chat_endpoint(
                 if intent_type == "fuera_de_dominio":
                     session_manager.add_turn(
                         session_id=session_id,
-                        question=request.message,
+                        question=message,
                         answer=OUT_OF_DOMAIN_MESSAGE,
                         source_documents=[],
                     )
@@ -990,7 +978,7 @@ async def chat_endpoint(
                     response_time_ms = (time.time() - request_start) * 1000
                     _fire_conversation_log(
                         session_id=session_id,
-                        user_message=request.message,
+                        user_message=message,
                         bot_response=OUT_OF_DOMAIN_MESSAGE,
                         intent_type=intent_type,
                         escalate=False,
@@ -1014,22 +1002,18 @@ async def chat_endpoint(
                         total_tokens=acc_total_tokens,
                     )
 
-                # P1: Apply WhatsApp formatting if enabled
                 response_text = cleaned_content
                 if settings.whatsapp_formatter_enabled:
                     response_text = format_for_whatsapp(cleaned_content)
 
-                # P2: Prompt-based message splitting
                 split_messages, split_delays = process_split_messages(
                     text=response_text,
                     intent_type=intent_type,
-                    llm_regenerate_fn=None,  # Regeneration not implemented yet
+                    llm_regenerate_fn=None,
                 )
 
-                # P3: Prepend greeting on first contact if enabled
                 escalate = intent_type in ESCALATE_INTENTS
                 if split_messages:
-                    # Greeting goes into the first split message
                     split_messages[0] = maybe_prepend_greeting(
                         session_id=session_id,
                         response_text=split_messages[0],
@@ -1047,7 +1031,7 @@ async def chat_endpoint(
 
                 session_manager.add_turn(
                     session_id=session_id,
-                    question=request.message,
+                    question=message,
                     answer=response_text,
                     source_documents=[],
                 )
@@ -1057,7 +1041,7 @@ async def chat_endpoint(
                 response_time_ms = (time.time() - request_start) * 1000
                 _fire_conversation_log(
                     session_id=session_id,
-                    user_message=request.message,
+                    user_message=message,
                     bot_response=response_text,
                     intent_type=intent_type,
                     escalate=False,
@@ -1083,7 +1067,6 @@ async def chat_endpoint(
                     total_tokens=acc_total_tokens,
                 )
 
-            # Process tool calls and collect results
             tool_results: list[dict[str, Any]] = []
 
             for tool_call in tool_calls:
@@ -1127,12 +1110,10 @@ async def chat_endpoint(
                             s3_client=s3_client,
                             file_inputs_client=file_inputs_client,
                         )
-                        # Accumulate tokens from nested file LLM call
                         acc_input_tokens += ficha_response.input_tokens
                         acc_output_tokens += ficha_response.output_tokens
                         acc_total_tokens += ficha_response.total_tokens
 
-                        # Track source documents
                         source_docs.extend(
                             [SourceDocument(ruta=ruta) for ruta in new_source_docs]
                         )
@@ -1204,7 +1185,6 @@ async def chat_endpoint(
                         }
                     )
                 except ValueError as e:
-                    # ValueError includes cases like missing ruta_s3 with catalog fallback
                     logger.warning(
                         "ValueError in tool call: request_id=%s, session_id=%s, "
                         "function=%s, error=%s",
@@ -1242,14 +1222,13 @@ async def chat_endpoint(
                         }
                     )
 
-            # Check if all tools failed - if so, return error response
             if all(not r["success"] for r in tool_results):
                 error_content = "\n".join(
                     f"- {r['function_name']}: {r['content']}" for r in tool_results
                 )
                 session_manager.add_turn(
                     session_id=session_id,
-                    question=request.message,
+                    question=message,
                     answer=error_content,
                     source_documents=[],
                 )
@@ -1259,7 +1238,7 @@ async def chat_endpoint(
                 response_time_ms = (time.time() - request_start) * 1000
                 _fire_conversation_log(
                     session_id=session_id,
-                    user_message=request.message,
+                    user_message=message,
                     bot_response=error_content,
                     intent_type="error_tool_failure",
                     escalate=False,
@@ -1282,7 +1261,6 @@ async def chat_endpoint(
                     total_tokens=acc_total_tokens,
                 )
 
-            # Build tool results summary for next iteration
             tool_results_summary = "\n\n".join(
                 f"## Resultado de {r['function_name']}:\n{r['content']}"
                 for r in tool_results
@@ -1293,7 +1271,6 @@ async def chat_endpoint(
                 iteration,
             )
 
-        # Max iterations reached - check if final response indicates escalation
         logger.warning(
             "Max agentic iterations reached: request_id=%s, session_id=%s, "
             "iterations=%d",
@@ -1306,7 +1283,7 @@ async def chat_endpoint(
         if intent_type in ESCALATE_INTENTS:
             session_manager.add_turn(
                 session_id=session_id,
-                question=request.message,
+                question=message,
                 answer=DEFAULT_ESCALATION_MESSAGE,
                 source_documents=[],
             )
@@ -1316,7 +1293,7 @@ async def chat_endpoint(
             response_time_ms = (time.time() - request_start) * 1000
             _fire_conversation_log(
                 session_id=session_id,
-                user_message=request.message,
+                user_message=message,
                 bot_response=DEFAULT_ESCALATION_MESSAGE,
                 intent_type=intent_type,
                 escalate=True,
@@ -1346,7 +1323,7 @@ async def chat_endpoint(
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
             session_id=session_id,
-            user_message=request.message,
+            user_message=message,
             bot_response=(
                 "Se alcanzó el límite de iteraciones. Por favor, reformula "
                 "tu pregunta o contacta al equipo de ventas."
@@ -1383,6 +1360,138 @@ async def chat_endpoint(
             session_id,
             e,
         )
+        raise
+    except Exception as e:
+        logger.exception(
+            "Unexpected error in chat processing: request_id=%s, session_id=%s, error=%s",
+            request_id,
+            session_id,
+            e,
+        )
+        raise
+
+
+async def _on_buffer_window_expired(session_id: str, joined_message: str) -> None:
+    """Callback when buffer window expires.
+
+    Processes the joined message with the chatbot in the background
+    and stores the response for polling by the client.
+    """
+    logger.info(
+        "Buffer window expired for session %s: %d chars accumulated, "
+        "processing in background",
+        session_id,
+        len(joined_message),
+    )
+    set_processing(session_id)
+    try:
+        response = await _process_chat_message(
+            session_id=session_id,
+            message=joined_message,
+            llm_client=llm_client,
+            s3_client=s3_client,
+            file_inputs_client=file_inputs_client,
+        )
+        set_pending_chat_response(session_id, response.model_dump_json())
+        logger.info(
+            "Buffered message processed for session %s, response stored for polling",
+            session_id,
+        )
+    except Exception as e:
+        logger.exception(
+            "Error processing buffered message for session %s: %s",
+            session_id,
+            e,
+        )
+        # Store a lightweight error response so the frontend does not hang
+        # until the 60-second timeout; the user sees an error immediately.
+        error_response = ChatResponse(
+            response=(
+                "Lo siento, ocurrió un error al procesar tu mensaje. "
+                "Por favor, intenta de nuevo o contacta al equipo de ventas."
+            ),
+            escalate=False,
+            intent_type="error_tool_failure",
+            session_id=session_id,
+            source_documents=[],
+            num_sources=0,
+            user_profile=None,
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+        )
+        set_pending_chat_response(session_id, error_response.model_dump_json())
+    finally:
+        clear_processing(session_id)
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat_endpoint(
+    request: ChatRequest,
+    api_key: Annotated[str, Depends(verify_api_key)],
+    llm_client: Annotated[LLMClient, Depends(get_llm_client)],
+    s3_client: Annotated[S3Client, Depends(get_s3_client)],
+    file_inputs_client: Annotated[FileInputsClient, Depends(get_file_inputs_client)],
+):
+    """
+    Chat endpoint that handles user messages.
+
+    Implements an agentic loop pattern with tool calling:
+    1. LLM call checks if tools need to be invoked
+    2. Process tool calls (buscar_producto or leer_ficha_tecnica)
+    3. Loop back to LLM with tool results until no more tools called
+    4. Return final response
+    """
+    session_id = request.session_id or str(uuid.uuid4())
+    request_id = str(uuid.uuid4())
+
+    # P4: Multi-message buffer — intercept before normal processing
+    if settings.multi_message_buffer_enabled:
+        current_count = get_buffer_count(session_id)
+
+        if request.is_final or current_count >= 4:
+            overflow_result = await add_to_buffer(session_id, request.message)
+            joined = overflow_result or await flush_buffer(session_id)
+            if joined:
+                request = ChatRequest(
+                    message=joined,
+                    session_id=session_id,
+                    is_final=request.is_final,
+                )
+        else:
+            # Clear any stale pending response from a previous buffer window
+            clear_pending_chat_response(session_id)
+            clear_processing(session_id)
+            await add_to_buffer(session_id, request.message)
+            schedule_flush(
+                session_id,
+                settings.buffer_window_seconds,
+                _on_buffer_window_expired,
+            )
+            return JSONResponse(
+                status_code=202,
+                content=BufferingResponse(
+                    session_id=session_id,
+                    poll_url=f"/buffer-result/{session_id}",
+                ).model_dump(),
+            )
+
+    try:
+        return await _process_chat_message(
+            session_id=session_id,
+            message=request.message,
+            llm_client=llm_client,
+            s3_client=s3_client,
+            file_inputs_client=file_inputs_client,
+            request_id=request_id,
+        )
+    except LLMServiceError as e:
+        logger.error(
+            "LLM service error: request_id=%s, session_id=%s, error=%s",
+            request_id,
+            session_id,
+            e,
+        )
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.exception(
@@ -1391,8 +1500,35 @@ async def chat_endpoint(
             session_id,
             e,
         )
-
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
+async def get_buffer_result(session_id: str) -> BufferResultResponse:
+    """Poll for buffered message processing result.
+
+    After a 202 response from /chat, the client should poll this endpoint.
+    When the buffer window expires, the backend processes the joined message
+    with the chatbot and stores the response for pickup.
+    """
+    chat_response_json = pop_pending_chat_response(session_id)
+    if chat_response_json:
+        return BufferResultResponse(
+            status="ready",
+            session_id=session_id,
+            result=chat_response_json,
+        )
+
+    if is_buffering(session_id):
+        return BufferResultResponse(
+            status="pending",
+            session_id=session_id,
+        )
+
+    return BufferResultResponse(
+        status="not_found",
+        session_id=session_id,
+    )
 
 
 if __name__ == "__main__":

@@ -165,3 +165,13 @@ class TestWhatsAppConfigValidation:
         from backend.app.config import settings
 
         assert settings.buffer_window_seconds == 10
+
+    def test_buffer_window_seconds_accepts_large_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BUFFER_WINDOW_SECONDS accepts values > 15 (no artificial limit)."""
+        monkeypatch.setenv("BUFFER_WINDOW_SECONDS", "30")
+        _reset_settings()
+        from backend.app.config import settings
+
+        assert settings.buffer_window_seconds == 30

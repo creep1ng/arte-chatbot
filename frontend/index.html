@@ -575,6 +575,9 @@
       let cumulativeInputTokens = 0;
       let cumulativeOutputTokens = 0;
       let cumulativeTotalTokens = 0;
+      let bufferingTimeout = null;
+      let activePollInterval = null;
+      let activePollTimeout = null;
 
       // --- DOM refs ---
       const messagesEl = document.getElementById("messages");
@@ -736,6 +739,94 @@
         }
       }
 
+      // --- Buffer polling ---
+      function cancelActivePoll() {
+        if (activePollInterval) {
+          clearInterval(activePollInterval);
+          activePollInterval = null;
+        }
+        if (activePollTimeout) {
+          clearTimeout(activePollTimeout);
+          activePollTimeout = null;
+        }
+      }
+
+      function startBufferPolling(sid) {
+        cancelActivePoll();
+
+        activePollInterval = setInterval(async () => {
+          try {
+            const pollResponse = await fetch(
+              `${API_URL}/buffer-result/${sid}`,
+              {
+                headers: { "X-API-Key": apiKey },
+              }
+            );
+            if (!pollResponse.ok) return;
+            const pollData = await pollResponse.json();
+
+            if (pollData.status === "ready") {
+              cancelActivePoll();
+              hideTyping();
+              const chatResponse = JSON.parse(pollData.result);
+
+              if (
+                chatResponse.input_tokens != null &&
+                chatResponse.output_tokens != null &&
+                chatResponse.total_tokens != null
+              ) {
+                cumulativeInputTokens += chatResponse.input_tokens;
+                cumulativeOutputTokens += chatResponse.output_tokens;
+                cumulativeTotalTokens += chatResponse.total_tokens;
+                tokenCountEl.textContent = cumulativeTotalTokens.toLocaleString();
+                tokenBadge.style.display = "inline-flex";
+              }
+
+              const responseTime = new Date();
+              const responseTimeStr = responseTime.toLocaleTimeString("es-ES", {
+                hour: "2-digit",
+                minute: "2-digit",
+              });
+
+              addMessage(chatResponse.response, "bot", {
+                time: responseTimeStr,
+                model: MODEL,
+                escalate: chatResponse.escalate,
+                reason: chatResponse.reason,
+                inputTokens: chatResponse.input_tokens,
+                outputTokens: chatResponse.output_tokens,
+              });
+
+              if (chatResponse.escalate) {
+                isEscalated = true;
+                inputField.disabled = true;
+                inputField.placeholder = "Conversacion escalada a un agente humano";
+                sendBtn.disabled = true;
+              }
+              setProcessing(false);
+            } else if (pollData.status === "not_found") {
+              cancelActivePoll();
+              hideTyping();
+              addMessage("Error: no se encontró resultado del buffer.", "error");
+              setProcessing(false);
+            }
+            // pending: keep polling
+          } catch (_) {
+            // Keep polling on transient errors
+          }
+        }, 1000);
+
+        activePollTimeout = setTimeout(() => {
+          cancelActivePoll();
+          hideTyping();
+          addMessage(
+            "Error: tiempo de espera agotado para la respuesta.",
+            "error"
+          );
+          setProcessing(false);
+        }, 60000);
+      }
+
       // --- Send message ---
       async function sendMessage() {
         const text = inputField.value.trim();
@@ -770,6 +861,7 @@
         const startTime = performance.now();
 
         try {
+          cancelActivePoll();
           const response = await fetch(`${API_URL}/chat`, {
             method: "POST",
             headers: {
@@ -800,6 +892,12 @@
           // Store session ID
           if (data.session_id) {
             sessionId = data.session_id;
+          }
+
+          // Handle buffering (202 Accepted)
+          if (response.status === 202) {
+            startBufferPolling(data.session_id);
+            return;
           }
 
           // Accumulate tokens if present
