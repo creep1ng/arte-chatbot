@@ -23,6 +23,12 @@ _buffer_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
 # Pending buffer results: session_id -> (joined_message, timestamp)
 _pending_results: dict[str, tuple[str, datetime]] = {}
 
+# Pending chat responses from background processing: session_id -> (chat_response_json, timestamp)
+_pending_chat_responses: dict[str, tuple[str, datetime]] = {}
+
+# Sessions whose buffer was flushed and are being processed in background
+_processing_sessions: dict[str, datetime] = {}
+
 
 async def add_to_buffer(
     session_id: str, message: str, max_messages: int = 5
@@ -66,12 +72,17 @@ async def flush_buffer(session_id: str) -> Optional[str]:
     """
     messages = _buffer.pop(session_id, [])
     task = _buffer_tasks.pop(session_id, None)
-    if task and not task.done():
+    current_task = asyncio.current_task()
+    if task and task is not current_task and not task.done():
         task.cancel()
     if not messages:
         return None
     joined = "\n".join(msg for msg, _ in messages)
-    _pending_results[session_id] = (joined, datetime.now(timezone.utc))
+    # Clean up stale state from previous flushes to prevent memory leaks
+    # and avoid false "not_found" responses while background processing runs.
+    _pending_results.pop(session_id, None)
+    _pending_chat_responses.pop(session_id, None)
+    _processing_sessions.pop(session_id, None)
     return joined
 
 
@@ -129,6 +140,71 @@ def pop_pending_result(session_id: str) -> Optional[str]:
     if result:
         return result[0]
     return None
+
+
+def set_pending_chat_response(session_id: str, response_json: str) -> None:
+    """Store a processed chat response for polling.
+
+    Args:
+        session_id: The session identifier.
+        response_json: JSON string of the ChatResponse.
+    """
+    _pending_chat_responses[session_id] = (response_json, datetime.now(timezone.utc))
+
+
+def pop_pending_chat_response(session_id: str) -> Optional[str]:
+    """Pop and return a pending chat response for a session.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        The JSON chat response if available, None otherwise.
+    """
+    result = _pending_chat_responses.pop(session_id, None)
+    if result:
+        return result[0]
+    return None
+
+
+def clear_pending_chat_response(session_id: str) -> None:
+    """Clear any pending chat response for a session.
+
+    Args:
+        session_id: The session identifier.
+    """
+    _pending_chat_responses.pop(session_id, None)
+    _processing_sessions.pop(session_id, None)
+
+
+def set_processing(session_id: str) -> None:
+    """Mark a session as having its buffer flushed and being processed.
+
+    Args:
+        session_id: The session identifier.
+    """
+    _processing_sessions[session_id] = datetime.now(timezone.utc)
+
+
+def clear_processing(session_id: str) -> None:
+    """Remove the processing mark for a session.
+
+    Args:
+        session_id: The session identifier.
+    """
+    _processing_sessions.pop(session_id, None)
+
+
+def is_processing(session_id: str) -> bool:
+    """Check if a session is currently being processed after a flush.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        True if the session's buffered message is being processed.
+    """
+    return session_id in _processing_sessions
 
 
 FlushCallback = Callable[[str, str], Awaitable[None]]
