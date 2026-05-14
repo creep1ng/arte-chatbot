@@ -151,10 +151,9 @@ _log_environment_configuration()
 def _log_tool_definitions() -> None:
     tools = get_tool_definitions()
     for tool in tools:
-        function_block = tool.get("function", {})
-        name = function_block.get("name")
+        name = tool.get("name")
         tool_type = tool.get("type")
-        has_parameters = isinstance(function_block.get("parameters"), dict)
+        has_parameters = isinstance(tool.get("parameters"), dict)
         logger.info(
             "Tool configuration: name=%s, type=%s, has_parameters=%s",
             name,

@@ -26,7 +26,7 @@ class TestToolDefinitions:
         # Find the leer_ficha_tecnica tool
         tool = None
         for t in result:
-            if t.get("function", {}).get("name") == "leer_ficha_tecnica":
+            if t.get("name") == "leer_ficha_tecnica":
                 tool = t
                 break
 
@@ -34,22 +34,21 @@ class TestToolDefinitions:
 
         # Check top-level structure (Responses API format)
         assert tool.get("type") == "function"
-        assert "function" in tool
-        assert "name" in tool["function"]
-        assert "description" in tool["function"]
-        assert "parameters" in tool["function"]
+        assert "name" in tool
+        assert "description" in tool
+        assert "parameters" in tool
 
     def test_tool_has_correct_name(self) -> None:
         """Test that tool has correct name."""
         result = tools.get_tool_definitions()
         tool = result[0]
-        assert tool["function"]["name"] == "leer_ficha_tecnica"
+        assert tool["name"] == "leer_ficha_tecnica"
 
     def test_tool_has_description(self) -> None:
         """Test that tool has a description."""
         result = tools.get_tool_definitions()
         tool = result[0]
-        description = tool["function"]["description"]
+        description = tool["description"]
         assert len(description) > 0
         assert "ficha técnica" in description.lower()
 
@@ -61,7 +60,7 @@ class TestToolParameters:
         """Test parameters contain ruta_s3, categoria, fabricante, modelo."""
         result = tools.get_tool_definitions()
         tool = result[0]
-        params = tool["function"]["parameters"]
+        params = tool["parameters"]
         properties = params.get("properties", {})
 
         required_props = ["ruta_s3", "categoria", "fabricante", "modelo"]
@@ -72,7 +71,7 @@ class TestToolParameters:
         """Test ruta_s3 parameter schema."""
         result = tools.get_tool_definitions()
         tool = result[0]
-        params = tool["function"]["parameters"]
+        params = tool["parameters"]
         properties = params.get("properties", {})
 
         ruta_s3 = properties["ruta_s3"]
@@ -84,7 +83,7 @@ class TestToolParameters:
         """Test categoria parameter has valid enum options."""
         result = tools.get_tool_definitions()
         tool = result[0]
-        params = tool["function"]["parameters"]
+        params = tool["parameters"]
         properties = params.get("properties", {})
 
         categoria = properties["categoria"]
@@ -104,7 +103,7 @@ class TestToolParameters:
         """Test fabricante parameter schema."""
         result = tools.get_tool_definitions()
         tool = result[0]
-        params = tool["function"]["parameters"]
+        params = tool["parameters"]
         properties = params.get("properties", {})
 
         fabricante = properties["fabricante"]
@@ -119,7 +118,7 @@ class TestToolParameters:
         """Test modelo parameter schema."""
         result = tools.get_tool_definitions()
         tool = result[0]
-        params = tool["function"]["parameters"]
+        params = tool["parameters"]
         properties = params.get("properties", {})
 
         modelo = properties["modelo"]
@@ -134,7 +133,7 @@ class TestToolRequiredFields:
         """Test that only categoria is required."""
         result = tools.get_tool_definitions()
         tool = result[0]
-        params = tool["function"]["parameters"]
+        params = tool["parameters"]
 
         required = params.get("required", [])
         assert "categoria" in required
@@ -147,7 +146,7 @@ class TestToolRequiredFields:
         """Test that strict mode is disabled for flexible tool calling."""
         result = tools.get_tool_definitions()
         tool = result[0]
-        assert tool["function"].get("strict") is False
+        assert tool.get("strict") is False
 
 
 class TestConstants:
@@ -174,7 +173,7 @@ class TestConstants:
     def test_leer_ficha_tecnica_tool_constant(self) -> None:
         """Test LEER_FICHA_TECNICA_TOOL constant exists."""
         assert hasattr(tools, "LEER_FICHA_TECNICA_TOOL")
-        assert tools.LEER_FICHA_TECNICA_TOOL["function"]["name"] == "leer_ficha_tecnica"
+        assert tools.LEER_FICHA_TECNICA_TOOL["name"] == "leer_ficha_tecnica"
 
 
 class TestPathTraversalValidation:
