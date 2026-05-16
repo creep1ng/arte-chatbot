@@ -42,11 +42,17 @@ def validate_s3_path(ruta_s3: str) -> None:
             "Path traversal attempts are not allowed."
         )
 
+    # Allow raw/ prefix used in catalog_index.json paths (e.g., raw/paneles/...)
     path_parts = ruta_s3.split("/")
-    if path_parts[0] not in DATASHEET_CATEGORIES:
+    if path_parts[0] == "raw" and len(path_parts) > 1:
+        effective_prefix = path_parts[1]
+    else:
+        effective_prefix = path_parts[0]
+
+    if effective_prefix not in DATASHEET_CATEGORIES:
         raise PathTraversalError(
-            f"Invalid category prefix in ruta_s3: '{path_parts[0]}'. "
-            f"Must start with one of: {DATASHEET_CATEGORIES}"
+            f"Invalid category prefix in ruta_s3: '{ruta_s3}'. "
+            f"Must start with one of: {DATASHEET_CATEGORIES} or raw/<category>."
         )
 
 

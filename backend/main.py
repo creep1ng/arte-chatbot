@@ -446,8 +446,8 @@ def _handle_buscar_producto_tool(
                 lines.append(f"Descripción: {product.descripcion}")
             lines.append("Modelos disponibles:")
             for variante in product.variantes:
-                modelo = variante.get("modelo", "Sin nombre")
-                params = variante.get("parametros_clave", {})
+                modelo = getattr(variante, "modelo", None) or "Sin nombre"
+                params = getattr(variante, "parametros_clave", None) or {}
                 params_str = ", ".join(f"{k}: {v}" for k, v in params.items())
                 lines.append(f"  - {modelo} ({params_str})")
             lines.append(
@@ -529,8 +529,8 @@ def _process_buscar_producto(
                 lines.append(f"Descripción: {product.descripcion}")
             lines.append("Modelos disponibles:")
             for variante in product.variantes:
-                modelo = variante.get("modelo", "Sin nombre")
-                params = variante.get("parametros_clave", {})
+                modelo = getattr(variante, "modelo", None) or "Sin nombre"
+                params = getattr(variante, "parametros_clave", None) or {}
                 params_str = ", ".join(f"{k}: {v}" for k, v in params.items())
                 lines.append(f"  - {modelo} ({params_str})")
             lines.append(
