@@ -9,6 +9,7 @@ attribute access, which ensures environment variables patched by tests
 import time.
 """
 
+import warnings
 from typing import Any, Optional
 
 from pydantic import Field, model_validator
@@ -132,6 +133,58 @@ class Settings(BaseSettings):
         description="Git commit hash for traceability in conversation logs",
     )
 
+    # Chatwoot
+    chatwoot_enabled: bool = Field(
+        default=False,
+        description="Enable Chatwoot integration",
+    )
+    chatwoot_api_url: Optional[str] = Field(
+        default=None,
+        description="URL of the Chatwoot instance (no trailing slash)",
+    )
+    chatwoot_agent_bot_token: Optional[str] = Field(
+        default=None,
+        description="AgentBot access token from Chatwoot",
+    )
+    chatwoot_account_id: Optional[int] = Field(
+        default=None,
+        description="Numeric account ID",
+    )
+    chatwoot_inbox_id: Optional[int] = Field(
+        default=None,
+        description="Numeric inbox ID for WhatsApp",
+    )
+    chatwoot_webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Webhook secret for HMAC signature verification",
+    )
+    chatwoot_handoff_team_id: Optional[int] = Field(
+        default=None,
+        description="Team ID for human escalation handoff",
+    )
+    chatwoot_bot_label: str = Field(
+        default="bot",
+        description="Label assigned by the bot",
+    )
+    chatwoot_escalated_label: str = Field(
+        default="escalated",
+        description="Label for escalated conversations",
+    )
+    chatwoot_technical_label: str = Field(
+        default="technical",
+        description="Label for technical conversations",
+    )
+
+    # Redis
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis connection URL",
+    )
+    redis_password: Optional[str] = Field(
+        default=None,
+        description="Redis password",
+    )
+
     @model_validator(mode="after")
     def _validate_delay_bounds(self) -> "Settings":
         """Ensure msg_delay_min_ms <= msg_delay_max_ms."""
@@ -153,6 +206,33 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"Invalid IANA timezone: {self.greeting_timezone}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_chatwoot_config(self) -> "Settings":
+        """Warn if Chatwoot is enabled but required fields are missing."""
+        if not self.chatwoot_enabled:
+            return self
+
+        missing: list[str] = []
+        if not self.chatwoot_api_url:
+            missing.append("CHATWOOT_API_URL")
+        if not self.chatwoot_agent_bot_token:
+            missing.append("CHATWOOT_AGENT_BOT_TOKEN")
+        if self.chatwoot_account_id is None:
+            missing.append("CHATWOOT_ACCOUNT_ID")
+        if self.chatwoot_inbox_id is None:
+            missing.append("CHATWOOT_INBOX_ID")
+        if not self.chatwoot_webhook_secret:
+            missing.append("CHATWOOT_WEBHOOK_SECRET")
+
+        if missing:
+            warnings.warn(
+                f"Chatwoot is enabled but the following required settings are missing: {', '.join(missing)}",
+                UserWarning,
+                stacklevel=2,
+            )
+
         return self
 
 
