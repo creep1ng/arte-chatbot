@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from backend.app.auth import verify_api_key
 from backend.app.catalog import CatalogError, get_catalog
 from backend.app.config import settings
+from backend.app.config_provider import EnvConfigProvider
 from backend.app.conversation_logger import ConversationLogEntry, ConversationLogger
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.greeting import maybe_prepend_greeting
@@ -194,6 +195,11 @@ def get_s3_client() -> S3Client:
 def get_file_inputs_client() -> FileInputsClient:
     """Dependency that provides a FileInputsClient instance."""
     return file_inputs_client
+
+
+def get_config_provider() -> EnvConfigProvider:
+    """Dependency that provides a ConfigProvider instance."""
+    return EnvConfigProvider()
 
 
 # Lazy-load catalog to allow /health to work without AWS credentials in CI
@@ -753,6 +759,7 @@ async def _process_leer_ficha_tecnica(
 
 # Alias for backward compatibility with tests
 _process_tool_call = _process_leer_ficha_tecnica
+
 
 async def _process_chat_message(
     session_id: str,

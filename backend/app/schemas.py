@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,3 +24,59 @@ class LLMResponse(BaseModel):
 class SourceDocument(BaseModel):
     ruta: str
     contenido_relevante: Optional[str] = None
+
+
+class ChatwootMessage(BaseModel):
+    """Nested message object inside a Chatwoot webhook payload."""
+
+    id: int
+    content: Optional[str] = None
+    content_type: str = "text"
+    private: bool = False
+
+
+class ChatwootConversation(BaseModel):
+    """Nested conversation object inside a Chatwoot webhook payload."""
+
+    id: int
+    status: str
+    inbox_id: int
+    contact_id: int
+
+
+class ChatwootSender(BaseModel):
+    """Nested sender object inside a Chatwoot webhook payload."""
+
+    id: int
+    type: Literal["contact", "user", "agent_bot"]
+    name: Optional[str] = None
+
+
+class ChatwootWebhookPayload(BaseModel):
+    """Base schema for all Chatwoot webhook payloads."""
+
+    event: str
+    account: dict[str, Any]
+
+
+class MessageCreatedPayload(ChatwootWebhookPayload):
+    """Schema for the 'message_created' webhook event."""
+
+    conversation: ChatwootConversation
+    sender: ChatwootSender
+    message: ChatwootMessage
+
+
+class ConversationCreatedPayload(ChatwootWebhookPayload):
+    """Schema for the 'conversation_created' webhook event."""
+
+    conversation: ChatwootConversation
+    sender: ChatwootSender
+
+
+class ConversationStatusChangedPayload(ChatwootWebhookPayload):
+    """Schema for the 'conversation_status_changed' webhook event."""
+
+    conversation: ChatwootConversation
+    sender: ChatwootSender
+    status: str
