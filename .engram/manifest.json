@@ -32,6 +32,14 @@
       "sessions": 0,
       "memories": 1,
       "prompts": 0
+    },
+    {
+      "id": "addbfa94",
+      "created_by": "creep",
+      "created_at": "2026-05-16T17:11:04Z",
+      "sessions": 0,
+      "memories": 7,
+      "prompts": 0
     }
   ]
 }

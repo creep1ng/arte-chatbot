@@ -151,10 +151,9 @@ _log_environment_configuration()
 def _log_tool_definitions() -> None:
     tools = get_tool_definitions()
     for tool in tools:
-        function_block = tool.get("function", {})
-        name = function_block.get("name")
+        name = tool.get("name")
         tool_type = tool.get("type")
-        has_parameters = isinstance(function_block.get("parameters"), dict)
+        has_parameters = isinstance(tool.get("parameters"), dict)
         logger.info(
             "Tool configuration: name=%s, type=%s, has_parameters=%s",
             name,
@@ -447,8 +446,8 @@ def _handle_buscar_producto_tool(
                 lines.append(f"Descripción: {product.descripcion}")
             lines.append("Modelos disponibles:")
             for variante in product.variantes:
-                modelo = variante.get("modelo", "Sin nombre")
-                params = variante.get("parametros_clave", {})
+                modelo = getattr(variante, "modelo", None) or "Sin nombre"
+                params = getattr(variante, "parametros_clave", None) or {}
                 params_str = ", ".join(f"{k}: {v}" for k, v in params.items())
                 lines.append(f"  - {modelo} ({params_str})")
             lines.append(
@@ -530,8 +529,8 @@ def _process_buscar_producto(
                 lines.append(f"Descripción: {product.descripcion}")
             lines.append("Modelos disponibles:")
             for variante in product.variantes:
-                modelo = variante.get("modelo", "Sin nombre")
-                params = variante.get("parametros_clave", {})
+                modelo = getattr(variante, "modelo", None) or "Sin nombre"
+                params = getattr(variante, "parametros_clave", None) or {}
                 params_str = ", ".join(f"{k}: {v}" for k, v in params.items())
                 lines.append(f"  - {modelo} ({params_str})")
             lines.append(

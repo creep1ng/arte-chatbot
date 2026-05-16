@@ -54,7 +54,7 @@ class Catalog:
     def _load_index(self, index_data: Dict[str, Any]) -> None:
         """Load and validate catalog index data."""
         try:
-            products_data = index_data.get("products", [])
+            products_data = index_data.get("productos", index_data.get("products", []))
             self.products = [CatalogProduct(**p) for p in products_data]
             logger.info("Loaded %d products into catalog", len(self.products))
         except Exception as e:

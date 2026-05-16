@@ -42,127 +42,127 @@ def validate_s3_path(ruta_s3: str) -> None:
             "Path traversal attempts are not allowed."
         )
 
+    # Allow raw/ prefix used in catalog_index.json paths (e.g., raw/paneles/...)
     path_parts = ruta_s3.split("/")
-    if path_parts[0] not in DATASHEET_CATEGORIES:
+    if path_parts[0] == "raw" and len(path_parts) > 1:
+        effective_prefix = path_parts[1]
+    else:
+        effective_prefix = path_parts[0]
+
+    if effective_prefix not in DATASHEET_CATEGORIES:
         raise PathTraversalError(
-            f"Invalid category prefix in ruta_s3: '{path_parts[0]}'. "
-            f"Must start with one of: {DATASHEET_CATEGORIES}"
+            f"Invalid category prefix in ruta_s3: '{ruta_s3}'. "
+            f"Must start with one of: {DATASHEET_CATEGORIES} or raw/<category>."
         )
 
 
-# Tool definition for reading technical datasheets (Chat Completions API format)
+# Tool definition for reading technical datasheets (OpenAI Responses API format)
 LEER_FICHA_TECNICA_TOOL: dict[str, Any] = {
     "type": "function",
     "name": "leer_ficha_tecnica",
-    "function": {
-        "name": "leer_ficha_tecnica",
-        "description": (
-            "Lee y analiza la ficha técnica PDF de un producto del catálogo "
-            "de Arte Soluciones Energéticas. Úsala cuando el usuario pregunte "
-            "por especificaciones técnicas de un producto. Puedes invocarla "
-            "con datos parciales (solo categoría, o categoría + fabricante, "
-            "etc.) para buscar opciones disponibles en el catálogo."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ruta_s3": {
-                    "type": "string",
-                    "description": (
-                        "Ruta completa del archivo PDF en S3. Ejemplo: "
-                        "paneles/jinko-tiger-pro-460w.pdf. Si no se conoce "
-                        "la ruta exacta, se puede omitir y el sistema "
-                        "buscará por los demás campos."
-                    ),
-                },
-                "categoria": {
-                    "type": "string",
-                    "description": (
-                        "Categoría del producto. Opciones: paneles, inversores, "
-                        "controladores, baterias, microinversores, protecciones."
-                    ),
-                    "enum": DATASHEET_CATEGORIES,
-                },
-                "fabricante": {
-                    "type": "string",
-                    "description": (
-                        "Nombre del fabricante o marca del producto. "
-                        "Opcional si no se conoce."
-                    ),
-                },
-                "modelo": {
-                    "type": "string",
-                    "description": (
-                        "Modelo o nombre comercial específico del producto. "
-                        "Opcional si no se conoce."
-                    ),
-                },
+    "description": (
+        "Lee y analiza la ficha técnica PDF de un producto del catálogo "
+        "de Arte Soluciones Energéticas. Úsala cuando el usuario pregunte "
+        "por especificaciones técnicas de un producto. Puedes invocarla "
+        "con datos parciales (solo categoría, o categoría + fabricante, "
+        "etc.) para buscar opciones disponibles en el catálogo."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ruta_s3": {
+                "type": "string",
+                "description": (
+                    "Ruta completa del archivo PDF en S3. Ejemplo: "
+                    "paneles/jinko-tiger-pro-460w.pdf. Si no se conoce "
+                    "la ruta exacta, se puede omitir y el sistema "
+                    "buscará por los demás campos."
+                ),
             },
-            "required": ["categoria"],
-            "additionalProperties": False,
+            "categoria": {
+                "type": "string",
+                "description": (
+                    "Categoría del producto. Opciones: paneles, inversores, "
+                    "controladores, baterias, microinversores, protecciones."
+                ),
+                "enum": DATASHEET_CATEGORIES,
+            },
+            "fabricante": {
+                "type": "string",
+                "description": (
+                    "Nombre del fabricante o marca del producto. "
+                    "Opcional si no se conoce."
+                ),
+            },
+            "modelo": {
+                "type": "string",
+                "description": (
+                    "Modelo o nombre comercial específico del producto. "
+                    "Opcional si no se conoce."
+                ),
+            },
         },
-        "strict": False,
+        "required": ["categoria"],
+        "additionalProperties": False,
     },
+    "strict": False,
 }
 
 # Tool definition for searching products in the catalog
 BUSCAR_PRODUCTO_TOOL: dict[str, Any] = {
     "type": "function",
     "name": "buscar_producto",
-    "function": {
-        "name": "buscar_producto",
-        "description": (
-            "Busca productos en el catálogo de Arte Soluciones Energéticas por "
-            "categoría, fabricante, capacidad u otras características. Devuelve "
-            "una lista de productos coincidentes con sus rutas S3 para poder "
-            "leer sus fichas técnicas con la herramienta leer_ficha_tecnica."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "categoria": {
-                    "type": "string",
-                    "enum": DATASHEET_CATEGORIES,
-                    "description": "Categoría del producto a buscar.",
-                },
-                "fabricante": {
-                    "type": "string",
-                    "description": (
-                        "Nombre del fabricante o marca. Búsqueda parcial "
-                        "(case-insensitive). Opcional."
-                    ),
-                },
-                "capacidad_min": {
-                    "type": "number",
-                    "description": (
-                        "Capacidad o potencia mínima (W para paneles/inversores, "
-                        "Ah para baterías). Opcional."
-                    ),
-                },
-                "capacidad_max": {
-                    "type": "number",
-                    "description": ("Capacidad o potencia máxima. Opcional."),
-                },
-                "tipo": {
-                    "type": "string",
-                    "description": (
-                        "Tipo de producto (mppt, pwm, onda_pura, multifuncional, "
-                        "gel, litio, monocristalino, etc.). Opcional."
-                    ),
-                },
-                "modelo_contiene": {
-                    "type": "string",
-                    "description": (
-                        "Texto que debe contener el nombre del modelo. "
-                        "Búsqueda parcial (case-insensitive). Opcional."
-                    ),
-                },
+    "description": (
+        "Busca productos en el catálogo de Arte Soluciones Energéticas por "
+        "categoría, fabricante, capacidad u otras características. Devuelve "
+        "una lista de productos coincidentes con sus rutas S3 para poder "
+        "leer sus fichas técnicas con la herramienta leer_ficha_tecnica."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "categoria": {
+                "type": "string",
+                "enum": DATASHEET_CATEGORIES,
+                "description": "Categoría del producto a buscar.",
             },
-            "required": ["categoria"],
-            "additionalProperties": False,
+            "fabricante": {
+                "type": "string",
+                "description": (
+                    "Nombre del fabricante o marca. Búsqueda parcial "
+                    "(case-insensitive). Opcional."
+                ),
+            },
+            "capacidad_min": {
+                "type": "number",
+                "description": (
+                    "Capacidad o potencia mínima (W para paneles/inversores, "
+                    "Ah para baterías). Opcional."
+                ),
+            },
+            "capacidad_max": {
+                "type": "number",
+                "description": ("Capacidad o potencia máxima. Opcional."),
+            },
+            "tipo": {
+                "type": "string",
+                "description": (
+                    "Tipo de producto (mppt, pwm, onda_pura, multifuncional, "
+                    "gel, litio, monocristalino, etc.). Opcional."
+                ),
+            },
+            "modelo_contiene": {
+                "type": "string",
+                "description": (
+                    "Texto que debe contener el nombre del modelo. "
+                    "Búsqueda parcial (case-insensitive). Opcional."
+                ),
+            },
         },
-        "strict": False,
+        "required": ["categoria"],
+        "additionalProperties": False,
     },
+    "strict": False,
 }
 
 
