@@ -203,9 +203,7 @@ class Settings(BaseSettings):
         try:
             ZoneInfo(self.greeting_timezone)
         except (KeyError, ZoneInfoNotFoundError):
-            raise ValueError(
-                f"Invalid IANA timezone: {self.greeting_timezone}"
-            )
+            raise ValueError(f"Invalid IANA timezone: {self.greeting_timezone}")
         return self
 
     @model_validator(mode="after")

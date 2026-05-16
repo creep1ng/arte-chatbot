@@ -104,7 +104,12 @@ class TestMessageCreatedPayload:
                 "contact_id": 20,
             },
             sender={"id": 30, "type": "contact", "name": "John"},
-            message={"id": 100, "content": "Hello", "content_type": "text", "private": False},
+            message={
+                "id": 100,
+                "content": "Hello",
+                "content_type": "text",
+                "private": False,
+            },
         )
         assert payload.event == "message_created"
         assert payload.message.content == "Hello"

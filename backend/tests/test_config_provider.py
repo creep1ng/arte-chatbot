@@ -7,10 +7,12 @@ provides sensible defaults for labels, channel profiles, and handoff.
 import os
 from unittest.mock import patch
 
-import pytest
-
 from backend.app.config import Settings
-from backend.app.config_provider import ChannelProfile, ConfigProvider, EnvConfigProvider
+from backend.app.config_provider import (
+    ChannelProfile,
+    ConfigProvider,
+    EnvConfigProvider,
+)
 
 
 class TestChannelProfile:

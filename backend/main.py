@@ -760,6 +760,7 @@ async def _process_leer_ficha_tecnica(
 # Alias for backward compatibility with tests
 _process_tool_call = _process_leer_ficha_tecnica
 
+
 async def _process_chat_message(
     session_id: str,
     message: str,
