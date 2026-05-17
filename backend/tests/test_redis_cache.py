@@ -188,6 +188,33 @@ class TestErrorHandling:
         assert await cache.exists("k") is False
 
 
+class TestHashDelete:
+    """HDEL operation."""
+
+    @pytest.mark.asyncio
+    async def test_hdel_existing(self, cache: RedisCache) -> None:
+        await cache.hset("hash", "field", "val")
+        assert await cache.hdel("hash", "field") is True
+        assert await cache.hget("hash", "field") is None
+
+    @pytest.mark.asyncio
+    async def test_hdel_missing(self, cache: RedisCache) -> None:
+        assert await cache.hdel("hash", "field") is True
+
+
+class TestExpire:
+    """EXPIRE operation."""
+
+    @pytest.mark.asyncio
+    async def test_expire_sets_ttl(self, cache: RedisCache) -> None:
+        await cache.set("k", "v")
+        assert await cache.expire("k", 60) is True
+
+    @pytest.mark.asyncio
+    async def test_expire_missing_key(self, cache: RedisCache) -> None:
+        assert await cache.expire("missing", 60) is True
+
+
 class TestHealthCheck:
     """Health check must reflect Redis connectivity."""
 
