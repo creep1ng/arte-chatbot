@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from backend.app.admin_router import admin_router
 from backend.app.auth import verify_api_key
 from backend.app.catalog import CatalogError, get_catalog
 from backend.app.config import settings
@@ -124,11 +125,13 @@ app = FastAPI(title="ARTE Chatbot Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(admin_router)
 
 
 # Diagnostic logging for environment configuration
