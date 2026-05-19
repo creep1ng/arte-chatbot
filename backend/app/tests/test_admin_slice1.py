@@ -82,7 +82,9 @@ class TestAdminHealth:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """GET /admin/health when ADMIN_API_KEY is unset returns 503."""
-        monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+        # Use an explicit empty env var so the test is isolated even when the
+        # developer's local .env file contains ADMIN_API_KEY.
+        monkeypatch.setenv("ADMIN_API_KEY", "")
         _reset_settings()
 
         from backend.main import app

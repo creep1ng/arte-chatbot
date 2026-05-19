@@ -168,3 +168,28 @@ def test_put_config_hot_reload(
     assert data["mutable"]["conversation_logging_enabled"] is True
     assert settings.llm_model == "gpt-after"
     assert settings.conversation_logging_enabled is True
+
+
+def test_put_config_ignores_redacted_admin_key(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PUT /admin/config must not overwrite secrets with redacted placeholders."""
+    monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
+    settings.reload()
+
+    response = client.put(
+        "/admin/config",
+        headers={"X-Admin-API-Key": "test-admin-key"},
+        json={"admin_api_key": "***REDACTED***", "llm_model": "gpt-nano"},
+    )
+
+    assert response.status_code == 200
+    assert settings.admin_api_key == "test-admin-key"
+    assert settings.llm_model == "gpt-nano"
+
+    follow_up = client.get(
+        "/admin/dashboard/metrics",
+        headers={"X-Admin-API-Key": "test-admin-key"},
+    )
+    assert follow_up.status_code == 200

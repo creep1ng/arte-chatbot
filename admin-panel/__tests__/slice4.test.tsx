@@ -143,10 +143,12 @@ describe("Slice 4 admin frontend pages", () => {
     });
 
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT");
-    expect(JSON.parse(putCall?.[1]?.body as string)).toMatchObject({
+    const payload = JSON.parse(putCall?.[1]?.body as string);
+    expect(payload).toMatchObject({
       escalation_confidence_threshold: 0.55,
       llm_model: "gpt-4.1-mini",
     });
+    expect(payload).not.toHaveProperty("admin_api_key");
   });
 
   it("updates escalation threshold and submits it", async () => {

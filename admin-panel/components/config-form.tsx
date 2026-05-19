@@ -44,7 +44,6 @@ const editableTextFields: Array<{
   { name: "log_level", label: "Nivel de logs" },
   { name: "greeting_timezone", label: "Zona horaria de saludo" },
   { name: "conversation_log_prefix", label: "Prefijo de logs de conversación" },
-  { name: "admin_api_key", label: "API key administrativa", type: "password" },
 ];
 
 const editableBooleanFields: Array<{
@@ -68,8 +67,10 @@ function normalizeMutable(settings: MutableSettings): MutableSettingsInput {
 }
 
 function cleanMutablePayload(values: MutableSettingsInput): MutableSettings {
+  const { admin_api_key: _adminApiKey, ...safeValues } = values;
+
   return Object.fromEntries(
-    Object.entries(values).filter(([, value]) => value !== undefined),
+    Object.entries(safeValues).filter(([, value]) => value !== undefined),
   ) as MutableSettings;
 }
 

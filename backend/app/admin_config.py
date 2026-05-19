@@ -57,6 +57,16 @@ def _env_value(value: Any) -> str:
     return str(value)
 
 
+def _is_redacted_secret_update(value: Any) -> bool:
+    """Return whether an incoming update is only the redacted placeholder.
+
+    Admin config responses intentionally redact secrets before sending them to
+    the browser. If the browser submits a full form payload back unchanged, the
+    redacted placeholder MUST NOT overwrite the real runtime secret.
+    """
+    return isinstance(value, str) and value == REDACTED
+
+
 def _current_settings_snapshot() -> CurrentSettingsSnapshot:
     """Build a settings snapshot with all sensitive values redacted.
 
@@ -109,6 +119,8 @@ async def put_config(
     updates = data.model_dump(exclude_unset=True)
     for field_name, value in updates.items():
         if value is None:
+            continue
+        if field_name in SECRET_FIELDS and _is_redacted_secret_update(value):
             continue
         env_name = MUTABLE_ENV_NAMES[field_name]
         os.environ[env_name] = _env_value(value)
