@@ -38,3 +38,31 @@ def test_verify_chatwoot_signature_accepts_sha256_prefix() -> None:
     signature = f"sha256={_signature(payload, secret)}"
 
     assert verify_chatwoot_signature(payload, signature, secret)
+
+
+def test_verify_chatwoot_signature_rejects_garbage_signature() -> None:
+    """Unsupported signature formats should fail closed."""
+    payload = b'{"event":"message_created"}'
+
+    assert not verify_chatwoot_signature(payload, "sha1=abc", "test-secret")
+
+
+def test_verify_chatwoot_signature_accepts_empty_body_valid_signature() -> None:
+    """Valid HMACs for empty bodies should pass signature verification."""
+    payload = b""
+    secret = "test-secret"
+
+    assert verify_chatwoot_signature(payload, _signature(payload, secret), secret)
+
+
+def test_verify_chatwoot_signature_rejects_empty_body_invalid_signature() -> None:
+    """Empty bodies with invalid signatures should fail verification."""
+    assert not verify_chatwoot_signature(b"", "invalid", "test-secret")
+
+
+def test_verify_chatwoot_signature_rejects_missing_secret() -> None:
+    """Enabled webhooks without a configured secret must fail closed."""
+    payload = b'{"event":"message_created"}'
+    signature = _signature(payload, "test-secret")
+
+    assert not verify_chatwoot_signature(payload, signature, None)

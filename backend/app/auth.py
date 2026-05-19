@@ -57,7 +57,7 @@ def verify_chatwoot_signature(
     Returns:
         ``True`` when the signature matches, otherwise ``False``.
     """
-    if not payload or not signature or not secret:
+    if signature is None or not secret:
         return False
 
     supplied_signature = signature.strip()
