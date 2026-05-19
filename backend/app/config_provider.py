@@ -5,19 +5,10 @@ admin-panel-backed providers can be swapped in without changing
 consumer code.
 """
 
-from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
+from backend.app.channel_profile import ChannelProfile, get_default_channel_profile
 from backend.app.config import Settings, settings
-
-
-@dataclass
-class ChannelProfile:
-    """Simple channel profile with safe defaults."""
-
-    name: str = "default"
-    supports_html: bool = False
-    max_message_length: int = 4096
 
 
 class ConfigProvider(Protocol):
@@ -76,11 +67,12 @@ class EnvConfigProvider:
         return mapping.get(name, name)
 
     def get_channel_profile(self, inbox_id: str) -> ChannelProfile:
-        """Return a default channel profile.
+        """Return a default channel profile for the given inbox.
 
-        Future implementations may lookup per-inbox overrides.
+        Future implementations may lookup per-inbox overrides from Redis
+        or an admin panel backend.
         """
-        return ChannelProfile()
+        return get_default_channel_profile()
 
     def get_handoff_target(self) -> Optional[int]:
         """Return the configured handoff team ID."""

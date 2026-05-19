@@ -8,21 +8,20 @@ import os
 from unittest.mock import patch
 
 from backend.app.config import Settings
-from backend.app.config_provider import (
-    ChannelProfile,
-    ConfigProvider,
-    EnvConfigProvider,
-)
+from backend.app.channel_profile import ChannelProfile
+from backend.app.config_provider import ConfigProvider, EnvConfigProvider
 
 
 class TestChannelProfile:
     """ChannelProfile must expose safe defaults."""
 
     def test_defaults(self) -> None:
-        profile = ChannelProfile()
-        assert profile.name == "default"
-        assert profile.supports_html is False
-        assert profile.max_message_length == 4096
+        profile = ChannelProfile(inbox_id="1")
+        assert profile.inbox_id == "1"
+        assert profile.channel_type == "web"
+        assert profile.buffer_window_seconds == 5
+        assert profile.enable_tool_calling is True
+        assert profile.max_turns == 20
 
 
 class TestEnvConfigProvider:
@@ -63,7 +62,8 @@ class TestEnvConfigProvider:
         provider = EnvConfigProvider(settings)
         profile = provider.get_channel_profile("1")
         assert isinstance(profile, ChannelProfile)
-        assert profile.name == "default"
+        assert profile.inbox_id == "default"
+        assert profile.channel_type == "web"
 
     def test_get_handoff_target_defaults_none(self) -> None:
         settings = Settings()
