@@ -5,6 +5,8 @@ when a conversation needs to be escalated to a human agent.
 """
 
 import logging
+from typing import Optional
+
 from backend.app.chatwoot_client import ChatwootClient
 from backend.app.config_provider import ConfigProvider
 from backend.app.session import SessionManager
@@ -36,11 +38,56 @@ class EscalationHandler:
         self,
         chatwoot_client: ChatwootClient,
         config_provider: ConfigProvider,
-        session_manager: SessionManager,
+        session_manager: Optional[SessionManager] = None,
     ) -> None:
         self._client = chatwoot_client
         self._config = config_provider
         self._session = session_manager
+
+    async def escalate_to_human(
+        self, conversation_id: int, reason: str, intent_type: str
+    ) -> bool:
+        """Escalate a Chatwoot conversation to a human agent.
+
+        Args:
+            conversation_id: Chatwoot conversation identifier.
+            reason: Human-readable escalation reason for logs/notes.
+            intent_type: Intent classifier label that triggered handoff.
+
+        Returns:
+            True when the critical handoff actions succeeded, False otherwise.
+        """
+        del reason
+        labels = [self._config.get_label("escalated")]
+        intent_label_name = _INTENT_LABEL_MAP.get(intent_type)
+        if intent_label_name is not None:
+            labels.append(self._config.get_label(intent_label_name))
+
+        for label in labels:
+            try:
+                await self._client.add_label(conversation_id, label)
+            except Exception as exc:
+                logger.warning(
+                    "Non-critical escalation label failed: conversation_id=%s, label=%s, error=%s",
+                    conversation_id,
+                    label,
+                    exc,
+                )
+
+        try:
+            await self._client.toggle_status(conversation_id, "open")
+            team_id = self._config.get_handoff_target()
+            if team_id is not None:
+                await self._client.assign_conversation(conversation_id, team_id=team_id)
+            await self._client.send_message(conversation_id, DEFAULT_ESCALATION_MESSAGE)
+            return True
+        except Exception as exc:
+            logger.error(
+                "Critical escalation action failed: conversation_id=%s, error=%s",
+                conversation_id,
+                exc,
+            )
+            return False
 
     async def handle_escalation(
         self,
@@ -88,9 +135,7 @@ class EscalationHandler:
 
         if team_id is not None:
             try:
-                await self._client.assign_conversation(
-                    conversation_id, team_id=team_id
-                )
+                await self._client.assign_conversation(conversation_id, team_id=team_id)
             except Exception as exc:
                 logger.error(
                     "Failed to assign conversation: conversation_id=%s, team_id=%s, error=%s",
@@ -100,9 +145,7 @@ class EscalationHandler:
                 )
 
         try:
-            await self._client.send_message(
-                conversation_id, DEFAULT_ESCALATION_MESSAGE
-            )
+            await self._client.send_message(conversation_id, DEFAULT_ESCALATION_MESSAGE)
         except Exception as exc:
             logger.error(
                 "Failed to send escalation message: conversation_id=%s, error=%s",
@@ -112,9 +155,8 @@ class EscalationHandler:
 
         # Store escalation reason in session for audit/debugging
         try:
-            await self._session.set_user_profile(
-                session_id, f"escalated:{reason}"
-            )
+            if self._session is not None:
+                self._session.set_user_profile(session_id, f"escalated:{reason}")
         except Exception as exc:
             logger.error(
                 "Failed to store escalation reason: session_id=%s, error=%s",

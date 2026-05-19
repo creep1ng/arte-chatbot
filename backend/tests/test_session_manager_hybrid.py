@@ -1,7 +1,7 @@
 """Tests for hybrid Redis SessionManager.
 
-Uses fakeredis to exercise Redis-backed session operations without a
-real Redis server.
+Uses fakeredis to exercise Redis-backed session operations without a real Redis
+server while preserving the legacy synchronous API used by /chat.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -31,59 +31,87 @@ def session_manager(redis_cache: RedisCache) -> SessionManager:
     return SessionManager(redis_cache=redis_cache)
 
 
-class TestAddTurn:
-    """Storing conversation turns in Redis."""
+class TestLegacySyncApi:
+    """The existing /chat-facing SessionManager API remains synchronous."""
+
+    def test_add_turn_and_get_history_are_sync(self) -> None:
+        sm = SessionManager(max_turns=2)
+
+        sm.add_turn("s1", "Pregunta 1", "Respuesta 1")
+        sm.add_turn("s1", "Pregunta 2", "Respuesta 2")
+        sm.add_turn("s1", "Pregunta 3", "Respuesta 3")
+
+        history = sm.get_history("s1")
+        assert len(history) == 2
+        assert history[0].question == "Pregunta 2"
+        assert history[1].question == "Pregunta 3"
+
+    def test_profile_and_token_methods_are_sync(self) -> None:
+        sm = SessionManager()
+
+        sm.set_user_profile("s1", "experto")
+        sm.add_token_usage("s1", 100, 50, 150)
+
+        assert sm.get_user_profile("s1") == "experto"
+        assert sm.get_token_totals("s1").total_tokens == 150
+
+    def test_context_and_clear_session_are_sync(self) -> None:
+        sm = SessionManager()
+        sm.add_turn("s1", "¿Panel?", "Sí", ["doc1.pdf"])
+
+        context = sm.get_context_string("s1")
+        assert "Usuario: ¿Panel?" in context
+
+        sm.clear_session("s1")
+        assert sm.get_history("s1") == []
+
+
+class TestAsyncHistory:
+    """Redis-backed async history methods."""
 
     @pytest.mark.asyncio
-    async def test_add_turn_creates_redis_list(
+    async def test_add_turn_async_creates_redis_list(
         self, session_manager: SessionManager
     ) -> None:
-        await session_manager.add_turn("s1", "¿Qué es solar?", "Energía del sol")
-        history = await session_manager.get_history("s1")
+        await session_manager.add_turn_async(
+            "s1", "¿Qué es solar?", "Energía del sol", []
+        )
+        history = await session_manager.get_history_async("s1")
         assert len(history) == 1
         assert history[0].question == "¿Qué es solar?"
         assert history[0].answer == "Energía del sol"
 
     @pytest.mark.asyncio
-    async def test_add_turn_trims_to_max(self, session_manager: SessionManager) -> None:
+    async def test_add_turn_async_trims_to_max(
+        self, session_manager: SessionManager
+    ) -> None:
         sm = SessionManager(redis_cache=session_manager._redis, max_turns=2)
-        for i in range(4):
-            await sm.add_turn("s1", f"Pregunta {i}", f"Respuesta {i}")
-        history = await sm.get_history("s1")
+        for index in range(4):
+            await sm.add_turn_async("s1", f"Pregunta {index}", f"Respuesta {index}", [])
+
+        history = await sm.get_history_async("s1")
         assert len(history) == 2
         assert history[0].question == "Pregunta 2"
         assert history[1].question == "Pregunta 3"
 
     @pytest.mark.asyncio
-    async def test_add_turn_includes_source_documents(
+    async def test_add_turn_async_includes_source_documents(
         self, session_manager: SessionManager
     ) -> None:
-        await session_manager.add_turn(
-            "s1", "¿Panel?", "Sí", source_documents=["doc1.pdf"]
-        )
-        history = await session_manager.get_history("s1")
+        await session_manager.add_turn_async("s1", "¿Panel?", "Sí", ["doc1.pdf"])
+        history = await session_manager.get_history_async("s1")
         assert history[0].source_documents == ["doc1.pdf"]
 
-
-class TestGetHistory:
-    """Retrieving history from Redis with fallbacks."""
-
     @pytest.mark.asyncio
-    async def test_get_history_from_redis(
+    async def test_get_history_async_empty(
         self, session_manager: SessionManager
     ) -> None:
-        await session_manager.add_turn("s1", "Hola", "Buenas")
-        await session_manager.add_turn("s1", "Adiós", "Hasta luego")
-        history = await session_manager.get_history("s1")
-        assert len(history) == 2
+        assert await session_manager.get_history_async("s1") == []
 
     @pytest.mark.asyncio
-    async def test_get_history_empty(self, session_manager: SessionManager) -> None:
-        history = await session_manager.get_history("s1")
-        assert history == []
-
-    @pytest.mark.asyncio
-    async def test_get_history_chatwoot_fallback(self, redis_cache: RedisCache) -> None:
+    async def test_get_history_async_chatwoot_fallback(
+        self, redis_cache: RedisCache
+    ) -> None:
         mock_client = AsyncMock(spec=ChatwootClient)
         mock_client.fetch_messages.return_value = {
             "payload": [
@@ -91,17 +119,17 @@ class TestGetHistory:
                 {"content": "Buenas", "message_type": 1, "sender_type": "user"},
             ]
         }
-
         sm = SessionManager(redis_cache=redis_cache, chatwoot_client=mock_client)
-        # Map conversation so fallback knows which conversation to fetch
         await sm.map_conversation("s1", "42")
 
-        history = await sm.get_history("s1")
-        assert len(history) == 1  # Only contact message becomes a turn
-        mock_client.fetch_messages.assert_awaited_once_with(42, limit=10)
+        history = await sm.get_history_async("s1")
+
+        assert len(history) == 1
+        assert history[0].question == "Hola"
+        mock_client.fetch_messages.assert_awaited_once_with(42, limit=20)
 
     @pytest.mark.asyncio
-    async def test_get_history_redis_unavailable_fallback(self) -> None:
+    async def test_get_history_async_redis_unavailable_fallback(self) -> None:
         from redis.exceptions import RedisError
 
         mock_redis = AsyncMock(spec=RedisCache)
@@ -112,169 +140,54 @@ class TestGetHistory:
         mock_redis.lrange.side_effect = RedisError("redis down")
 
         sm = SessionManager(redis_cache=mock_redis)
-        await sm.add_turn("s1", "Hola", "Buenas")
-        # Should fall back to in-memory
-        history = await sm.get_history("s1")
+        await sm.add_turn_async("s1", "Hola", "Buenas", [])
+        history = await sm.get_history_async("s1")
         assert len(history) == 1
         assert history[0].question == "Hola"
 
-
-class TestGetContextString:
-    """Formatting history for LLM context."""
-
     @pytest.mark.asyncio
-    async def test_get_context_string(self, session_manager: SessionManager) -> None:
-        await session_manager.add_turn("s1", "¿Panel?", "Sí", ["doc1.pdf"])
-        ctx = await session_manager.get_context_string("s1")
-        assert "Turno 1:" in ctx
-        assert "Usuario: ¿Panel?" in ctx
-        assert "Asistente: Sí" in ctx
-        assert "Fuentes: doc1.pdf" in ctx
-
-    @pytest.mark.asyncio
-    async def test_get_context_string_empty(
+    async def test_hydrate_history_from_chatwoot_messages(
         self, session_manager: SessionManager
     ) -> None:
-        ctx = await session_manager.get_context_string("s1")
-        assert ctx == ""
+        await session_manager.hydrate_history_from_chatwoot(
+            "s1",
+            [
+                {"content": "Necesito cotizar", "message_type": "incoming"},
+                {"content": "Te ayudo", "message_type": "outgoing"},
+            ],
+        )
 
-
-class TestUserProfile:
-    """Profile storage in Redis."""
-
-    @pytest.mark.asyncio
-    async def test_set_and_get_profile(self, session_manager: SessionManager) -> None:
-        await session_manager.set_user_profile("s1", "novato")
-        profile = await session_manager.get_user_profile("s1")
-        assert profile == "novato"
-
-    @pytest.mark.asyncio
-    async def test_get_profile_missing(self, session_manager: SessionManager) -> None:
-        profile = await session_manager.get_user_profile("s1")
-        assert profile is None
-
-
-class TestTokenUsage:
-    """Token accumulation via Redis hash."""
-
-    @pytest.mark.asyncio
-    async def test_add_token_usage(self, session_manager: SessionManager) -> None:
-        await session_manager.add_token_usage("s1", 100, 50, 150)
-        totals = await session_manager.get_token_totals("s1")
-        assert totals.input_tokens == 100
-        assert totals.output_tokens == 50
-        assert totals.total_tokens == 150
-
-    @pytest.mark.asyncio
-    async def test_add_token_usage_accumulates(
-        self, session_manager: SessionManager
-    ) -> None:
-        await session_manager.add_token_usage("s1", 100, 50, 150)
-        await session_manager.add_token_usage("s1", 200, 100, 300)
-        totals = await session_manager.get_token_totals("s1")
-        assert totals.input_tokens == 300
-        assert totals.output_tokens == 150
-        assert totals.total_tokens == 450
+        history = await session_manager.get_history_async("s1")
+        assert len(history) == 1
+        assert history[0].question == "Necesito cotizar"
+        assert history[0].answer == "Te ayudo"
 
 
 class TestConversationMapping:
     """Session ID ↔ Conversation ID mapping."""
 
     @pytest.mark.asyncio
-    async def test_map_conversation(self, session_manager: SessionManager) -> None:
-        await session_manager.map_conversation("s1", "42")
-        conv_id = await session_manager.get_conversation_id("s1")
-        assert conv_id == "42"
+    async def test_get_or_create_session_for_conversation_reuses_mapping(
+        self, session_manager: SessionManager
+    ) -> None:
+        first = await session_manager.get_or_create_session_for_conversation("42")
+        second = await session_manager.get_or_create_session_for_conversation("42")
+
+        assert first == second
+        assert await session_manager.get_conversation_for_session(first) == "42"
 
     @pytest.mark.asyncio
-    async def test_get_session_id_reverse(
+    async def test_map_conversation_compatibility(
         self, session_manager: SessionManager
     ) -> None:
         await session_manager.map_conversation("s1", "42")
-        session_id = await session_manager.get_session_id("42")
-        assert session_id == "s1"
+
+        assert await session_manager.get_conversation_id("s1") == "42"
+        assert await session_manager.get_session_id("42") == "s1"
 
     @pytest.mark.asyncio
-    async def test_get_conversation_id_missing(
+    async def test_missing_mapping_returns_none(
         self, session_manager: SessionManager
     ) -> None:
-        assert await session_manager.get_conversation_id("s1") is None
-
-    @pytest.mark.asyncio
-    async def test_get_session_id_missing(
-        self, session_manager: SessionManager
-    ) -> None:
+        assert await session_manager.get_conversation_for_session("s1") is None
         assert await session_manager.get_session_id("42") is None
-
-
-class TestClearSession:
-    """Clearing session data from Redis."""
-
-    @pytest.mark.asyncio
-    async def test_clear_session_removes_all(
-        self, session_manager: SessionManager
-    ) -> None:
-        await session_manager.add_turn("s1", "Hola", "Buenas")
-        await session_manager.set_user_profile("s1", "novato")
-        await session_manager.add_token_usage("s1", 10, 5, 15)
-        await session_manager.map_conversation("s1", "42")
-
-        await session_manager.clear_session("s1")
-
-        assert await session_manager.get_history("s1") == []
-        assert await session_manager.get_user_profile("s1") is None
-        totals = await session_manager.get_token_totals("s1")
-        assert totals.total_tokens == 0
-        assert await session_manager.get_conversation_id("s1") is None
-
-
-class TestFallbackWhenRedisUnavailable:
-    """Graceful degradation when Redis is down."""
-
-    @pytest.mark.asyncio
-    async def test_add_turn_fallback(self) -> None:
-        from redis.exceptions import RedisError
-
-        mock_redis = AsyncMock(spec=RedisCache)
-        mock_redis._build_key = lambda scope, entity_id, field=None: (
-            f"chatwoot:1:{scope}:{entity_id}" + (f":{field}" if field else "")
-        )
-        mock_redis.lpush.side_effect = RedisError("redis down")
-        mock_redis.lrange.side_effect = RedisError("redis down")
-
-        sm = SessionManager(redis_cache=mock_redis)
-        await sm.add_turn("s1", "Hola", "Buenas")
-        history = await sm.get_history("s1")
-        assert len(history) == 1
-
-    @pytest.mark.asyncio
-    async def test_set_profile_fallback(self) -> None:
-        from redis.exceptions import RedisError
-
-        mock_redis = AsyncMock(spec=RedisCache)
-        mock_redis._build_key = lambda scope, entity_id, field=None: (
-            f"chatwoot:1:{scope}:{entity_id}" + (f":{field}" if field else "")
-        )
-        mock_redis.set.side_effect = RedisError("redis down")
-        mock_redis.get.side_effect = RedisError("redis down")
-
-        sm = SessionManager(redis_cache=mock_redis)
-        await sm.set_user_profile("s1", "experto")
-        profile = await sm.get_user_profile("s1")
-        assert profile == "experto"
-
-    @pytest.mark.asyncio
-    async def test_token_usage_fallback(self) -> None:
-        from redis.exceptions import RedisError
-
-        mock_redis = AsyncMock(spec=RedisCache)
-        mock_redis._build_key = lambda scope, entity_id, field=None: (
-            f"chatwoot:1:{scope}:{entity_id}" + (f":{field}" if field else "")
-        )
-        mock_redis.hgetall.side_effect = RedisError("redis down")
-        mock_redis.hset.side_effect = RedisError("redis down")
-
-        sm = SessionManager(redis_cache=mock_redis)
-        await sm.add_token_usage("s1", 100, 50, 150)
-        totals = await sm.get_token_totals("s1")
-        assert totals.input_tokens == 100

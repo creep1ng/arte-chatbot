@@ -73,6 +73,82 @@ class TestHandleEscalation:
     """Escalation handoff must trigger all Chatwoot operations."""
 
     @pytest.mark.asyncio
+    async def test_escalate_to_human_success(
+        self,
+        escalation_handler: EscalationHandler,
+        mock_chatwoot_client: Any,
+    ) -> None:
+        result = await escalation_handler.escalate_to_human(
+            conversation_id=42,
+            reason="Necesita cotización",
+            intent_type="escalate_quote",
+        )
+
+        assert result is True
+        assert mock_chatwoot_client.add_label.await_args_list[0].args == (
+            42,
+            "escalated-test",
+        )
+        assert mock_chatwoot_client.add_label.await_args_list[1].args == (
+            42,
+            "quote-test",
+        )
+        mock_chatwoot_client.toggle_status.assert_awaited_once_with(42, "open")
+        mock_chatwoot_client.assign_conversation.assert_awaited_once_with(42, team_id=5)
+        mock_chatwoot_client.send_message.assert_awaited_once_with(
+            42, DEFAULT_ESCALATION_MESSAGE
+        )
+
+    @pytest.mark.asyncio
+    async def test_escalate_to_human_without_team_skips_assignment(
+        self,
+        mock_chatwoot_client: Any,
+        session_manager: SessionManager,
+    ) -> None:
+        handler = EscalationHandler(
+            chatwoot_client=mock_chatwoot_client,
+            config_provider=MockConfigProvider(handoff_team_id=None),
+            session_manager=session_manager,
+        )
+
+        assert await handler.escalate_to_human(42, "reason", "escalate_quote")
+        mock_chatwoot_client.assign_conversation.assert_not_awaited()
+        mock_chatwoot_client.toggle_status.assert_awaited_once_with(42, "open")
+
+    @pytest.mark.asyncio
+    async def test_escalate_to_human_label_failure_continues(
+        self,
+        mock_chatwoot_client: Any,
+        config_provider: MockConfigProvider,
+        session_manager: SessionManager,
+    ) -> None:
+        mock_chatwoot_client.add_label.side_effect = RuntimeError("label down")
+        handler = EscalationHandler(
+            chatwoot_client=mock_chatwoot_client,
+            config_provider=config_provider,
+            session_manager=session_manager,
+        )
+
+        assert await handler.escalate_to_human(42, "reason", "escalate_quote")
+        mock_chatwoot_client.toggle_status.assert_awaited_once_with(42, "open")
+
+    @pytest.mark.asyncio
+    async def test_escalate_to_human_critical_failure_returns_false(
+        self,
+        mock_chatwoot_client: Any,
+        config_provider: MockConfigProvider,
+        session_manager: SessionManager,
+    ) -> None:
+        mock_chatwoot_client.toggle_status.side_effect = RuntimeError("status down")
+        handler = EscalationHandler(
+            chatwoot_client=mock_chatwoot_client,
+            config_provider=config_provider,
+            session_manager=session_manager,
+        )
+
+        assert not await handler.escalate_to_human(42, "reason", "escalate_quote")
+
+    @pytest.mark.asyncio
     async def test_handle_escalation_calls_all_methods(
         self,
         escalation_handler: EscalationHandler,
@@ -94,7 +170,7 @@ class TestHandleEscalation:
         session_manager: SessionManager,
     ) -> None:
         await escalation_handler.handle_escalation("s1", 42, "user requested quote")
-        reason = await session_manager.get_user_profile("s1")
+        reason = session_manager.get_user_profile("s1")
         # Escalation reason stored as a custom attribute via profile for now
         assert reason is not None
 
@@ -121,7 +197,9 @@ class TestHandleEscalationByIntent:
         escalation_handler: EscalationHandler,
         mock_chatwoot_client: Any,
     ) -> None:
-        await escalation_handler.handle_escalation_by_intent("s1", 42, "escalate_technical")
+        await escalation_handler.handle_escalation_by_intent(
+            "s1", 42, "escalate_technical"
+        )
         calls = [c.args for c in mock_chatwoot_client.add_label.await_args_list]
         assert (42, "technical-test") in calls
 
@@ -140,7 +218,9 @@ class TestHandleEscalationByIntent:
         self,
         escalation_handler: EscalationHandler,
     ) -> None:
-        result = await escalation_handler.handle_escalation_by_intent("s1", 42, "unknown")
+        result = await escalation_handler.handle_escalation_by_intent(
+            "s1", 42, "unknown"
+        )
         assert result is False
 
 

@@ -2,7 +2,6 @@
 Unit tests for the user profile inference module.
 """
 
-import pytest
 from backend.app.user_profiler import (
     infer_user_profile,
     _extract_technical_score,
@@ -248,112 +247,103 @@ class TestInferUserProfile:
 class TestSessionManagerProfileIntegration:
     """Tests for profile integration with SessionManager."""
 
-    @pytest.mark.asyncio
-    async def test_set_user_profile(self):
+    def test_set_user_profile(self):
         """Test setting a user profile."""
         sm = SessionManager()
         session_id = "test-session-1"
-        await sm.set_user_profile(session_id, "experto")
-        assert await sm.get_user_profile(session_id) == "experto"
+        sm.set_user_profile(session_id, "experto")
+        assert sm.get_user_profile(session_id) == "experto"
 
-    @pytest.mark.asyncio
-    async def test_get_user_profile_nonexistent(self):
+    def test_get_user_profile_nonexistent(self):
         """Test getting profile for non-existent session."""
         sm = SessionManager()
-        profile = await sm.get_user_profile("non-existent")
+        profile = sm.get_user_profile("non-existent")
         assert profile is None
 
-    @pytest.mark.asyncio
-    async def test_profile_persistence_across_calls(self):
+    def test_profile_persistence_across_calls(self):
         """Test that profile persists across multiple get calls."""
         sm = SessionManager()
         session_id = "test-session-2"
-        await sm.set_user_profile(session_id, "intermedio")
-        profile1 = await sm.get_user_profile(session_id)
-        profile2 = await sm.get_user_profile(session_id)
+        sm.set_user_profile(session_id, "intermedio")
+        profile1 = sm.get_user_profile(session_id)
+        profile2 = sm.get_user_profile(session_id)
         assert profile1 == profile2 == "intermedio"
 
-    @pytest.mark.asyncio
-    async def test_clear_session_removes_profile(self):
+    def test_clear_session_removes_profile(self):
         """Test that clearing a session also removes its profile."""
         sm = SessionManager()
         session_id = "test-session-3"
-        await sm.set_user_profile(session_id, "experto")
-        assert await sm.get_user_profile(session_id) == "experto"
+        sm.set_user_profile(session_id, "experto")
+        assert sm.get_user_profile(session_id) == "experto"
 
-        await sm.clear_session(session_id)
-        assert await sm.get_user_profile(session_id) is None
+        sm.clear_session(session_id)
+        assert sm.get_user_profile(session_id) is None
 
-    @pytest.mark.asyncio
-    async def test_update_profile(self):
+    def test_update_profile(self):
         """Test updating an existing profile."""
         sm = SessionManager()
         session_id = "test-session-4"
-        await sm.set_user_profile(session_id, "novato")
-        assert await sm.get_user_profile(session_id) == "novato"
+        sm.set_user_profile(session_id, "novato")
+        assert sm.get_user_profile(session_id) == "novato"
 
-        await sm.set_user_profile(session_id, "experto")
-        assert await sm.get_user_profile(session_id) == "experto"
+        sm.set_user_profile(session_id, "experto")
+        assert sm.get_user_profile(session_id) == "experto"
 
-    @pytest.mark.asyncio
-    async def test_multiple_sessions_independent_profiles(self):
+    def test_multiple_sessions_independent_profiles(self):
         """Test that profiles are independent between sessions."""
         sm = SessionManager()
-        await sm.set_user_profile("session-1", "novato")
-        await sm.set_user_profile("session-2", "experto")
+        sm.set_user_profile("session-1", "novato")
+        sm.set_user_profile("session-2", "experto")
 
-        assert await sm.get_user_profile("session-1") == "novato"
-        assert await sm.get_user_profile("session-2") == "experto"
+        assert sm.get_user_profile("session-1") == "novato"
+        assert sm.get_user_profile("session-2") == "experto"
 
 
 class TestEndToEndProfileInference:
     """End-to-end tests for profile inference workflow."""
 
-    @pytest.mark.asyncio
-    async def test_infer_profile_from_session_history(self):
+    def test_infer_profile_from_session_history(self):
         """Test inferring profile from actual session history."""
         sm = SessionManager()
         session_id = "end-to-end-1"
 
         # Add a generic question
-        await sm.add_turn(session_id, "¿Qué es un panel solar?", "Un panel solar es...")
+        sm.add_turn(session_id, "¿Qué es un panel solar?", "Un panel solar es...")
 
         # Get history and infer profile
-        history = await sm.get_history(session_id)
+        history = sm.get_history(session_id)
         history_dicts = [{"role": "user", "content": turn.question} for turn in history]
         profile = infer_user_profile(history_dicts)
 
         assert profile == "novato"
 
-    @pytest.mark.asyncio
-    async def test_profile_remains_novato_with_simple_questions(self):
+    def test_profile_remains_novato_with_simple_questions(self):
         """Test that multiple simple questions keep novato profile."""
         sm = SessionManager()
         session_id = "end-to-end-2"
 
-        await sm.add_turn(session_id, "¿Qué es solar?", "Es...")
-        await sm.add_turn(session_id, "¿Y el viento?", "Es...")
+        sm.add_turn(session_id, "¿Qué es solar?", "Es...")
+        sm.add_turn(session_id, "¿Y el viento?", "Es...")
 
-        history = await sm.get_history(session_id)
+        history = sm.get_history(session_id)
         history_dicts = [{"role": "user", "content": turn.question} for turn in history]
         profile = infer_user_profile(history_dicts)
 
         assert profile == "novato"
 
-    @pytest.mark.asyncio
-    async def test_profile_upgrades_to_experto_with_technical_questions(self):
+    def test_profile_upgrades_to_experto_with_technical_questions(self):
         """Test that technical questions result in experto profile."""
         sm = SessionManager()
         session_id = "end-to-end-3"
 
-        await sm.add_turn(session_id, "¿Qué es solar?", "Es...")
-        await sm.add_turn(
+        sm.add_turn(session_id, "¿Qué es solar?", "Es...")
+        sm.add_turn(
             session_id,
             "¿cuál es el Voc del JinkoSolar 460W a 25°C?",
             "Es...",
         )
 
-        history = await sm.get_history(session_id)
+        history = sm.get_history(session_id)
         history_dicts = [{"role": "user", "content": turn.question} for turn in history]
         profile = infer_user_profile(history_dicts)
 

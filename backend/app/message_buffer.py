@@ -32,6 +32,22 @@ class BufferResult(BaseModel):
     joined_message: Optional[str] = None
 
 
+class BufferState(BaseModel):
+    """Redis-serializable Chatwoot buffer state.
+
+    Attributes:
+        conversation_id: Chatwoot conversation identifier.
+        messages: Buffered user messages.
+        timer_deadline_epoch: Unix timestamp when the debounce window ends.
+        is_flushing: True while a human-agent race flush is in progress.
+    """
+
+    conversation_id: str
+    messages: list[str]
+    timer_deadline_epoch: Optional[float] = None
+    is_flushing: bool = False
+
+
 class MessageBuffer:
     """Redis-backed message buffer with in-memory fallback.
 
@@ -90,35 +106,95 @@ class MessageBuffer:
         try:
             raw = await self._redis.get(key)
             if raw:
-                state = json.loads(raw)
-                if state.get("is_flushing"):
+                state = BufferState.model_validate(
+                    self._normalise_state(session_id, raw)
+                )
+                if state.is_flushing:
                     return BufferResult(is_buffering=True)
-                state["messages"].append(message)
-                if (
-                    len(state["messages"]) >= self._max_messages()
-                    or time.time() >= state["deadline"]
+                state.messages.append(message)
+                if len(state.messages) >= self._max_messages() or time.time() >= (
+                    state.timer_deadline_epoch or 0
                 ):
-                    joined = "\n".join(state["messages"])
+                    joined = "\n".join(state.messages)
                     await self._redis.delete(key)
                     return BufferResult(is_buffering=False, joined_message=joined)
-                ok = await self._redis.set(key, json.dumps(state))
+                ok = await self._redis.set(
+                    key,
+                    state.model_dump_json(),
+                    ttl=self._window_seconds() + 60,
+                )
                 if not ok:
                     raise RuntimeError("Redis set returned False")
                 return BufferResult(is_buffering=True)
 
             # New buffer
-            state = {
-                "messages": [message],
-                "deadline": time.time() + self._window_seconds(),
-                "is_flushing": False,
-            }
-            ok = await self._redis.set(key, json.dumps(state))
+            state = BufferState(
+                conversation_id=session_id,
+                messages=[message],
+                timer_deadline_epoch=time.time() + self._window_seconds(),
+                is_flushing=False,
+            )
+            ok = await self._redis.set(
+                key,
+                state.model_dump_json(),
+                ttl=self._window_seconds() + 60,
+            )
             if not ok:
                 raise RuntimeError("Redis set returned False")
             return BufferResult(is_buffering=True)
         except Exception as exc:
             logger.warning("Redis buffer add failed, falling back to memory: %s", exc)
             return self._add_fallback(session_id, message)
+
+    async def add_message(
+        self, conversation_id: str, message: str, window_seconds: int
+    ) -> BufferState:
+        """Append a Chatwoot message and return persisted buffer state.
+
+        Args:
+            conversation_id: Chatwoot conversation identifier.
+            message: Message text to buffer.
+            window_seconds: Debounce window in seconds for this channel.
+
+        Returns:
+            The resulting buffer state.
+        """
+        key = self._buffer_key(conversation_id)
+        state = BufferState(
+            conversation_id=conversation_id,
+            messages=[],
+            timer_deadline_epoch=time.time() + window_seconds,
+            is_flushing=False,
+        )
+        try:
+            raw = await self._redis.get(key)
+            if raw:
+                state = BufferState.model_validate(
+                    self._normalise_state(conversation_id, raw)
+                )
+            if not state.is_flushing:
+                state.messages.append(message)
+                state.timer_deadline_epoch = time.time() + window_seconds
+                ok = await self._redis.set(
+                    key,
+                    state.model_dump_json(),
+                    ttl=window_seconds + 60,
+                )
+                if not ok:
+                    raise RuntimeError("Redis set returned False")
+            return state
+        except Exception as exc:
+            logger.warning("Redis add_message failed, falling back to memory: %s", exc)
+            if conversation_id not in self._fallback_buffer:
+                self._fallback_buffer[conversation_id] = []
+            self._fallback_buffer[conversation_id].append(message)
+            self._fallback_deadline[conversation_id] = time.time() + window_seconds
+            return BufferState(
+                conversation_id=conversation_id,
+                messages=list(self._fallback_buffer[conversation_id]),
+                timer_deadline_epoch=self._fallback_deadline[conversation_id],
+                is_flushing=self._fallback_flushing.get(conversation_id, False),
+            )
 
     def _add_fallback(self, session_id: str, message: str) -> BufferResult:
         """In-memory fallback for add when Redis is unavailable."""
@@ -155,12 +231,19 @@ class MessageBuffer:
             Messages joined with newline separator, or None if buffer empty.
         """
         key = self._buffer_key(session_id)
+        lock_key = self._lock_key(session_id)
         messages: list[str] = []
+        lock_acquired = False
         try:
+            lock_acquired = await self._redis.acquire_lock(lock_key, ttl_seconds=30)
+            if not lock_acquired:
+                return None
             raw = await self._redis.get(key)
             if raw:
-                state = json.loads(raw)
-                messages = state.get("messages", [])
+                state = BufferState.model_validate(
+                    self._normalise_state(session_id, raw)
+                )
+                messages = state.messages
                 await self._redis.delete(key)
             # Cancel any pending task
             task = self._tasks.pop(session_id, None)
@@ -172,6 +255,9 @@ class MessageBuffer:
             messages = self._fallback_buffer.pop(session_id, [])
             self._fallback_deadline.pop(session_id, None)
             self._fallback_flushing.pop(session_id, None)
+        finally:
+            if lock_acquired:
+                await self._redis.release_lock(lock_key)
 
         # Also check fallback if Redis returned empty but fallback has data
         if not messages and session_id in self._fallback_buffer:
@@ -208,10 +294,12 @@ class MessageBuffer:
                 key = self._buffer_key(session_id)
                 raw = await self._redis.get(key)
                 if raw:
-                    state = json.loads(raw)
-                    state["is_flushing"] = True
-                    await self._redis.set(key, json.dumps(state))
-                    messages = state.get("messages", [])
+                    state = BufferState.model_validate(
+                        self._normalise_state(session_id, raw)
+                    )
+                    state.is_flushing = True
+                    await self._redis.set(key, state.model_dump_json())
+                    messages = state.messages
                     await self._redis.delete(key)
                     if messages:
                         return "\n".join(messages)
@@ -247,8 +335,10 @@ class MessageBuffer:
         try:
             raw = await self._redis.get(key)
             if raw:
-                state = json.loads(raw)
-                return len(state.get("messages", [])) > 0
+                state = BufferState.model_validate(
+                    self._normalise_state(session_id, raw)
+                )
+                return len(state.messages) > 0
         except Exception as exc:
             logger.warning("Redis buffer is_buffering failed, using memory: %s", exc)
         # Fallback check
@@ -270,12 +360,29 @@ class MessageBuffer:
         try:
             raw = await self._redis.get(key)
             if raw:
-                state = json.loads(raw)
-                return len(state.get("messages", []))
+                state = BufferState.model_validate(
+                    self._normalise_state(session_id, raw)
+                )
+                return len(state.messages)
         except Exception as exc:
             logger.warning("Redis buffer get_count failed, using memory: %s", exc)
         # Fallback check
         return len(self._fallback_buffer.get(session_id, []))
+
+    def _normalise_state(self, conversation_id: str, raw: str) -> dict[str, Any]:
+        """Load legacy or spec buffer JSON into BufferState-compatible dict."""
+        data = json.loads(raw)
+        return {
+            "conversation_id": data.get("conversation_id", conversation_id),
+            "messages": data.get("messages", []),
+            "timer_deadline_epoch": data.get(
+                "timer_deadline_epoch", data.get("deadline")
+            ),
+            "is_flushing": data.get("is_flushing", False),
+        }
+
+
+RedisMessageBuffer = MessageBuffer
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fakeredis import FakeAsyncRedis
 
-from backend.app.message_buffer import BufferResult, MessageBuffer
+from backend.app.message_buffer import BufferResult, MessageBuffer, RedisMessageBuffer
 from backend.app.redis_cache import RedisCache
 
 
@@ -77,6 +77,44 @@ class TestAddToBuffer:
         result = await message_buffer.add("session-1", "hello")
         assert result.is_buffering is True
         assert result.joined_message is None
+
+
+class TestChatwootBufferApi:
+    """Chatwoot-facing buffer methods use conversation IDs and spec state."""
+
+    @pytest.mark.asyncio
+    async def test_add_message_stores_spec_state(
+        self, message_buffer: MessageBuffer
+    ) -> None:
+        state = await message_buffer.add_message("42", "hola", window_seconds=5)
+
+        assert state.conversation_id == "42"
+        assert state.messages == ["hola"]
+        assert state.timer_deadline_epoch is not None
+        assert state.is_flushing is False
+
+        raw = await message_buffer._redis.get(message_buffer._buffer_key("42"))
+        stored = json.loads(raw)
+        assert stored["conversation_id"] == "42"
+        assert stored["messages"] == ["hola"]
+
+    @pytest.mark.asyncio
+    async def test_flush_uses_lock_and_prevents_duplicate(
+        self, message_buffer: MessageBuffer
+    ) -> None:
+        await message_buffer.add_message("42", "uno", window_seconds=5)
+        lock_key = message_buffer._lock_key("42")
+        assert await message_buffer._redis.acquire_lock(lock_key, ttl_seconds=30)
+
+        try:
+            assert await message_buffer.flush("42") is None
+        finally:
+            await message_buffer._redis.release_lock(lock_key)
+
+        assert await message_buffer.flush("42") == "uno"
+
+    def test_redis_message_buffer_alias(self) -> None:
+        assert RedisMessageBuffer is MessageBuffer
 
     @pytest.mark.asyncio
     async def test_add_appends_message(self, message_buffer: MessageBuffer) -> None:

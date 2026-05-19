@@ -5,9 +5,12 @@ idempotency via Redis, and logs all events with structured context.
 """
 
 import logging
+from typing import Any, Optional
 
 from backend.app.chatwoot_client import ChatwootClient
 from backend.app.config_provider import ConfigProvider
+from backend.app.escalation_handler import EscalationHandler
+from backend.app.message_buffer import RedisMessageBuffer
 from backend.app.redis_cache import RedisCache
 from backend.app.schemas import (
     ChatwootWebhookPayload,
@@ -35,10 +38,16 @@ class ChatwootHandler:
         chatwoot_client: ChatwootClient,
         redis_cache: RedisCache,
         config_provider: ConfigProvider,
+        message_buffer: Optional[RedisMessageBuffer] = None,
+        session_manager: Optional[Any] = None,
+        escalation_handler: Optional[EscalationHandler] = None,
     ) -> None:
         self._client = chatwoot_client
         self._redis = redis_cache
         self._config = config_provider
+        self._buffer = message_buffer
+        self._sessions = session_manager
+        self._escalation = escalation_handler
 
     async def handle_event(self, payload: ChatwootWebhookPayload) -> None:
         """Route a webhook payload to the correct handler.
@@ -90,14 +99,17 @@ class ChatwootHandler:
     async def _handle_message_created(self, payload: MessageCreatedPayload) -> None:
         """Handle a ``message_created`` webhook.
 
-        Currently a stub that logs the event. Full buffering and LLM
-        response flow will be implemented in PR #3.
+        Buffers contact messages for later LLM processing. Human-agent
+        messages flush/cancel pending buffers so the human response wins.
         """
         conversation_id = payload.conversation.id
+        conversation_key = str(conversation_id)
         sender_type = payload.sender.type
         content = payload.message.content or ""
 
         if sender_type == "user":
+            if self._buffer is not None:
+                await self._buffer.flush_and_cancel(conversation_key)
             logger.info(
                 "human agent message detected conversation_id=%s message_id=%s",
                 conversation_id,
@@ -109,6 +121,21 @@ class ChatwootHandler:
                 },
             )
         elif sender_type == "contact":
+            account_id = int(payload.account.get("id", 1))
+            if self._sessions is not None:
+                await self._sessions.get_or_create_session_for_conversation(
+                    conversation_key, account_id=account_id
+                )
+
+            profile = self._config.get_channel_profile(
+                str(payload.conversation.inbox_id)
+            )
+            window_seconds = int(getattr(profile, "buffer_window_seconds", 5))
+            if self._buffer is not None:
+                await self._buffer.add_message(
+                    conversation_key, content, window_seconds
+                )
+            await self._client.send_typing_indicator(conversation_id)
             logger.info(
                 "user message received conversation_id=%s message_id=%s",
                 conversation_id,
