@@ -267,3 +267,16 @@ def test_chatwoot_health_missing_chatwoot_config(
     assert response.json()["status"] == "degraded"
     assert response.json()["chatwoot_api"] == "not_configured"
     main_module.app.dependency_overrides.clear()
+
+
+def test_get_redis_cache_uses_unconfigured_namespace_when_account_missing(
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing Chatwoot account IDs must not share account 1 cache keys."""
+    monkeypatch.delenv("CHATWOOT_ACCOUNT_ID", raising=False)
+    settings.reset()
+
+    redis_cache = main_module.get_redis_cache()
+
+    assert redis_cache._build_key("scope", "id") == ("chatwoot:unconfigured:scope:id")

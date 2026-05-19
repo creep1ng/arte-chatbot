@@ -210,7 +210,7 @@ def get_config_provider() -> EnvConfigProvider:
 
 def get_redis_cache() -> RedisCache:
     """Dependency that provides a RedisCache instance for Chatwoot state."""
-    account_id = settings.chatwoot_account_id or 1
+    account_id = settings.chatwoot_account_id or "unconfigured"
     return RedisCache(
         redis_url=settings.redis_url,
         password=settings.redis_password,
@@ -458,9 +458,9 @@ async def chatwoot_webhook(
         raise HTTPException(status_code=401, detail="Invalid Chatwoot signature")
 
     payload = _parse_chatwoot_payload(raw_payload)
-    dependency = request.app.dependency_overrides.get(
-        get_chatwoot_handler,
-        get_chatwoot_handler,
+    dependency = (
+        request.app.dependency_overrides.get(get_chatwoot_handler)
+        or get_chatwoot_handler
     )
     handler = dependency()
     try:
