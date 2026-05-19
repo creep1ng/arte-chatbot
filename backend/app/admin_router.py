@@ -13,6 +13,7 @@ from backend.app.admin_config import config_router
 from backend.app.admin_dashboard import dashboard_router
 from backend.app.admin_guides import guides_router
 from backend.app.admin_logs import logs_router
+from backend.app.admin_s3 import s3_router
 
 admin_router = APIRouter(prefix="/admin")
 
@@ -21,6 +22,7 @@ admin_router.include_router(config_router)
 admin_router.include_router(dashboard_router)
 admin_router.include_router(guides_router)
 admin_router.include_router(logs_router)
+admin_router.include_router(s3_router)
 
 
 @admin_router.get("/health")

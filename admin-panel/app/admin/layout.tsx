@@ -6,6 +6,7 @@ import { useEffect, type ReactNode } from "react";
 import {
   BarChart3,
   BookOpen,
+  Cloud,
   Database,
   FileText,
   GitBranch,
@@ -20,6 +21,7 @@ const navItems = [
   { href: "/admin/dashboard", label: "Dashboard", icon: BarChart3 },
   { href: "/admin/config", label: "Config", icon: Settings },
   { href: "/admin/escalation", label: "Escalamiento", icon: GitBranch },
+  { href: "/admin/s3-explorer", label: "S3 Explorer", icon: Cloud },
   { href: "/admin/catalog", label: "Catálogo", icon: Database },
   { href: "/admin/guides", label: "Guías", icon: BookOpen },
   { href: "/admin/logs", label: "Logs", icon: FileText },

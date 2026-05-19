@@ -39,6 +39,10 @@ export const CatalogProductSchema = z.object({
   parametros_comunes: z.record(z.string(), z.unknown()).default({}),
 });
 
+export const CatalogIndexSchema = z.object({
+  products: z.array(CatalogProductSchema).default([]),
+});
+
 export const MutableSettingsSchema = z
   .object({
     llm_model: optionalString,
@@ -76,3 +80,4 @@ export const MutableSettingsSchema = z
 
 export type MutableSettingsInput = z.infer<typeof MutableSettingsSchema>;
 export type CatalogProductInput = z.infer<typeof CatalogProductSchema>;
+export type CatalogIndexInput = z.infer<typeof CatalogIndexSchema>;
