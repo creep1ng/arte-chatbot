@@ -5,7 +5,7 @@ unavailable so callers never need to catch connection errors.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 import redis.asyncio
 from redis.exceptions import RedisError
@@ -21,7 +21,8 @@ class RedisCache:
         password: Optional Redis password.
         prefix: Key prefix for namespacing. Defaults to ``"chatwoot"``.
         account_id: Chatwoot account ID embedded in every key.
-            Defaults to ``1``.
+            Defaults to ``"unconfigured"`` to avoid collisions when Chatwoot is
+            disabled or not fully configured.
     """
 
     def __init__(
@@ -29,7 +30,7 @@ class RedisCache:
         redis_url: str,
         password: Optional[str] = None,
         prefix: str = "chatwoot",
-        account_id: int = 1,
+        account_id: Union[int, str] = "unconfigured",
     ) -> None:
         self._prefix = prefix
         self._account_id = account_id

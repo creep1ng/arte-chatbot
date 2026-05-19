@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 from typing import Optional
 
@@ -38,3 +39,34 @@ def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
             detail="Invalid API key",
         )
     return api_key
+
+
+def verify_chatwoot_signature(
+    payload: bytes,
+    signature: Optional[str],
+    secret: Optional[str],
+) -> bool:
+    """Verify a Chatwoot webhook HMAC-SHA256 signature.
+
+    Args:
+        payload: Raw request body bytes exactly as received.
+        signature: Signature header value. Supports raw hex and
+            ``sha256=<hex>`` values.
+        secret: Shared webhook secret configured in Chatwoot.
+
+    Returns:
+        ``True`` when the signature matches, otherwise ``False``.
+    """
+    if not payload or not signature or not secret:
+        return False
+
+    supplied_signature = signature.strip()
+    if supplied_signature.startswith("sha256="):
+        supplied_signature = supplied_signature.removeprefix("sha256=")
+
+    expected_signature = hmac.new(
+        secret.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(supplied_signature, expected_signature)

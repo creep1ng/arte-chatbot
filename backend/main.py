@@ -4,40 +4,29 @@ FastAPI server with /health and /chat endpoints.
 """
 
 import asyncio
-import logging
-import time
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-
 import json
+import logging
 import os
+import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
-# Load environment variables from .env file
 from dotenv import load_dotenv
-
-load_dotenv()
-
-from backend.app.logging_config import setup_logging
-
-# Configure logging before anything else (reads LOG_LEVEL from centralized settings)
-setup_logging()
-
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from backend.app.auth import verify_api_key
+from backend.app.auth import verify_api_key, verify_chatwoot_signature
 from backend.app.catalog import CatalogError, get_catalog
+from backend.app.chatwoot_client import ChatwootClient
+from backend.app.chatwoot_handler import ChatwootHandler
 from backend.app.config import settings
 from backend.app.config_provider import EnvConfigProvider
 from backend.app.conversation_logger import ConversationLogEntry, ConversationLogger
+from backend.app.escalation_handler import EscalationHandler
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.greeting import maybe_prepend_greeting
 from backend.app.llm_client import (
@@ -47,7 +36,9 @@ from backend.app.llm_client import (
     LLMServiceError,
     expand_query_with_context,
 )
+from backend.app.logging_config import setup_logging
 from backend.app.message_buffer import (
+    RedisMessageBuffer,
     add_to_buffer,
     clear_pending_chat_response,
     clear_processing,
@@ -60,10 +51,17 @@ from backend.app.message_buffer import (
     set_pending_chat_response,
     set_processing,
 )
-
 from backend.app.message_splitter import process_split_messages
+from backend.app.redis_cache import RedisCache
 from backend.app.s3_client import S3Client, S3DownloadError
-from backend.app.schemas import LLMResponse, SourceDocument
+from backend.app.schemas import (
+    ChatwootWebhookPayload,
+    ConversationCreatedPayload,
+    ConversationStatusChangedPayload,
+    LLMResponse,
+    MessageCreatedPayload,
+    SourceDocument,
+)
 from backend.app.session import session_manager
 from backend.app.tools import get_tool_definitions, validate_s3_path
 from backend.app.user_profiler import PROFILE_INSTRUCTIONS, infer_user_profile
@@ -72,6 +70,16 @@ from rag import (
     DEFAULT_ESCALATION_MESSAGE,
     default_detector,
 )
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+load_dotenv()
+
+# Configure logging before anything else (reads LOG_LEVEL from centralized settings)
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +99,6 @@ OUT_OF_DOMAIN_MESSAGE = (
     "de productos y consultas generales sobre sistemas de energía solar. "
     "¿Hay algo relacionado con energía solar en lo que pueda ayudarte?"
 )
-
-import re
 
 INTENT_MARKER_RE = re.compile(r"\[INTENT:\s*(\w+)\]")
 
@@ -200,6 +206,54 @@ def get_file_inputs_client() -> FileInputsClient:
 def get_config_provider() -> EnvConfigProvider:
     """Dependency that provides a ConfigProvider instance."""
     return EnvConfigProvider()
+
+
+def get_redis_cache() -> RedisCache:
+    """Dependency that provides a RedisCache instance for Chatwoot state."""
+    account_id = settings.chatwoot_account_id or "unconfigured"
+    return RedisCache(
+        redis_url=settings.redis_url,
+        password=settings.redis_password,
+        account_id=account_id,
+    )
+
+
+def get_chatwoot_client() -> ChatwootClient:
+    """Dependency that provides a configured Chatwoot API client."""
+    if (
+        not settings.chatwoot_api_url
+        or not settings.chatwoot_agent_bot_token
+        or settings.chatwoot_account_id is None
+    ):
+        raise RuntimeError("Chatwoot API client is not configured")
+
+    return ChatwootClient(
+        base_url=settings.chatwoot_api_url,
+        agent_bot_token=settings.chatwoot_agent_bot_token,
+        account_id=settings.chatwoot_account_id,
+        redis_cache=get_redis_cache(),
+    )
+
+
+def get_chatwoot_handler() -> ChatwootHandler:
+    """Dependency that wires Chatwoot webhook handling services."""
+    redis_cache = get_redis_cache()
+    config_provider = get_config_provider()
+    chatwoot_client = get_chatwoot_client()
+    message_buffer = RedisMessageBuffer(redis_cache, config_provider)
+    escalation_handler = EscalationHandler(
+        chatwoot_client=chatwoot_client,
+        config_provider=config_provider,
+        session_manager=session_manager,
+    )
+    return ChatwootHandler(
+        chatwoot_client=chatwoot_client,
+        redis_cache=redis_cache,
+        config_provider=config_provider,
+        message_buffer=message_buffer,
+        session_manager=session_manager,
+        escalation_handler=escalation_handler,
+    )
 
 
 # Lazy-load catalog to allow /health to work without AWS credentials in CI
@@ -351,6 +405,109 @@ async def health_check() -> JSONResponse:
             "status": "healthy",
             "service": "arte-chatbot-backend",
             "version": "1.0.0",
+        },
+    )
+
+
+def _parse_chatwoot_payload(raw_payload: bytes) -> ChatwootWebhookPayload:
+    """Parse a raw Chatwoot webhook body into the matching schema."""
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="Invalid Chatwoot payload") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Invalid Chatwoot payload")
+
+    event = payload.get("event")
+    schema_by_event = {
+        "message_created": MessageCreatedPayload,
+        "conversation_created": ConversationCreatedPayload,
+        "conversation_status_changed": ConversationStatusChangedPayload,
+    }
+    schema = schema_by_event.get(str(event))
+    if schema is None:
+        return ChatwootWebhookPayload.model_validate(payload)
+
+    try:
+        return schema.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+@app.post("/webhook/chatwoot")
+async def chatwoot_webhook(
+    request: Request,
+    x_chatwoot_signature: Annotated[Optional[str], Header()] = None,
+    x_hub_signature_256: Annotated[Optional[str], Header()] = None,
+) -> JSONResponse:
+    """Receive, verify, validate, and dispatch Chatwoot webhooks."""
+    if not settings.chatwoot_enabled:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Chatwoot integration disabled"},
+        )
+
+    raw_payload = await request.body()
+    signature = x_chatwoot_signature or x_hub_signature_256
+    if not verify_chatwoot_signature(
+        raw_payload,
+        signature,
+        settings.chatwoot_webhook_secret,
+    ):
+        raise HTTPException(status_code=401, detail="Invalid Chatwoot signature")
+
+    payload = _parse_chatwoot_payload(raw_payload)
+    dependency = (
+        request.app.dependency_overrides.get(get_chatwoot_handler)
+        or get_chatwoot_handler
+    )
+    handler = dependency()
+    try:
+        await handler.handle_event(payload)
+    except Exception as exc:
+        logger.exception("Chatwoot webhook handler failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Chatwoot handler failed") from exc
+
+    return JSONResponse(status_code=200, content={"status": "accepted"})
+
+
+@app.get("/health/chatwoot")
+async def chatwoot_health(
+    redis_cache: Annotated[RedisCache, Depends(get_redis_cache)],
+) -> JSONResponse:
+    """Report Chatwoot integration health without external API calls."""
+    if not settings.chatwoot_enabled:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "disabled",
+                "chatwoot_enabled": False,
+                "redis": "not_configured",
+                "chatwoot_api": "not_configured",
+            },
+        )
+
+    has_chatwoot_config = bool(
+        settings.chatwoot_api_url
+        and settings.chatwoot_agent_bot_token
+        and settings.chatwoot_account_id is not None
+    )
+    redis_status = "healthy" if await redis_cache.health_check() else "unavailable"
+    chatwoot_api_status = "configured" if has_chatwoot_config else "not_configured"
+    status_value = (
+        "healthy"
+        if redis_status == "healthy" and chatwoot_api_status == "configured"
+        else "degraded"
+    )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": status_value,
+            "chatwoot_enabled": True,
+            "redis": redis_status,
+            "chatwoot_api": chatwoot_api_status,
         },
     )
 
@@ -861,11 +1018,6 @@ async def _process_chat_message(
         session_id,
     )
 
-    system_message = {"role": "system", "content": system_prompt_with_profile}
-    conversation_history: list[dict[str, Any]] = [
-        system_message,
-        {"role": "user", "content": expanded_query},
-    ]
     source_docs: list[SourceDocument] = []
 
     try:
@@ -1508,34 +1660,6 @@ async def chat_endpoint(
             e,
         )
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
-async def get_buffer_result(session_id: str) -> BufferResultResponse:
-    """Poll for buffered message processing result.
-
-    After a 202 response from /chat, the client should poll this endpoint.
-    When the buffer window expires, the backend processes the joined message
-    with the chatbot and stores the response for pickup.
-    """
-    chat_response_json = pop_pending_chat_response(session_id)
-    if chat_response_json:
-        return BufferResultResponse(
-            status="ready",
-            session_id=session_id,
-            result=chat_response_json,
-        )
-
-    if is_buffering(session_id):
-        return BufferResultResponse(
-            status="pending",
-            session_id=session_id,
-        )
-
-    return BufferResultResponse(
-        status="not_found",
-        session_id=session_id,
-    )
 
 
 if __name__ == "__main__":

@@ -20,9 +20,9 @@ def fake_redis() -> FakeAsyncRedis:
 
 @pytest.fixture
 def cache(fake_redis: FakeAsyncRedis) -> RedisCache:
-    with patch("backend.app.redis_cache.redis.asyncio.Redis") as MockRedis:
-        MockRedis.from_url.return_value = fake_redis
-        return RedisCache(redis_url="redis://localhost:6379/0")
+    with patch("backend.app.redis_cache.redis.asyncio.Redis.from_url") as from_url:
+        from_url.return_value = fake_redis
+        return RedisCache(redis_url="redis://localhost:6379/0", account_id=1)
 
 
 class TestKeyNaming:
@@ -38,10 +38,27 @@ class TestKeyNaming:
 
     def test_custom_prefix(self, fake_redis: FakeAsyncRedis) -> None:
         with patch(
-            "backend.app.redis_cache.redis.asyncio.Redis", return_value=fake_redis
+            "backend.app.redis_cache.redis.asyncio.Redis.from_url",
+            return_value=fake_redis,
         ):
-            custom = RedisCache(redis_url="redis://localhost", prefix="custom")
+            custom = RedisCache(
+                redis_url="redis://localhost", prefix="custom", account_id=1
+            )
         assert custom._build_key("scope", "id") == "custom:1:scope:id"
+
+    def test_default_account_namespace_is_unconfigured(
+        self, fake_redis: FakeAsyncRedis
+    ) -> None:
+        """Missing account IDs should not collide with real account 1 keys."""
+        with patch(
+            "backend.app.redis_cache.redis.asyncio.Redis.from_url",
+            return_value=fake_redis,
+        ):
+            default_cache = RedisCache(redis_url="redis://localhost")
+
+        assert default_cache._build_key("scope", "id") == (
+            "chatwoot:unconfigured:scope:id"
+        )
 
 
 class TestStringOperations:
