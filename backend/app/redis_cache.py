@@ -178,6 +178,24 @@ class RedisCache:
             logger.warning("Redis release_lock failed: %s", exc)
             return False
 
+    async def hdel(self, key: str, field: str) -> bool:
+        """Delete a hash field."""
+        try:
+            await self._redis.hdel(key, field)
+            return True
+        except RedisError as exc:
+            logger.warning("Redis hdel failed: %s", exc)
+            return False
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        """Set TTL on an existing key."""
+        try:
+            await self._redis.expire(key, ttl)
+            return True
+        except RedisError as exc:
+            logger.warning("Redis expire failed: %s", exc)
+            return False
+
     async def health_check(self) -> bool:
         """Return ``True`` if Redis responds to ``PING``."""
         try:

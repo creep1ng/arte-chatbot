@@ -22,7 +22,9 @@ from backend.app.schemas import (
 
 @pytest.fixture
 def chatwoot_client() -> Any:
-    return MagicMock()
+    client = AsyncMock()
+    client.send_typing_indicator.return_value = True
+    return client
 
 
 @pytest.fixture
@@ -30,6 +32,9 @@ def redis_cache() -> Any:
     cache = AsyncMock()
     cache._prefix = "chatwoot"
     cache._account_id = 1
+    cache._build_key = lambda scope, entity_id, field=None: (
+        f"chatwoot:1:{scope}:{entity_id}" + (f":{field}" if field else "")
+    )
     return cache
 
 
@@ -37,17 +42,46 @@ def redis_cache() -> Any:
 def config_provider() -> Any:
     provider = MagicMock()
     provider.is_chatwoot_enabled.return_value = True
+    profile = MagicMock()
+    profile.buffer_window_seconds = 7
+    provider.get_channel_profile.return_value = profile
     return provider
 
 
 @pytest.fixture
+def message_buffer() -> Any:
+    buffer = AsyncMock()
+    return buffer
+
+
+@pytest.fixture
+def session_manager() -> Any:
+    manager = AsyncMock()
+    manager.get_or_create_session_for_conversation.return_value = "session-42"
+    return manager
+
+
+@pytest.fixture
+def escalation_handler() -> Any:
+    return AsyncMock()
+
+
+@pytest.fixture
 def handler(
-    chatwoot_client: Any, redis_cache: Any, config_provider: Any
+    chatwoot_client: Any,
+    redis_cache: Any,
+    config_provider: Any,
+    message_buffer: Any,
+    session_manager: Any,
+    escalation_handler: Any,
 ) -> ChatwootHandler:
     return ChatwootHandler(
         chatwoot_client=chatwoot_client,
         redis_cache=redis_cache,
         config_provider=config_provider,
+        message_buffer=message_buffer,
+        session_manager=session_manager,
+        escalation_handler=escalation_handler,
     )
 
 
@@ -96,6 +130,53 @@ class TestIdempotency:
 
 class TestHandleMessageCreated:
     """Dispatch of 'message_created' events."""
+
+    @pytest.mark.asyncio
+    async def test_contact_message_creates_session_and_adds_buffer(
+        self,
+        handler: ChatwootHandler,
+        session_manager: Any,
+        message_buffer: Any,
+    ) -> None:
+        payload = _message_payload(sender_type="contact", content="hola")
+
+        await handler._handle_message_created(payload)
+
+        session_manager.get_or_create_session_for_conversation.assert_awaited_once_with(
+            "42", account_id=1
+        )
+        message_buffer.add_message.assert_awaited_once_with("42", "hola", 7)
+
+    @pytest.mark.asyncio
+    async def test_contact_message_sends_typing_indicator(
+        self, handler: ChatwootHandler, chatwoot_client: Any
+    ) -> None:
+        payload = _message_payload(sender_type="contact")
+
+        await handler._handle_message_created(payload)
+
+        chatwoot_client.send_typing_indicator.assert_awaited_once_with(42)
+
+    @pytest.mark.asyncio
+    async def test_human_message_flushes_and_cancels(
+        self, handler: ChatwootHandler, message_buffer: Any
+    ) -> None:
+        payload = _message_payload(sender_type="user")
+
+        await handler._handle_message_created(payload)
+
+        message_buffer.flush_and_cancel.assert_awaited_once_with("42")
+
+    @pytest.mark.asyncio
+    async def test_duplicate_message_ignored_before_buffer(
+        self, handler: ChatwootHandler, message_buffer: Any
+    ) -> None:
+        payload = _message_payload(sender_type="contact")
+        handler._is_duplicate = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        await handler.handle_event(payload)
+
+        message_buffer.add_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_contact_message_logs_received(
