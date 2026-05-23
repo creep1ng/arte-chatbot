@@ -104,6 +104,21 @@ export interface ConversationLogSummary {
   escalated: boolean;
 }
 
+export interface LogFilterParams {
+  session_id?: string;
+  intent_type?: string;
+  escalated?: boolean;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ConversationLogsResponse {
+  items: ConversationLogSummary[];
+  total: number;
+}
+
 export interface ConversationLogEntry {
   session_id: string;
   turn_number: number;

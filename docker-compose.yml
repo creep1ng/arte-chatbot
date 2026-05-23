@@ -40,3 +40,17 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+  admin-panel:
+    build:
+      context: ./admin-panel
+      dockerfile: Dockerfile
+    container_name: arte-admin-panel
+    ports:
+      - "3001:3000"
+    environment:
+      # This is a NEXT_PUBLIC value consumed by the browser; use localhost for local Docker runs.
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped

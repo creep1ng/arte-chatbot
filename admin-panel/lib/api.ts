@@ -4,11 +4,15 @@ import { toast } from "sonner";
 import { STORAGE_KEY } from "@/providers/admin-auth-provider";
 import type {
   CatalogIndex,
+  ConversationLogEntry,
+  ConversationLogsResponse,
+  ConversationLogSummary,
   CurrentSettingsSnapshot,
   DashboardMetrics,
   DeleteS3ObjectsRequest,
   GuideContent,
   GuideMeta,
+  LogFilterParams,
   MutableSettings,
   PresignedUploadRequest,
   PresignedUploadResponse,
@@ -319,5 +323,55 @@ export function useDeleteGuide() {
       const message = error instanceof Error ? error.message : "Error inesperado";
       toast.error(message);
     },
+  });
+}
+
+function buildLogsQuery(filters: LogFilterParams): string {
+  const params = new URLSearchParams();
+
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") {
+      return;
+    }
+    params.set(key, String(value));
+  });
+
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export function useLogs(filters: LogFilterParams = {}) {
+  const normalizedFilters: LogFilterParams = {
+    limit: 50,
+    offset: 0,
+    ...filters,
+  };
+
+  return useQuery({
+    queryKey: ["admin", "logs", normalizedFilters],
+    queryFn: async () => {
+      const response = await adminFetch<ConversationLogsResponse | ConversationLogSummary[]>(
+        `/admin/logs${buildLogsQuery(normalizedFilters)}`,
+      );
+
+      if (Array.isArray(response)) {
+        return { items: response, total: response.length } satisfies ConversationLogsResponse;
+      }
+
+      return response;
+    },
+    staleTime: 0,
+  });
+}
+
+export function useLogDetail(sessionId: string | null) {
+  return useQuery({
+    queryKey: ["admin", "logs", sessionId, "detail"],
+    queryFn: () =>
+      adminFetch<ConversationLogEntry[]>(
+        `/admin/logs/${encodeURIComponent(sessionId ?? "")}`,
+      ),
+    enabled: Boolean(sessionId),
+    staleTime: 0,
   });
 }
