@@ -75,3 +75,10 @@ Before enabling any workflow that calls a real Chatwoot API, configure a
 protected GitHub Environment such as `staging`. Store the real Chatwoot secrets
 there, require approval, and keep the mocked deterministic suite as the default
 PR gate.
+
+## Related rollout docs
+
+- `docs/guides/chatwoot_deployment_runbook.md` — production/staging setup,
+  smoke checks, rollback, and operational troubleshooting.
+- `docs/guides/chatwoot_screenshot_capture_guide.md` — screenshot checklist and
+  redaction rules for high-quality rollout documentation.

@@ -10,7 +10,20 @@ This runbook explains how to connect the ARTE backend to a self-hosted Chatwoot 
 2. Set backend environment variables and GitHub staging secrets.
 3. Deploy with `CHATWOOT_ENABLED=true` only after the webhook URL is reachable.
 4. Run the smoke checklist below.
-5. Roll back immediately with `CHATWOOT_ENABLED=false` if webhook processing is unhealthy.
+5. Capture the screenshot evidence listed in `chatwoot_screenshot_capture_guide.md`.
+6. Roll back immediately with `CHATWOOT_ENABLED=false` if webhook processing is unhealthy.
+
+## What good looks like
+
+| Checkpoint | Expected evidence |
+|------------|-------------------|
+| AgentBot configured | Chatwoot shows the ARTE AgentBot assigned to the WhatsApp inbox. |
+| Webhook protected | Invalid signatures return `401`; valid signed mocked tests pass in CI. |
+| State healthy | `/health/chatwoot` reports `healthy` or a known `degraded` state. |
+| Bot response flow | A contact message receives exactly one bot response in Chatwoot. |
+| No self-loop | Private/outgoing/AgentBot messages do not trigger recursive replies. |
+| Human handoff | Escalation applies label/status/assignment according to env config. |
+| Rollback ready | `CHATWOOT_ENABLED=false` disables webhook processing without breaking `/chat`. |
 
 ## Prerequisites
 
@@ -32,6 +45,9 @@ This runbook explains how to connect the ARTE backend to a self-hosted Chatwoot 
 3. Copy the AgentBot access token.
 4. Assign the AgentBot to the target inbox, usually the WhatsApp inbox.
 
+Screenshot evidence: capture the AgentBot detail screen with tokens hidden. See
+`docs/guides/chatwoot_screenshot_capture_guide.md` for the full capture list.
+
 ### 2. Configure the webhook
 
 | Field | Value |
@@ -41,6 +57,10 @@ This runbook explains how to connect the ARTE backend to a self-hosted Chatwoot 
 | Events to enable | `message_created`, `conversation_created`, `conversation_status_changed` |
 
 The backend intentionally awaits webhook processing instead of scheduling `BackgroundTasks`. That means handler failures return HTTP 500 so Chatwoot can retry the webhook; a premature HTTP 200 would hide failed state updates or missed bot responses.
+
+> Decision: do not change this to background dispatch unless the implementation
+> introduces durable queueing before ACK. Reliability beats early ACK for this
+> integration because dropped webhooks can lose customer messages.
 
 ### 3. Confirm event filtering expectations
 
@@ -109,6 +129,33 @@ Run these checks after deployment. They do not require a CI workflow.
 - [ ] Private/outgoing AgentBot messages do not trigger additional bot responses.
 - [ ] Human-agent reply during a pending bot buffer prevents duplicate bot follow-up.
 
+## Troubleshooting quick table
+
+| Symptom | Likely cause | Check | Fix |
+|---------|--------------|-------|-----|
+| Chatwoot gets `401` from webhook | HMAC secret mismatch | Compare Chatwoot secret with `CHATWOOT_WEBHOOK_SECRET` | Rotate/update both values, then retry webhook. |
+| Chatwoot gets `503` | Integration disabled | Check `CHATWOOT_ENABLED` | Set `CHATWOOT_ENABLED=true` after config is complete. |
+| `/health/chatwoot` is `degraded` | Redis unavailable or Chatwoot config missing | Inspect `redis` and `chatwoot_api` fields | Fix Redis URL or required Chatwoot env vars. |
+| Bot replies twice | Duplicate webhook/idempotency failure or self-loop filtering issue | Check logs for same `message.id` twice | Verify Redis is reachable and outgoing/private filtering is enabled. |
+| Human replied but bot still answered | Race window or missing human-agent event | Check webhook event order and `sender.type` | Confirm `message_created` events include agent messages. |
+| Escalation does not assign team | Missing `CHATWOOT_HANDOFF_TEAM_ID` | Check env and logs | Configure team ID or accept label/status-only handoff. |
+
+## Observability checks
+
+Use backend logs during staging. At minimum, confirm logs include enough context
+to trace a webhook without exposing secrets:
+
+| Log context | Why it matters |
+|-------------|----------------|
+| event type | Distinguishes `message_created` from lifecycle events. |
+| conversation ID | Lets support correlate backend logs with Chatwoot UI. |
+| message ID | Lets maintainers verify idempotency. |
+| sender type | Confirms contact vs human agent vs AgentBot filtering. |
+| handler result | Confirms accepted, ignored, escalated, or failed path. |
+
+Never log raw tokens, webhook secrets, customer PII beyond what is already
+needed for operational correlation.
+
 ### Local mocked command
 
 ```bash
@@ -157,7 +204,9 @@ If Chatwoot keeps retrying after rollback, temporarily disable the Chatwoot webh
 
 ## Screenshot checklist for rollout evidence
 
-Capture these screenshots when real Chatwoot access exists:
+Capture these screenshots when real Chatwoot access exists. Track the work in
+GitHub issue #186 and use the detailed capture guide in
+`docs/guides/chatwoot_screenshot_capture_guide.md`.
 
 - [ ] AgentBot list showing the ARTE AgentBot enabled.
 - [ ] AgentBot details with token redacted.
@@ -172,5 +221,6 @@ Capture these screenshots when real Chatwoot access exists:
 ## References
 
 - `docs/guides/chatwoot_testing_ci.md` — mocked CI and local command guide.
+- `docs/guides/chatwoot_screenshot_capture_guide.md` — screenshot capture plan and redaction rules.
 - `backend/app/chatwoot_handler.py` — webhook dispatch, filtering, mapping, and processing seam.
 - `backend/main.py` — webhook HMAC validation and retry-safe awaited dispatch.
