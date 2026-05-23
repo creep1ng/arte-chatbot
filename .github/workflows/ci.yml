@@ -152,6 +152,39 @@ jobs:
         if: failure()
         run: docker logs arte-chatbot-backend
 
+  test-chatwoot-integration:
+    name: Test Chatwoot Mocked Integration
+    runs-on: ubuntu-latest
+    needs: lint
+    env:
+      CHAT_API_KEY: test-chat-api-key
+      OPENAI_API_KEY: test-openai-key
+      CHATWOOT_ENABLED: "true"
+      CHATWOOT_API_URL: https://chatwoot.test
+      CHATWOOT_AGENT_BOT_TOKEN: test-token
+      CHATWOOT_ACCOUNT_ID: "1"
+      CHATWOOT_INBOX_ID: "7"
+      CHATWOOT_WEBHOOK_SECRET: test-secret
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run mocked Chatwoot integration suite
+        run: |
+          uv run pytest \
+            backend/tests/test_chatwoot_auth.py \
+            backend/tests/test_chatwoot_endpoints.py \
+            backend/tests/test_chatwoot_scenarios.py \
+            backend/tests/test_chatwoot_redis_integration.py
+
   evaluation:
     name: Run Evaluation Harness
     runs-on: ubuntu-latest

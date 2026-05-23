@@ -140,6 +140,68 @@ def test_chatwoot_webhook_invalid_signature_returns_401(
     main_module.app.dependency_overrides.clear()
 
 
+def test_chatwoot_webhook_missing_secret_returns_401(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabled webhooks without a secret should fail closed."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    monkeypatch.delenv("CHATWOOT_WEBHOOK_SECRET", raising=False)
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    body = json.dumps(_valid_payload()).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 401
+    handler.handle_event.assert_not_awaited()
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_empty_body_valid_signature_returns_422(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty signed bodies should pass auth and fail payload validation."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    body = b""
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 422
+
+
+def test_chatwoot_webhook_empty_body_invalid_signature_returns_401(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty bodies with invalid signatures should fail auth."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=b"",
+        headers={"X-Chatwoot-Signature": "invalid"},
+    )
+
+    assert response.status_code == 401
+
+
 def test_chatwoot_webhook_invalid_payload_returns_422(
     client: TestClient,
     main_module: Any,
