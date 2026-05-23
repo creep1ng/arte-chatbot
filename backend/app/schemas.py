@@ -32,6 +32,7 @@ class ChatwootMessage(BaseModel):
     id: int
     content: Optional[str] = None
     content_type: str = "text"
+    message_type: Literal["incoming", "outgoing", "activity"] = "incoming"
     private: bool = False
 
 

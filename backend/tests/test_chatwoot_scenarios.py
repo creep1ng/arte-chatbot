@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from backend.app.chatwoot_handler import ChatwootHandler
 from backend.app.config import settings
 from backend.app.escalation_handler import EscalationHandler
+from backend.app.message_buffer import BufferState
 
 
 class InMemoryRedisCache:
@@ -110,6 +111,7 @@ def _message_payload(
             "id": message_id,
             "content": "Hola",
             "content_type": "text",
+            "message_type": "incoming",
             "private": False,
         },
     }
@@ -166,6 +168,7 @@ def _override_handler(
     main_module: Any,
     redis_cache: InMemoryRedisCache,
     dependencies: dict[str, Any],
+    process_message: Any | None = None,
 ) -> ChatwootHandler:
     """Install a FastAPI override returning a real ChatwootHandler."""
     handler = ChatwootHandler(
@@ -174,6 +177,7 @@ def _override_handler(
         config_provider=dependencies["config"],
         message_buffer=dependencies["buffer"],
         session_manager=dependencies["sessions"],
+        process_message=process_message,
     )
     main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
         handler
@@ -206,6 +210,50 @@ def test_valid_contact_message_dispatches_through_handler(
     )
     handler_dependencies["buffer"].add_message.assert_awaited_once_with("42", "Hola", 5)
     handler_dependencies["client"].send_typing_indicator.assert_awaited_once_with(42)
+    main_module.app.dependency_overrides.clear()
+
+
+def test_webhook_full_buffer_flow_sends_response_and_appends_history(
+    client: TestClient,
+    main_module: Any,
+    redis_cache: InMemoryRedisCache,
+    handler_dependencies: dict[str, Any],
+) -> None:
+    """Full buffer should process and send a mocked bot response via Chatwoot."""
+    process_message = AsyncMock(return_value="Respuesta desde el bot")
+    _override_handler(
+        main_module,
+        redis_cache,
+        handler_dependencies,
+        process_message=process_message,
+    )
+    handler_dependencies[
+        "sessions"
+    ].get_or_create_session_for_conversation.return_value = "session-42"
+    handler_dependencies["sessions"].get_history_async.return_value = []
+    handler_dependencies["buffer"].add_message.return_value = BufferState(
+        conversation_id="42",
+        messages=["Uno", "Dos", "Tres", "Cuatro", "Hola"],
+    )
+    handler_dependencies["buffer"].flush.return_value = "Uno\nDos\nTres\nCuatro\nHola"
+    body = json.dumps(_message_payload(message_id=105)).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    process_message.assert_awaited_once_with(
+        "session-42", "Uno\nDos\nTres\nCuatro\nHola", []
+    )
+    handler_dependencies["client"].send_message.assert_awaited_once_with(
+        42, "Respuesta desde el bot"
+    )
+    handler_dependencies["sessions"].add_turn_async.assert_awaited_once_with(
+        "session-42", "Uno\nDos\nTres\nCuatro\nHola", "Respuesta desde el bot", []
+    )
     main_module.app.dependency_overrides.clear()
 
 

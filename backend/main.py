@@ -441,7 +441,12 @@ async def chatwoot_webhook(
     x_chatwoot_signature: Annotated[Optional[str], Header()] = None,
     x_hub_signature_256: Annotated[Optional[str], Header()] = None,
 ) -> JSONResponse:
-    """Receive, verify, validate, and dispatch Chatwoot webhooks."""
+    """Receive, verify, validate, and dispatch Chatwoot webhooks.
+
+    The handler is intentionally awaited instead of scheduled with
+    ``BackgroundTasks`` so processing failures return HTTP 500. Chatwoot can
+    then retry the webhook instead of receiving a false-positive 200 ack.
+    """
     if not settings.chatwoot_enabled:
         return JSONResponse(
             status_code=503,

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from backend.app.chatwoot_handler import ChatwootHandler
+from backend.app.message_buffer import BufferState
 from backend.app.schemas import (
     ChatwootConversation,
     ChatwootMessage,
@@ -89,6 +90,8 @@ def _message_payload(
     sender_type: str = "contact",
     message_id: int = 101,
     content: str = "hello",
+    message_type: str = "incoming",
+    private: bool = False,
 ) -> MessageCreatedPayload:
     return MessageCreatedPayload(
         event="message_created",
@@ -97,7 +100,12 @@ def _message_payload(
             id=42, status="open", inbox_id=1, contact_id=5
         ),
         sender=ChatwootSender(id=7, type=sender_type, name="Test"),
-        message=ChatwootMessage(id=message_id, content=content),
+        message=ChatwootMessage(
+            id=message_id,
+            content=content,
+            message_type=message_type,
+            private=private,
+        ),
     )
 
 
@@ -168,6 +176,91 @@ class TestHandleMessageCreated:
         message_buffer.flush_and_cancel.assert_awaited_once_with("42")
 
     @pytest.mark.asyncio
+    async def test_private_message_is_ignored_without_side_effects(
+        self,
+        handler: ChatwootHandler,
+        session_manager: Any,
+        message_buffer: Any,
+        chatwoot_client: Any,
+    ) -> None:
+        payload = _message_payload(sender_type="contact", private=True)
+
+        await handler._handle_message_created(payload)
+
+        session_manager.get_or_create_session_for_conversation.assert_not_awaited()
+        message_buffer.add_message.assert_not_awaited()
+        chatwoot_client.send_typing_indicator.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_outgoing_message_is_ignored_without_side_effects(
+        self,
+        handler: ChatwootHandler,
+        session_manager: Any,
+        message_buffer: Any,
+        chatwoot_client: Any,
+    ) -> None:
+        payload = _message_payload(sender_type="contact", message_type="outgoing")
+
+        await handler._handle_message_created(payload)
+
+        session_manager.get_or_create_session_for_conversation.assert_not_awaited()
+        message_buffer.add_message.assert_not_awaited()
+        chatwoot_client.send_typing_indicator.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_agent_bot_self_message_is_ignored_without_side_effects(
+        self,
+        handler: ChatwootHandler,
+        message_buffer: Any,
+        chatwoot_client: Any,
+    ) -> None:
+        payload = _message_payload(sender_type="agent_bot", message_type="outgoing")
+
+        await handler._handle_message_created(payload)
+
+        message_buffer.flush_and_cancel.assert_not_awaited()
+        message_buffer.add_message.assert_not_awaited()
+        chatwoot_client.send_typing_indicator.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_full_buffer_processes_callback_and_appends_history(
+        self,
+        chatwoot_client: Any,
+        redis_cache: Any,
+        config_provider: Any,
+        message_buffer: Any,
+        session_manager: Any,
+        escalation_handler: Any,
+    ) -> None:
+        process_message = AsyncMock(return_value="Respuesta técnica")
+        handler = ChatwootHandler(
+            chatwoot_client=chatwoot_client,
+            redis_cache=redis_cache,
+            config_provider=config_provider,
+            message_buffer=message_buffer,
+            session_manager=session_manager,
+            escalation_handler=escalation_handler,
+            process_message=process_message,
+        )
+        payload = _message_payload(sender_type="contact", content="Mensaje 5")
+        session_manager.get_history_async.return_value = []
+        message_buffer.add_message.return_value = BufferState(
+            conversation_id="42",
+            messages=["Uno", "Dos", "Tres", "Cuatro", "Mensaje 5"],
+        )
+        message_buffer.flush.return_value = "Uno\nDos\nTres\nCuatro\nMensaje 5"
+
+        await handler._handle_message_created(payload)
+
+        process_message.assert_awaited_once_with(
+            "session-42", "Uno\nDos\nTres\nCuatro\nMensaje 5", []
+        )
+        chatwoot_client.send_message.assert_awaited_once_with(42, "Respuesta técnica")
+        session_manager.add_turn_async.assert_awaited_once_with(
+            "session-42", "Uno\nDos\nTres\nCuatro\nMensaje 5", "Respuesta técnica", []
+        )
+
+    @pytest.mark.asyncio
     async def test_duplicate_message_ignored_before_buffer(
         self, handler: ChatwootHandler, message_buffer: Any
     ) -> None:
@@ -223,6 +316,25 @@ class TestHandleConversationCreated:
             await handler._handle_conversation_created(payload)
         assert "conversation_created" in caplog.text
         assert "conversation_id=99" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_creates_session_mapping(
+        self, handler: ChatwootHandler, session_manager: Any
+    ) -> None:
+        payload = ConversationCreatedPayload(
+            event="conversation_created",
+            account={"id": 1},
+            conversation=ChatwootConversation(
+                id=99, status="open", inbox_id=1, contact_id=5
+            ),
+            sender=ChatwootSender(id=7, type="contact"),
+        )
+
+        await handler._handle_conversation_created(payload)
+
+        session_manager.get_or_create_session_for_conversation.assert_awaited_once_with(
+            "99", account_id=1
+        )
 
 
 class TestHandleConversationStatusChanged:

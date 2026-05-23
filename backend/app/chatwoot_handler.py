@@ -5,7 +5,7 @@ idempotency via Redis, and logs all events with structured context.
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from backend.app.chatwoot_client import ChatwootClient
 from backend.app.config_provider import ConfigProvider
@@ -22,6 +22,9 @@ from backend.app.schemas import (
 logger = logging.getLogger(__name__)
 
 _PROCESSED_SET_TTL_SECONDS = 3600
+_MAX_BUFFER_MESSAGES = 5
+
+ProcessMessageCallback = Callable[[str, str, list[Any]], Awaitable[str]]
 
 
 class ChatwootHandler:
@@ -41,6 +44,7 @@ class ChatwootHandler:
         message_buffer: Optional[RedisMessageBuffer] = None,
         session_manager: Optional[Any] = None,
         escalation_handler: Optional[EscalationHandler] = None,
+        process_message: Optional[ProcessMessageCallback] = None,
     ) -> None:
         self._client = chatwoot_client
         self._redis = redis_cache
@@ -48,6 +52,7 @@ class ChatwootHandler:
         self._buffer = message_buffer
         self._sessions = session_manager
         self._escalation = escalation_handler
+        self._process_message = process_message
 
     async def handle_event(self, payload: ChatwootWebhookPayload) -> None:
         """Route a webhook payload to the correct handler.
@@ -106,6 +111,34 @@ class ChatwootHandler:
         conversation_key = str(conversation_id)
         sender_type = payload.sender.type
         content = payload.message.content or ""
+        message_type = payload.message.message_type
+
+        if payload.message.private or message_type == "outgoing":
+            logger.info(
+                "chatwoot_message_ignored conversation_id=%s message_id=%s",
+                conversation_id,
+                payload.message.id,
+                extra={
+                    "conversation_id": conversation_id,
+                    "message_id": payload.message.id,
+                    "message_type": message_type,
+                    "private": payload.message.private,
+                },
+            )
+            return
+
+        if sender_type == "agent_bot":
+            logger.info(
+                "chatwoot_agent_bot_self_message_ignored conversation_id=%s message_id=%s",
+                conversation_id,
+                payload.message.id,
+                extra={
+                    "conversation_id": conversation_id,
+                    "message_id": payload.message.id,
+                    "sender_type": sender_type,
+                },
+            )
+            return
 
         if sender_type == "user":
             if self._buffer is not None:
@@ -122,20 +155,30 @@ class ChatwootHandler:
             )
         elif sender_type == "contact":
             account_id = int(payload.account.get("id", 1))
+            session_id: Optional[str] = None
             if self._sessions is not None:
-                await self._sessions.get_or_create_session_for_conversation(
-                    conversation_key, account_id=account_id
+                session_id = (
+                    await self._sessions.get_or_create_session_for_conversation(
+                        conversation_key, account_id=account_id
+                    )
                 )
 
             profile = self._config.get_channel_profile(
                 str(payload.conversation.inbox_id)
             )
             window_seconds = int(getattr(profile, "buffer_window_seconds", 5))
+            buffer_state: Any = None
             if self._buffer is not None:
-                await self._buffer.add_message(
+                buffer_state = await self._buffer.add_message(
                     conversation_key, content, window_seconds
                 )
             await self._client.send_typing_indicator(conversation_id)
+            if self._should_process_full_buffer(buffer_state):
+                await self._process_full_buffer(
+                    conversation_id=conversation_id,
+                    conversation_key=conversation_key,
+                    session_id=session_id,
+                )
             logger.info(
                 "user message received conversation_id=%s message_id=%s",
                 conversation_id,
@@ -164,8 +207,15 @@ class ChatwootHandler:
     ) -> None:
         """Handle a ``conversation_created`` webhook.
 
-        Currently a stub that logs the event.
+        Creates the conversation-to-session mapping through SessionManager.
+        ``SessionManager`` owns idempotency, so repeated webhooks reuse the
+        existing mapping rather than generating a new session ID.
         """
+        account_id = int(payload.account.get("id", 1))
+        if self._sessions is not None:
+            await self._sessions.get_or_create_session_for_conversation(
+                str(payload.conversation.id), account_id=account_id
+            )
         logger.info(
             "conversation_created conversation_id=%s inbox_id=%s",
             payload.conversation.id,
@@ -175,6 +225,40 @@ class ChatwootHandler:
                 "inbox_id": payload.conversation.inbox_id,
                 "contact_id": payload.conversation.contact_id,
             },
+        )
+
+    def _should_process_full_buffer(self, buffer_state: Any) -> bool:
+        """Return true when a buffer state has reached the processing limit."""
+        messages = getattr(buffer_state, "messages", None)
+        return isinstance(messages, list) and len(messages) >= _MAX_BUFFER_MESSAGES
+
+    async def _process_full_buffer(
+        self,
+        conversation_id: int,
+        conversation_key: str,
+        session_id: Optional[str],
+    ) -> None:
+        """Flush a full buffer, call the injected processor, and persist history."""
+        if (
+            self._buffer is None
+            or self._process_message is None
+            or self._sessions is None
+            or session_id is None
+        ):
+            return
+
+        joined_message = await self._buffer.flush(conversation_key)
+        if not joined_message:
+            return
+
+        history = await self._sessions.get_history_async(session_id)
+        response_text = await self._process_message(session_id, joined_message, history)
+        await self._client.send_message(conversation_id, response_text)
+        await self._sessions.add_turn_async(
+            session_id,
+            joined_message,
+            response_text,
+            [],
         )
 
     async def _handle_conversation_status_changed(
