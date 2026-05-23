@@ -229,6 +229,9 @@ class ChatwootHandler:
 
     def _should_process_full_buffer(self, buffer_state: Any) -> bool:
         """Return true when a buffer state has reached the processing limit."""
+        if buffer_state is None:
+            return False
+
         messages = getattr(buffer_state, "messages", None)
         return isinstance(messages, list) and len(messages) >= _MAX_BUFFER_MESSAGES
 

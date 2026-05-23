@@ -298,6 +298,12 @@ class TestHandleMessageCreated:
             await handler._handle_message_created(payload)
         assert "conversation_id=42" in caplog.text
 
+    def test_none_buffer_state_does_not_trigger_full_processing(
+        self, handler: ChatwootHandler
+    ) -> None:
+        """Missing buffer state should fail closed without processing."""
+        assert handler._should_process_full_buffer(None) is False
+
 
 class TestHandleConversationCreated:
     """Dispatch of 'conversation_created' events."""
