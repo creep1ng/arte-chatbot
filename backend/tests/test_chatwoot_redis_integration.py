@@ -6,8 +6,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fakeredis import FakeAsyncRedis
 
+from backend.app.chatwoot_handler import ChatwootHandler
 from backend.app.message_buffer import MessageBuffer
 from backend.app.redis_cache import RedisCache
+from backend.app.schemas import (
+    ChatwootConversation,
+    ChatwootSender,
+    ConversationCreatedPayload,
+)
 from backend.app.session import SessionManager
 
 
@@ -57,6 +63,41 @@ async def test_session_mapping_and_buffer_share_namespace_without_collisions(
     assert await message_buffer.get_count("42") == 1
     assert await fake_redis.exists("chatwoot:1:conversation:42:metadata") == 1
     assert await fake_redis.exists("chatwoot:1:buffer:42") == 1
+
+
+@pytest.mark.asyncio
+async def test_conversation_created_handler_mapping_is_idempotent(
+    fake_redis: FakeAsyncRedis,
+) -> None:
+    """Repeated conversation_created webhooks should keep one session mapping."""
+    redis_cache = _cache(fake_redis, account_id=1)
+    session_manager = SessionManager(redis_cache=redis_cache)
+    handler = ChatwootHandler(
+        chatwoot_client=AsyncMock(),
+        redis_cache=redis_cache,
+        config_provider=DummyConfigProvider(),
+        session_manager=session_manager,
+    )
+    payload = ConversationCreatedPayload(
+        event="conversation_created",
+        account={"id": 1},
+        conversation=ChatwootConversation(
+            id=314, status="open", inbox_id=7, contact_id=9
+        ),
+        sender=ChatwootSender(id=9, type="contact"),
+    )
+
+    await handler._handle_conversation_created(payload)
+    first_session = await session_manager.get_session_id("314")
+    await handler._handle_conversation_created(payload)
+    second_session = await session_manager.get_session_id("314")
+
+    assert first_session is not None
+    assert second_session == first_session
+    assert (
+        await fake_redis.hget("chatwoot:1:conversation:314:metadata", "session_id")
+        == first_session
+    )
 
 
 @pytest.mark.asyncio
