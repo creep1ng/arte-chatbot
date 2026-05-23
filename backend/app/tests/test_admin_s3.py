@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.config import settings
-from backend.app.s3_client import S3DownloadError
+from backend.app.s3_client import S3DownloadError, S3ObjectNotFoundError
 
 
 def _reset_settings() -> None:
@@ -73,7 +73,9 @@ def test_s3_tree_rejects_unsafe_prefix(client: TestClient) -> None:
 def test_presigned_upload_success(client: TestClient) -> None:
     """POST /admin/s3/presigned-upload returns URL and fields."""
     with patch("backend.app.admin_s3.s3_client") as mock_s3:
-        mock_s3.head_object = AsyncMock(side_effect=S3DownloadError("not found"))
+        mock_s3.head_object = AsyncMock(
+            side_effect=S3ObjectNotFoundError("not found")
+        )
         mock_s3.generate_presigned_post = AsyncMock(
             return_value={
                 "url": "https://bucket.s3.amazonaws.com/",
@@ -105,6 +107,21 @@ def test_presigned_upload_conflict(client: TestClient) -> None:
         )
 
     assert response.status_code == 409
+
+
+def test_presigned_upload_head_error_returns_500(client: TestClient) -> None:
+    """POST /admin/s3/presigned-upload does not hide non-404 S3 failures."""
+    with patch("backend.app.admin_s3.s3_client") as mock_s3:
+        mock_s3.head_object = AsyncMock(side_effect=S3DownloadError("S3 down"))
+
+        response = client.post(
+            "/admin/s3/presigned-upload",
+            headers={"X-Admin-API-Key": "test-admin-key"},
+            json={"key": "raw/paneles/a.pdf", "content_type": "application/pdf"},
+        )
+
+    assert response.status_code == 500
+    assert "S3 down" in response.json()["detail"]
 
 
 def test_delete_s3_objects(client: TestClient) -> None:

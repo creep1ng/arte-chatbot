@@ -23,6 +23,12 @@ class S3DownloadError(Exception):
     pass
 
 
+class S3ObjectNotFoundError(S3DownloadError):
+    """Raised when an S3 object does not exist."""
+
+    pass
+
+
 class S3UploadError(Exception):
     """Raised when S3 upload operations fail."""
 
@@ -252,6 +258,11 @@ class S3Client:
                 )
                 return dict(response)
             except ClientError as e:
+                error_code = e.response.get("Error", {}).get("Code", "Unknown")
+                if error_code in {"404", "NoSuchKey", "NotFound"}:
+                    raise S3ObjectNotFoundError(
+                        f"S3 object not found: {key}"
+                    ) from e
                 raise S3DownloadError(f"S3 head_object failed: {e}") from e
 
         return await asyncio.to_thread(_head)
