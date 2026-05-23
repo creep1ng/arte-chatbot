@@ -55,6 +55,14 @@ def test_verify_chatwoot_signature_accepts_empty_body_valid_signature() -> None:
     assert verify_chatwoot_signature(payload, _signature(payload, secret), secret)
 
 
+def test_verify_chatwoot_signature_rejects_none_payload() -> None:
+    """None payloads must fail closed instead of being treated as empty bodies."""
+    secret = "test-secret"
+    empty_body_signature = _signature(b"", secret)
+
+    assert not verify_chatwoot_signature(None, empty_body_signature, secret)
+
+
 def test_verify_chatwoot_signature_rejects_empty_body_invalid_signature() -> None:
     """Empty bodies with invalid signatures should fail verification."""
     assert not verify_chatwoot_signature(b"", "invalid", "test-secret")

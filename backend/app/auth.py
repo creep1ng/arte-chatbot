@@ -42,7 +42,7 @@ def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
 
 
 def verify_chatwoot_signature(
-    payload: bytes,
+    payload: Optional[bytes],
     signature: Optional[str],
     secret: Optional[str],
 ) -> bool:
@@ -57,7 +57,7 @@ def verify_chatwoot_signature(
     Returns:
         ``True`` when the signature matches, otherwise ``False``.
     """
-    if signature is None or not secret:
+    if payload is None or signature is None or not secret:
         return False
 
     supplied_signature = signature.strip()
