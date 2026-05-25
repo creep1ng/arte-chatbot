@@ -35,7 +35,7 @@ services:
     env_file:
       - .env
     environment:
-      - API_URL=http://localhost:8000
+      - API_URL=${FRONTEND_API_URL:-/api}
       - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}
     depends_on:
       - backend
