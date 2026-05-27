@@ -488,6 +488,8 @@ def _normalize_message_created_payload(payload: dict[str, Any]) -> dict[str, Any
         sender_type = sender.get("type")
         if isinstance(sender_type, str):
             normalized["sender"] = {**sender, "type": sender_type.lower()}
+        elif _looks_like_chatwoot_contact(sender):
+            normalized["sender"] = {**sender, "type": "contact"}
 
     conversation = normalized.get("conversation")
     if isinstance(conversation, dict) and conversation.get("contact_id") is None:
@@ -510,6 +512,21 @@ def _normalize_chatwoot_message_type(value: Any) -> Any:
             2: "activity",
         }.get(value, value)
     return value
+
+
+def _looks_like_chatwoot_contact(sender: dict[str, Any]) -> bool:
+    """Return true when a Chatwoot sender dict has contact-only fields."""
+    return (
+        any(
+            sender.get(key) is not None
+            for key in (
+                "phone_number",
+                "email",
+                "identifier",
+            )
+        )
+        or "blocked" in sender
+    )
 
 
 def _summarize_chatwoot_payload(payload: dict[str, Any]) -> str:

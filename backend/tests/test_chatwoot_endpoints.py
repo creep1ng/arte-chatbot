@@ -244,6 +244,65 @@ def test_chatwoot_webhook_normalizes_numeric_message_type(
     main_module.app.dependency_overrides.clear()
 
 
+def test_chatwoot_webhook_infers_contact_sender_type(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real contact senders can omit the type discriminator entirely."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    payload = {
+        "event": "message_created",
+        "account": {"id": 1, "name": "Arte Soluciones Energéticas"},
+        "id": 204,
+        "content": "Hola, necesito una cotización",
+        "content_attributes": {},
+        "content_type": "text",
+        "message_type": "incoming",
+        "private": False,
+        "source_id": "whatsapp-message-id",
+        "conversation": {
+            "id": 42,
+            "status": "open",
+            "inbox_id": 7,
+            "contact_inbox": {"contact_id": 9},
+        },
+        "sender": {
+            "account": {"id": 1, "name": "Arte Soluciones Energéticas"},
+            "additional_attributes": {},
+            "avatar": "",
+            "blocked": False,
+            "custom_attributes": {},
+            "email": None,
+            "id": 9,
+            "identifier": None,
+            "name": "Cliente",
+            "phone_number": "+573000000000",
+            "thumbnail": "",
+        },
+    }
+    body = json.dumps(payload).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_chatwoot_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    parsed_payload = handler.handle_event.await_args.args[0]
+    assert parsed_payload.message.id == 204
+    assert parsed_payload.message.content == "Hola, necesito una cotización"
+    assert parsed_payload.sender.type == "contact"
+    assert parsed_payload.conversation.contact_id == 9
+    main_module.app.dependency_overrides.clear()
+
+
 def test_chatwoot_webhook_accepts_unknown_event_without_account(
     client: TestClient,
     main_module: Any,
