@@ -426,10 +426,9 @@ def _parse_chatwoot_payload(raw_payload: bytes) -> ChatwootWebhookPayload:
         "conversation_status_changed": ConversationStatusChangedPayload,
     }
     schema = schema_by_event.get(str(event))
-    if schema is None:
-        return ChatwootWebhookPayload.model_validate(payload)
-
     try:
+        if schema is None:
+            return ChatwootWebhookPayload.model_validate(payload)
         return schema.model_validate(payload)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc

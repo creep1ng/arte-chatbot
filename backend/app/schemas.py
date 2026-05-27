@@ -57,7 +57,7 @@ class ChatwootWebhookPayload(BaseModel):
     """Base schema for all Chatwoot webhook payloads."""
 
     event: str
-    account: dict[str, Any]
+    account: dict[str, Any] = Field(default_factory=dict)
 
 
 class MessageCreatedPayload(ChatwootWebhookPayload):

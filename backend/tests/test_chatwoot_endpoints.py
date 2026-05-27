@@ -157,6 +157,40 @@ def test_chatwoot_webhook_accepts_real_timestamped_signature(
     main_module.app.dependency_overrides.clear()
 
 
+def test_chatwoot_webhook_accepts_unknown_event_without_account(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real Chatwoot lifecycle payloads may omit account data."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    payload = {
+        "event": "conversation_opened",
+        "additional_attributes": {},
+        "messages": [],
+    }
+    body = json.dumps(payload).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_chatwoot_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accepted"}
+    handler.handle_event.assert_awaited_once()
+    parsed_payload = handler.handle_event.await_args.args[0]
+    assert parsed_payload.event == "conversation_opened"
+    assert parsed_payload.account == {}
+    main_module.app.dependency_overrides.clear()
+
+
 def test_chatwoot_webhook_invalid_signature_returns_401(
     client: TestClient,
     main_module: Any,
