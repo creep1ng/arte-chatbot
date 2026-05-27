@@ -426,12 +426,38 @@ def _parse_chatwoot_payload(raw_payload: bytes) -> ChatwootWebhookPayload:
         "conversation_status_changed": ConversationStatusChangedPayload,
     }
     schema = schema_by_event.get(str(event))
+    if event == "message_created":
+        payload = _normalize_message_created_payload(payload)
     try:
         if schema is None:
             return ChatwootWebhookPayload.model_validate(payload)
         return schema.model_validate(payload)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+def _normalize_message_created_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Chatwoot's flat message webhook shape to internal schema."""
+    normalized = dict(payload)
+    if "message" not in normalized:
+        normalized["message"] = {
+            "id": normalized.get("id"),
+            "content": normalized.get("content"),
+            "content_type": normalized.get("content_type", "text"),
+            "message_type": normalized.get("message_type", "incoming"),
+            "private": normalized.get("private", False),
+        }
+
+    conversation = normalized.get("conversation")
+    if isinstance(conversation, dict) and conversation.get("contact_id") is None:
+        contact_inbox = conversation.get("contact_inbox")
+        if isinstance(contact_inbox, dict):
+            normalized["conversation"] = {
+                **conversation,
+                "contact_id": contact_inbox.get("contact_id"),
+            }
+
+    return normalized
 
 
 @app.post("/webhook/chatwoot")

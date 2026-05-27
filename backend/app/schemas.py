@@ -42,7 +42,7 @@ class ChatwootConversation(BaseModel):
     id: int
     status: str
     inbox_id: int
-    contact_id: int
+    contact_id: Optional[int] = None
 
 
 class ChatwootSender(BaseModel):
