@@ -18,6 +18,20 @@ def _signed_headers(payload: bytes, secret: str = "test-secret") -> dict[str, st
     return {"X-Chatwoot-Signature": digest}
 
 
+def _chatwoot_signed_headers(
+    payload: bytes,
+    secret: str = "test-secret",
+    timestamp: str = "1779820000",
+) -> dict[str, str]:
+    """Build real Chatwoot AgentBot timestamped signature headers."""
+    signed_payload = f"{timestamp}.".encode() + payload
+    digest = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
+    return {
+        "X-Chatwoot-Timestamp": timestamp,
+        "X-Chatwoot-Signature": f"sha256={digest}",
+    }
+
+
 def _valid_payload() -> dict[str, Any]:
     """Return a valid message_created webhook payload."""
     return {
@@ -108,6 +122,33 @@ def test_chatwoot_webhook_valid_signature_dispatches_handler(
         "/webhook/chatwoot",
         content=body,
         headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accepted"}
+    handler.handle_event.assert_awaited_once()
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_accepts_real_timestamped_signature(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real Chatwoot AgentBot signatures include timestamp in HMAC input."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    payload = _valid_payload()
+    body = json.dumps(payload).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_chatwoot_signed_headers(body),
     )
 
     assert response.status_code == 200

@@ -11,6 +11,12 @@ def _signature(payload: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
 
 
+def _timestamped_signature(payload: bytes, secret: str, timestamp: str) -> str:
+    """Return Chatwoot's timestamped HMAC-SHA256 hex digest."""
+    signed_payload = f"{timestamp}.".encode() + payload
+    return hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
+
+
 def test_verify_chatwoot_signature_accepts_valid_raw_hex() -> None:
     """Valid raw hex signatures should pass verification."""
     payload = b'{"event":"message_created"}'
@@ -38,6 +44,27 @@ def test_verify_chatwoot_signature_accepts_sha256_prefix() -> None:
     signature = f"sha256={_signature(payload, secret)}"
 
     assert verify_chatwoot_signature(payload, signature, secret)
+
+
+def test_verify_chatwoot_signature_accepts_chatwoot_timestamped_signature() -> None:
+    """Real AgentBot webhooks sign '<timestamp>.<body>'."""
+    payload = b'{"event":"message_created"}'
+    secret = "test-secret"
+    timestamp = "1779820000"
+    signature = f"sha256={_timestamped_signature(payload, secret, timestamp)}"
+
+    assert verify_chatwoot_signature(payload, signature, secret, timestamp=timestamp)
+
+
+def test_verify_chatwoot_signature_rejects_timestamped_signature_without_timestamp() -> (
+    None
+):
+    """Timestamped signatures must not verify as body-only signatures."""
+    payload = b'{"event":"message_created"}'
+    secret = "test-secret"
+    signature = f"sha256={_timestamped_signature(payload, secret, '1779820000')}"
+
+    assert not verify_chatwoot_signature(payload, signature, secret)
 
 
 def test_verify_chatwoot_signature_rejects_garbage_signature() -> None:

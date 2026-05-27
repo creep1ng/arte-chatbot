@@ -439,6 +439,7 @@ def _parse_chatwoot_payload(raw_payload: bytes) -> ChatwootWebhookPayload:
 async def chatwoot_webhook(
     request: Request,
     x_chatwoot_signature: Annotated[Optional[str], Header()] = None,
+    x_chatwoot_timestamp: Annotated[Optional[str], Header()] = None,
     x_hub_signature_256: Annotated[Optional[str], Header()] = None,
 ) -> JSONResponse:
     """Receive, verify, validate, and dispatch Chatwoot webhooks.
@@ -459,6 +460,7 @@ async def chatwoot_webhook(
         raw_payload,
         signature,
         settings.chatwoot_webhook_secret,
+        timestamp=x_chatwoot_timestamp,
     ):
         raise HTTPException(status_code=401, detail="Invalid Chatwoot signature")
 
