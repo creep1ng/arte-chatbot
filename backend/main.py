@@ -253,6 +253,7 @@ def get_chatwoot_handler() -> ChatwootHandler:
         message_buffer=message_buffer,
         session_manager=session_manager,
         escalation_handler=escalation_handler,
+        process_message=_process_chatwoot_message,
     )
 
 
@@ -1646,6 +1647,21 @@ async def _process_chat_message(
             e,
         )
         raise
+
+
+async def _process_chatwoot_message(
+    session_id: str, message: str, history: list[Any]
+) -> str:
+    """Process a Chatwoot buffered message and return response text."""
+    _ = history
+    response = await _process_chat_message(
+        session_id=session_id,
+        message=message,
+        llm_client=llm_client,
+        s3_client=s3_client,
+        file_inputs_client=file_inputs_client,
+    )
+    return response.response
 
 
 async def _on_buffer_window_expired(session_id: str, joined_message: str) -> None:

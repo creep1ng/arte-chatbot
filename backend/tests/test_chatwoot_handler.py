@@ -4,6 +4,8 @@ Validates event routing, idempotency deduplication, and structured
 logging for all supported webhook types.
 """
 
+import asyncio
+
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -258,6 +260,44 @@ class TestHandleMessageCreated:
         chatwoot_client.send_message.assert_awaited_once_with(42, "Respuesta técnica")
         session_manager.add_turn_async.assert_awaited_once_with(
             "session-42", "Uno\nDos\nTres\nCuatro\nMensaje 5", "Respuesta técnica", []
+        )
+
+    @pytest.mark.asyncio
+    async def test_single_contact_message_processes_after_buffer_window(
+        self,
+        chatwoot_client: Any,
+        redis_cache: Any,
+        config_provider: Any,
+        message_buffer: Any,
+        session_manager: Any,
+        escalation_handler: Any,
+    ) -> None:
+        process_message = AsyncMock(return_value="Respuesta después del debounce")
+        profile = config_provider.get_channel_profile.return_value
+        profile.buffer_window_seconds = 0
+        handler = ChatwootHandler(
+            chatwoot_client=chatwoot_client,
+            redis_cache=redis_cache,
+            config_provider=config_provider,
+            message_buffer=message_buffer,
+            session_manager=session_manager,
+            escalation_handler=escalation_handler,
+            process_message=process_message,
+        )
+        payload = _message_payload(sender_type="contact", content="Hola")
+        session_manager.get_history_async.return_value = []
+        message_buffer.add_message.return_value = BufferState(
+            conversation_id="42",
+            messages=["Hola"],
+        )
+        message_buffer.flush.return_value = "Hola"
+
+        await handler._handle_message_created(payload)
+        await asyncio.sleep(0.01)
+
+        process_message.assert_awaited_once_with("session-42", "Hola", [])
+        chatwoot_client.send_message.assert_awaited_once_with(
+            42, "Respuesta después del debounce"
         )
 
     @pytest.mark.asyncio
