@@ -4,6 +4,7 @@ Routes incoming webhook payloads to the appropriate handler, enforces
 idempotency via Redis, and logs all events with structured context.
 """
 
+import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
@@ -53,6 +54,7 @@ class ChatwootHandler:
         self._sessions = session_manager
         self._escalation = escalation_handler
         self._process_message = process_message
+        self._flush_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def handle_event(self, payload: ChatwootWebhookPayload) -> None:
         """Route a webhook payload to the correct handler.
@@ -174,10 +176,18 @@ class ChatwootHandler:
                 )
             await self._client.send_typing_indicator(conversation_id)
             if self._should_process_full_buffer(buffer_state):
+                self._cancel_scheduled_flush(conversation_key)
                 await self._process_full_buffer(
                     conversation_id=conversation_id,
                     conversation_key=conversation_key,
                     session_id=session_id,
+                )
+            else:
+                self._schedule_buffer_flush(
+                    conversation_id=conversation_id,
+                    conversation_key=conversation_key,
+                    session_id=session_id,
+                    window_seconds=window_seconds,
                 )
             logger.info(
                 "user message received conversation_id=%s message_id=%s",
@@ -234,6 +244,67 @@ class ChatwootHandler:
 
         messages = getattr(buffer_state, "messages", None)
         return isinstance(messages, list) and len(messages) >= _MAX_BUFFER_MESSAGES
+
+    def _schedule_buffer_flush(
+        self,
+        conversation_id: int,
+        conversation_key: str,
+        session_id: Optional[str],
+        window_seconds: int,
+    ) -> None:
+        """Schedule delayed processing after the debounce window expires."""
+        if (
+            self._buffer is None
+            or self._process_message is None
+            or self._sessions is None
+            or session_id is None
+        ):
+            return
+
+        self._cancel_scheduled_flush(conversation_key)
+        task = asyncio.create_task(
+            self._flush_buffer_after_window(
+                conversation_id=conversation_id,
+                conversation_key=conversation_key,
+                session_id=session_id,
+                window_seconds=window_seconds,
+            )
+        )
+        self._flush_tasks[conversation_key] = task
+
+    def _cancel_scheduled_flush(self, conversation_key: str) -> None:
+        """Cancel an existing delayed flush for a conversation."""
+        task = self._flush_tasks.pop(conversation_key, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _flush_buffer_after_window(
+        self,
+        conversation_id: int,
+        conversation_key: str,
+        session_id: str,
+        window_seconds: int,
+    ) -> None:
+        """Flush and process a buffered message after the debounce window."""
+        try:
+            await asyncio.sleep(window_seconds)
+            await self._process_full_buffer(
+                conversation_id=conversation_id,
+                conversation_key=conversation_key,
+                session_id=session_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "chatwoot_buffer_flush_failed conversation_id=%s: %s",
+                conversation_id,
+                exc,
+            )
+        finally:
+            current_task = asyncio.current_task()
+            if self._flush_tasks.get(conversation_key) is current_task:
+                self._flush_tasks.pop(conversation_key, None)
 
     async def _process_full_buffer(
         self,

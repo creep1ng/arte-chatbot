@@ -42,7 +42,7 @@ class ChatwootConversation(BaseModel):
     id: int
     status: str
     inbox_id: int
-    contact_id: int
+    contact_id: Optional[int] = None
 
 
 class ChatwootSender(BaseModel):
@@ -57,7 +57,7 @@ class ChatwootWebhookPayload(BaseModel):
     """Base schema for all Chatwoot webhook payloads."""
 
     event: str
-    account: dict[str, Any]
+    account: dict[str, Any] = Field(default_factory=dict)
 
 
 class MessageCreatedPayload(ChatwootWebhookPayload):

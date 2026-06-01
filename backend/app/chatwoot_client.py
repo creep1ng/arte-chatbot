@@ -43,7 +43,7 @@ class ChatwootClient:
         self._redis = redis_cache
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),
-            headers={"Authorization": f"Bearer {agent_bot_token}"},
+            headers={"api_access_token": agent_bot_token},
         )
 
     def _conversation_url(self, conversation_id: int, suffix: str = "") -> str:

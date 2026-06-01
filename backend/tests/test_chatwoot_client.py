@@ -42,7 +42,8 @@ class TestConstructor:
 
     def test_auth_header_set(self, client: ChatwootClient) -> None:
         headers = client._client.headers
-        assert headers["Authorization"] == "Bearer test-token"
+        assert headers["api_access_token"] == "test-token"
+        assert "Authorization" not in headers
 
     def test_timeout_configured(self, client: ChatwootClient) -> None:
         assert client._client.timeout == httpx.Timeout(30.0)

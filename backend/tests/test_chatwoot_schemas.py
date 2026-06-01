@@ -89,6 +89,19 @@ class TestChatwootWebhookPayload:
         assert payload.event == "message_created"
         assert payload.account == {"id": 1}
 
+    def test_base_payload_allows_unknown_event_without_account(self) -> None:
+        """Real Chatwoot lifecycle events may omit account in the payload."""
+        payload = ChatwootWebhookPayload.model_validate(
+            {
+                "event": "conversation_opened",
+                "additional_attributes": {},
+                "messages": [],
+            }
+        )
+
+        assert payload.event == "conversation_opened"
+        assert payload.account == {}
+
 
 class TestMessageCreatedPayload:
     """Unit tests for the MessageCreatedPayload schema."""

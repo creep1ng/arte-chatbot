@@ -45,6 +45,7 @@ def verify_chatwoot_signature(
     payload: Optional[bytes],
     signature: Optional[str],
     secret: Optional[str],
+    timestamp: Optional[str] = None,
 ) -> bool:
     """Verify a Chatwoot webhook HMAC-SHA256 signature.
 
@@ -53,6 +54,8 @@ def verify_chatwoot_signature(
         signature: Signature header value. Supports raw hex and
             ``sha256=<hex>`` values.
         secret: Shared webhook secret configured in Chatwoot.
+        timestamp: Optional ``X-Chatwoot-Timestamp`` header. Real Chatwoot
+            AgentBot webhooks sign ``"{timestamp}.{body}"``.
 
     Returns:
         ``True`` when the signature matches, otherwise ``False``.
@@ -64,9 +67,13 @@ def verify_chatwoot_signature(
     if supplied_signature.startswith("sha256="):
         supplied_signature = supplied_signature.removeprefix("sha256=")
 
+    signed_payload = payload
+    if timestamp:
+        signed_payload = f"{timestamp}.".encode("utf-8") + payload
+
     expected_signature = hmac.new(
         secret.encode("utf-8"),
-        payload,
+        signed_payload,
         hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(supplied_signature, expected_signature)

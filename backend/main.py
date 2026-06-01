@@ -253,6 +253,7 @@ def get_chatwoot_handler() -> ChatwootHandler:
         message_buffer=message_buffer,
         session_manager=session_manager,
         escalation_handler=escalation_handler,
+        process_message=_process_chatwoot_message,
     )
 
 
@@ -414,10 +415,20 @@ def _parse_chatwoot_payload(raw_payload: bytes) -> ChatwootWebhookPayload:
     try:
         payload = json.loads(raw_payload)
     except json.JSONDecodeError as exc:
+        logger.warning("chatwoot_payload_invalid_json size=%s", len(raw_payload))
         raise HTTPException(status_code=422, detail="Invalid Chatwoot payload") from exc
 
     if not isinstance(payload, dict):
+        logger.warning(
+            "chatwoot_payload_invalid_type payload_type=%s",
+            type(payload).__name__,
+        )
         raise HTTPException(status_code=422, detail="Invalid Chatwoot payload")
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "chatwoot_payload_received %s", _summarize_chatwoot_payload(payload)
+        )
 
     event = payload.get("event")
     schema_by_event = {
@@ -426,19 +437,121 @@ def _parse_chatwoot_payload(raw_payload: bytes) -> ChatwootWebhookPayload:
         "conversation_status_changed": ConversationStatusChangedPayload,
     }
     schema = schema_by_event.get(str(event))
-    if schema is None:
-        return ChatwootWebhookPayload.model_validate(payload)
-
+    if event == "message_created":
+        payload = _normalize_message_created_payload(payload)
     try:
+        if schema is None:
+            return ChatwootWebhookPayload.model_validate(payload)
         return schema.model_validate(payload)
     except ValidationError as exc:
+        logger.warning(
+            "chatwoot_payload_validation_failed event=%s schema=%s errors=%s summary=%s",
+            event,
+            schema.__name__ if schema is not None else ChatwootWebhookPayload.__name__,
+            exc.errors(),
+            _summarize_chatwoot_payload(payload),
+        )
+        if schema is not None and event is not None:
+            return ChatwootWebhookPayload.model_validate(
+                {
+                    "event": str(event),
+                    "account": payload.get("account")
+                    if isinstance(payload.get("account"), dict)
+                    else {},
+                }
+            )
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+def _normalize_message_created_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Chatwoot's flat message webhook shape to internal schema."""
+    normalized = dict(payload)
+    if "message" not in normalized:
+        normalized["message"] = {
+            "id": normalized.get("id"),
+            "content": normalized.get("content"),
+            "content_type": normalized.get("content_type", "text"),
+            "message_type": _normalize_chatwoot_message_type(
+                normalized.get("message_type", "incoming")
+            ),
+            "private": normalized.get("private", False),
+        }
+    elif isinstance(normalized["message"], dict):
+        normalized["message"] = {
+            **normalized["message"],
+            "message_type": _normalize_chatwoot_message_type(
+                normalized["message"].get("message_type", "incoming")
+            ),
+        }
+
+    sender = normalized.get("sender")
+    if isinstance(sender, dict):
+        sender_type = sender.get("type")
+        if isinstance(sender_type, str):
+            normalized["sender"] = {**sender, "type": sender_type.lower()}
+        elif _looks_like_chatwoot_contact(sender):
+            normalized["sender"] = {**sender, "type": "contact"}
+
+    conversation = normalized.get("conversation")
+    if isinstance(conversation, dict) and conversation.get("contact_id") is None:
+        contact_inbox = conversation.get("contact_inbox")
+        if isinstance(contact_inbox, dict):
+            normalized["conversation"] = {
+                **conversation,
+                "contact_id": contact_inbox.get("contact_id"),
+            }
+
+    return normalized
+
+
+def _normalize_chatwoot_message_type(value: Any) -> Any:
+    """Normalize Chatwoot Rails enum values to API string values."""
+    if isinstance(value, int):
+        return {
+            0: "incoming",
+            1: "outgoing",
+            2: "activity",
+        }.get(value, value)
+    return value
+
+
+def _looks_like_chatwoot_contact(sender: dict[str, Any]) -> bool:
+    """Return true when a Chatwoot sender dict has contact-only fields."""
+    return (
+        any(
+            sender.get(key) is not None
+            for key in (
+                "phone_number",
+                "email",
+                "identifier",
+            )
+        )
+        or "blocked" in sender
+    )
+
+
+def _summarize_chatwoot_payload(payload: dict[str, Any]) -> str:
+    """Return a PII-light summary for webhook diagnostics."""
+    conversation = payload.get("conversation")
+    message = payload.get("message")
+    sender = payload.get("sender")
+    return (
+        f"event={payload.get('event')!r} "
+        f"keys={sorted(payload.keys())} "
+        f"conversation_keys="
+        f"{sorted(conversation.keys()) if isinstance(conversation, dict) else None} "
+        f"message_keys={sorted(message.keys()) if isinstance(message, dict) else None} "
+        f"sender_keys={sorted(sender.keys()) if isinstance(sender, dict) else None} "
+        f"has_top_level_message_fields="
+        f"{any(key in payload for key in ('id', 'content', 'content_type', 'message_type'))}"
+    )
 
 
 @app.post("/webhook/chatwoot")
 async def chatwoot_webhook(
     request: Request,
     x_chatwoot_signature: Annotated[Optional[str], Header()] = None,
+    x_chatwoot_timestamp: Annotated[Optional[str], Header()] = None,
     x_hub_signature_256: Annotated[Optional[str], Header()] = None,
 ) -> JSONResponse:
     """Receive, verify, validate, and dispatch Chatwoot webhooks.
@@ -459,6 +572,7 @@ async def chatwoot_webhook(
         raw_payload,
         signature,
         settings.chatwoot_webhook_secret,
+        timestamp=x_chatwoot_timestamp,
     ):
         raise HTTPException(status_code=401, detail="Invalid Chatwoot signature")
 
@@ -1533,6 +1647,21 @@ async def _process_chat_message(
             e,
         )
         raise
+
+
+async def _process_chatwoot_message(
+    session_id: str, message: str, history: list[Any]
+) -> str:
+    """Process a Chatwoot buffered message and return response text."""
+    _ = history
+    response = await _process_chat_message(
+        session_id=session_id,
+        message=message,
+        llm_client=llm_client,
+        s3_client=s3_client,
+        file_inputs_client=file_inputs_client,
+    )
+    return response.response
 
 
 async def _on_buffer_window_expired(session_id: str, joined_message: str) -> None:

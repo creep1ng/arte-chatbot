@@ -368,11 +368,11 @@ def test_invalid_signature_returns_401(
     main_module.app.dependency_overrides.clear()
 
 
-def test_invalid_payload_returns_422_before_dispatch(
+def test_malformed_known_event_is_accepted_for_diagnostics(
     client: TestClient,
     main_module: Any,
 ) -> None:
-    """Schema-invalid signed payloads should return 422."""
+    """Schema-drifted known events should be acknowledged and logged."""
     handler = AsyncMock()
     main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
         handler
@@ -385,8 +385,8 @@ def test_invalid_payload_returns_422_before_dispatch(
         headers=_signed_headers(body),
     )
 
-    assert response.status_code == 422
-    handler.handle_event.assert_not_awaited()
+    assert response.status_code == 200
+    handler.handle_event.assert_awaited_once()
     main_module.app.dependency_overrides.clear()
 
 
