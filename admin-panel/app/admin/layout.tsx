@@ -8,6 +8,7 @@ import {
   BookOpen,
   Database,
   FileText,
+  GitBranch,
   LogOut,
   Settings,
 } from "lucide-react";
@@ -18,6 +19,7 @@ import { useAdminAuth } from "@/providers/admin-auth-provider";
 const navItems = [
   { href: "/admin/dashboard", label: "Dashboard", icon: BarChart3 },
   { href: "/admin/config", label: "Config", icon: Settings },
+  { href: "/admin/escalation", label: "Escalamiento", icon: GitBranch },
   { href: "/admin/catalog", label: "Catálogo", icon: Database },
   { href: "/admin/guides", label: "Guías", icon: BookOpen },
   { href: "/admin/logs", label: "Logs", icon: FileText },
