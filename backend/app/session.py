@@ -3,10 +3,11 @@ Servicio de gestión de sesiones para el chatbot.
 Almacena el historial de conversaciones por session_id.
 """
 
-from typing import Dict, List, Optional
 from datetime import datetime
-from pydantic import BaseModel
 import threading
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel
 
 
 class ChatTurn(BaseModel):
@@ -39,6 +40,9 @@ class SessionManager:
         self.sessions: Dict[str, List[ChatTurn]] = {}
         self.profiles: Dict[str, str] = {}
         self.token_totals: Dict[str, TokenTotals] = {}
+        self.intent_counts: Dict[str, int] = {}
+        self.escalation_count = 0
+        self.metric_turn_count = 0
         self.max_turns = max_turns
         self._lock = threading.Lock()
 
@@ -156,6 +160,8 @@ class SessionManager:
         input_tokens: int,
         output_tokens: int,
         total_tokens: int,
+        intent_type: Optional[str] = None,
+        escalate: Optional[bool] = None,
     ) -> None:
         """Acumula el uso de tokens para una sesión.
 
@@ -166,6 +172,8 @@ class SessionManager:
             input_tokens: Tokens de entrada a acumular.
             output_tokens: Tokens de salida a acumular.
             total_tokens: Total de tokens a acumular.
+            intent_type: Intent opcional del turno para métricas en memoria.
+            escalate: Estado opcional de escalamiento para métricas en memoria.
         """
         with self._lock:
             if session_id not in self.token_totals:
@@ -173,6 +181,14 @@ class SessionManager:
             self.token_totals[session_id].input_tokens += input_tokens
             self.token_totals[session_id].output_tokens += output_tokens
             self.token_totals[session_id].total_tokens += total_tokens
+            if intent_type is not None:
+                self.intent_counts[intent_type] = (
+                    self.intent_counts.get(intent_type, 0) + 1
+                )
+            if escalate is not None:
+                self.metric_turn_count += 1
+                if escalate:
+                    self.escalation_count += 1
 
     def get_token_totals(self, session_id: str) -> TokenTotals:
         """Obtiene los totales de tokens acumulados de una sesión.
@@ -194,6 +210,39 @@ class SessionManager:
             Número de sesiones activas
         """
         return len(self.sessions)
+
+    def get_all_token_totals(self) -> TokenTotals:
+        """Obtiene los totales de tokens agregados de todas las sesiones.
+
+        Returns:
+            TokenTotals con la suma de consumo de todas las sesiones activas.
+        """
+        with self._lock:
+            return TokenTotals(
+                input_tokens=sum(t.input_tokens for t in self.token_totals.values()),
+                output_tokens=sum(t.output_tokens for t in self.token_totals.values()),
+                total_tokens=sum(t.total_tokens for t in self.token_totals.values()),
+            )
+
+    def get_intent_distribution(self) -> Dict[str, int]:
+        """Obtiene la distribución de intents acumulada en memoria.
+
+        Returns:
+            Copia del contador de intents por tipo.
+        """
+        with self._lock:
+            return dict(self.intent_counts)
+
+    def get_escalation_rate(self) -> float:
+        """Calcula la tasa de escalamiento acumulada en memoria.
+
+        Returns:
+            Proporción de turnos escalados entre 0.0 y 1.0.
+        """
+        with self._lock:
+            if self.metric_turn_count == 0:
+                return 0.0
+            return self.escalation_count / self.metric_turn_count
 
 
 # Instancia global del gestor de sesiones

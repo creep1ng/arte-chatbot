@@ -207,3 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 .kilocode/mcp.json
+
+# Node / Next.js admin panel
+admin-panel/node_modules/
+admin-panel/.next/
+admin-panel/tsconfig.tsbuildinfo
