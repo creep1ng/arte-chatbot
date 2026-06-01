@@ -6,11 +6,12 @@ for generating chatbot responses with tool calling support.
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from openai import APIError, AuthenticationError, OpenAI
 
 from backend.app.config import settings
+from backend.app.conversation_logger import redact_text
 from backend.app.schemas import LLMResponse
 from backend.app.tools import get_tool_definitions
 
@@ -60,10 +61,10 @@ ARTE_SYSTEM_PROMPT = (
     "la búsqueda con datos parciales que pedir todos los campos al usuario.\n\n"
     "## Convención para rutas S3\n"
     "- Cuando llames a leer_ficha_tecnica, construye la ruta S3 usando: "
-    "{categoria}/{fabricante}-{modelo}.pdf (todo en minúsculas, espacios "
+    "raw/{categoria}/{fabricante}-{modelo}.pdf (todo en minúsculas, espacios "
     "reemplazados por guiones).\n"
     "- Ejemplo: para un panel Jinko Tiger Pro 460W, la ruta sería: "
-    "paneles/jinko-tiger-pro-460w.pdf\n\n"
+    "raw/paneles/jinko-tiger-pro-460w.pdf\n\n"
     "## Cuando uses datos de una ficha técnica\n"
     "- Cita los valores exactos del documento (potencia, voltaje, eficiencia, "
     "dimensiones, peso, etc.).\n"
@@ -168,7 +169,10 @@ class LLMClient:
     def openai_client(self) -> OpenAI:
         """Lazy initialization of the OpenAI SDK client."""
         if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=self.api_key)
+            self._openai_client = OpenAI(
+                api_key=self.api_key,
+                timeout=settings.openai_timeout_seconds,
+            )
         return self._openai_client
 
     def get_llm_response_with_tools(
@@ -210,7 +214,7 @@ class LLMClient:
             "num_tools=%d",
             self.model,
             session_id,
-            message[:100],
+            redact_text(message)[:100],
             len(tools),
         )
 
@@ -298,7 +302,7 @@ class LLMClient:
             self.model,
             session_id,
             file_id,
-            message[:100],
+            redact_text(message)[:100],
         )
 
         try:

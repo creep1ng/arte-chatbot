@@ -1,10 +1,10 @@
 """
 Unit tests for the session management service.
 """
-import pytest
+
 import threading
-from datetime import datetime, timedelta
-from backend.app.session import SessionManager, ChatTurn
+from datetime import datetime
+from backend.app.session import SessionManager
 
 
 def test_session_manager_initialization():
@@ -25,12 +25,12 @@ def test_add_turn_creates_new_session():
     """Test that adding a turn creates a new session."""
     sm = SessionManager()
     session_id = "test-session-1"
-    
+
     sm.add_turn(session_id, "¿Qué es el solar?", "Es energía del sol", ["doc1.pdf"])
-    
+
     assert session_id in sm.sessions
     assert len(sm.sessions[session_id]) == 1
-    
+
     turn = sm.sessions[session_id][0]
     assert turn.question == "¿Qué es el solar?"
     assert turn.answer == "Es energía del sol"
@@ -42,11 +42,11 @@ def test_add_multiple_turns():
     """Test adding multiple turns to the same session."""
     sm = SessionManager()
     session_id = "test-session-2"
-    
+
     sm.add_turn(session_id, "Pregunta 1", "Respuesta 1")
     sm.add_turn(session_id, "Pregunta 2", "Respuesta 2")
     sm.add_turn(session_id, "Pregunta 3", "Respuesta 3")
-    
+
     assert len(sm.sessions[session_id]) == 3
     assert sm.sessions[session_id][0].question == "Pregunta 1"
     assert sm.sessions[session_id][1].question == "Pregunta 2"
@@ -57,13 +57,13 @@ def test_max_turns_limit():
     """Test that only the last max_turns are kept."""
     sm = SessionManager(max_turns=2)
     session_id = "test-session-3"
-    
+
     # Añadir 4 turnos
     sm.add_turn(session_id, "Pregunta 1", "Respuesta 1")
     sm.add_turn(session_id, "Pregunta 2", "Respuesta 2")
     sm.add_turn(session_id, "Pregunta 3", "Respuesta 3")
     sm.add_turn(session_id, "Pregunta 4", "Respuesta 4")
-    
+
     # Solo deberían quedar los últimos 2
     assert len(sm.sessions[session_id]) == 2
     assert sm.sessions[session_id][0].question == "Pregunta 3"
@@ -74,10 +74,10 @@ def test_get_history():
     """Test getting history for a session."""
     sm = SessionManager()
     session_id = "test-session-4"
-    
+
     sm.add_turn(session_id, "Pregunta 1", "Respuesta 1")
     sm.add_turn(session_id, "Pregunta 2", "Respuesta 2")
-    
+
     history = sm.get_history(session_id)
     assert len(history) == 2
     assert history[0].question == "Pregunta 1"
@@ -95,10 +95,10 @@ def test_get_context_string():
     """Test getting formatted context string."""
     sm = SessionManager()
     session_id = "test-session-5"
-    
+
     sm.add_turn(session_id, "¿Qué es el solar?", "Es energía del sol", ["doc1.pdf"])
     sm.add_turn(session_id, "¿Y el eólico?", "Es energía del viento", ["doc2.pdf"])
-    
+
     context = sm.get_context_string(session_id)
     assert "Turno 1:" in context
     assert "Usuario: ¿Qué es el solar?" in context
@@ -145,16 +145,16 @@ def test_get_session_count():
     """Test getting the number of active sessions."""
     sm = SessionManager()
     assert sm.get_session_count() == 0
-    
+
     sm.add_turn("session-1", "Pregunta 1", "Respuesta 1")
     assert sm.get_session_count() == 1
-    
+
     sm.add_turn("session-2", "Pregunta 2", "Respuesta 2")
     assert sm.get_session_count() == 2
-    
+
     sm.add_turn("session-1", "Pregunta 3", "Respuesta 3")  # Misma sesión
     assert sm.get_session_count() == 2  # Aún 2 sesiones
-    
+
     sm.clear_session("session-1")
     assert sm.get_session_count() == 1
 

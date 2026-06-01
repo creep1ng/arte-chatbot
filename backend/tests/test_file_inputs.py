@@ -3,7 +3,7 @@ Unit tests for the file_inputs.py module.
 
 Tests the File Inputs client for OpenAI Files API integration.
 """
-import os
+
 import pytest
 from unittest.mock import patch, MagicMock
 from backend.app.file_inputs import FileInputsClient, FileUploadError
@@ -13,7 +13,9 @@ class TestFileInputsClientInitialization:
     """Tests for FileInputsClient initialization."""
 
     @patch("backend.app.file_inputs.settings")
-    def test_file_inputs_client_default_env_vars(self, mock_settings: MagicMock) -> None:
+    def test_file_inputs_client_default_env_vars(
+        self, mock_settings: MagicMock
+    ) -> None:
         """Test FileInputsClient initialization with default env vars."""
         mock_settings.openai_api_key = "sk-test-key123"
         client = FileInputsClient()
@@ -25,7 +27,9 @@ class TestFileInputsClientInitialization:
         assert client.api_key == "sk-explicit-key456"
 
     @patch("backend.app.file_inputs.settings")
-    def test_file_inputs_client_raises_without_api_key(self, mock_settings: MagicMock) -> None:
+    def test_file_inputs_client_raises_without_api_key(
+        self, mock_settings: MagicMock
+    ) -> None:
         """Test FileInputsClient raises error when no API key available."""
         mock_settings.openai_api_key = None
         with pytest.raises(FileUploadError) as exc_info:
@@ -85,12 +89,14 @@ class TestFileInputsClientUpload:
         client = FileInputsClient(api_key="sk-invalid-key")
 
         with pytest.raises(FileUploadError) as exc_info:
-            client.upload_pdf(b"test content", "test.pdf")
+            client.upload_pdf(b"%PDF-1.4 test content", "test.pdf")
 
         assert "Invalid OpenAI API key" in str(exc_info.value)
 
     @patch("backend.app.file_inputs.OpenAI")
-    def test_upload_pdf_raises_bad_request_error(self, mock_openai_class: MagicMock) -> None:
+    def test_upload_pdf_raises_bad_request_error(
+        self, mock_openai_class: MagicMock
+    ) -> None:
         """Test upload_pdf raises FileUploadError on bad request."""
         from openai import BadRequestError
 
@@ -103,7 +109,7 @@ class TestFileInputsClientUpload:
         client = FileInputsClient(api_key="sk-test-key")
 
         with pytest.raises(FileUploadError) as exc_info:
-            client.upload_pdf(b"not a pdf", "test.txt")
+            client.upload_pdf(b"%PDF-1.4 test content", "test.pdf")
 
         assert "Invalid file format" in str(exc_info.value)
 
@@ -121,7 +127,7 @@ class TestFileInputsClientUpload:
         client = FileInputsClient(api_key="sk-test-key")
 
         with pytest.raises(FileUploadError) as exc_info:
-            client.upload_pdf(b"test content", "test.pdf")
+            client.upload_pdf(b"%PDF-1.4 test content", "test.pdf")
 
         assert "OpenAI API error" in str(exc_info.value)
 
@@ -193,7 +199,21 @@ class TestFileInputsClientLazyInitialization:
 
         # Now it should be initialized
         assert client._client is not None
-        mock_openai_class.assert_called_once_with(api_key="sk-test-key")
+        mock_openai_class.assert_called_once_with(api_key="sk-test-key", timeout=30.0)
+
+    def test_upload_pdf_rejects_non_pdf_filename(self) -> None:
+        """Test upload_pdf rejects non-PDF filenames before upload."""
+        client = FileInputsClient(api_key="sk-test-key")
+
+        with pytest.raises(FileUploadError, match="Only PDF files"):
+            client.upload_pdf(b"%PDF-1.4 test content", "test.txt")
+
+    def test_upload_pdf_rejects_invalid_pdf_content(self) -> None:
+        """Test upload_pdf rejects non-PDF bytes before upload."""
+        client = FileInputsClient(api_key="sk-test-key")
+
+        with pytest.raises(FileUploadError, match="Invalid PDF content"):
+            client.upload_pdf(b"not a pdf", "test.pdf")
 
 
 class TestFileUploadError:

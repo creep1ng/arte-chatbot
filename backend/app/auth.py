@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 from typing import Optional
 
@@ -72,3 +73,8 @@ def verify_admin_key(admin_key: str = Security(ADMIN_API_KEY_HEADER)) -> str:
             detail="Invalid admin API key",
         )
     return admin_key
+
+
+def api_key_principal(api_key: str) -> str:
+    """Return a stable non-secret principal identifier for an API key."""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()

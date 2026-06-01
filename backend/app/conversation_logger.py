@@ -6,17 +6,34 @@ as a JSON file. Failures are caught silently to never block responses.
 """
 
 import asyncio
-import logging
 from collections import defaultdict
+import logging
+import re
 from typing import Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from backend.app.admin_schemas import ConversationLogSummary, LogFilterParams
 from backend.app.config import settings
 from backend.app.s3_client import S3Client
 
 logger = logging.getLogger(__name__)
+
+_REDACTION_PATTERNS = [
+    re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+    re.compile(r"\b(?:\+?\d[\d .()/-]{7,}\d)\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"(?i)\b(api[_-]?key|token|password|secret)\s*[:=]\s*\S+"),
+]
+
+
+def redact_text(text: str) -> str:
+    """Redact common sensitive values before writing logs."""
+    redacted = text
+    for pattern in _REDACTION_PATTERNS:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
+
 
 _log_reader_s3 = S3Client()
 
@@ -58,6 +75,13 @@ class ConversationLogEntry(BaseModel):
     git_commit_hash: str
     user_profile: Optional[str] = None
 
+    @model_validator(mode="after")
+    def _redact_sensitive_text(self) -> "ConversationLogEntry":
+        if settings.conversation_log_redaction_enabled:
+            self.user_message = redact_text(self.user_message)
+            self.bot_response = redact_text(self.bot_response)
+        return self
+
 
 class ConversationLogger:
     """Async conversation logger that writes structured JSON to S3.
@@ -96,9 +120,7 @@ class ConversationLogger:
             f"{entry.turn_number}_{entry.timestamp}.json"
         )
         data = entry.model_dump_json().encode("utf-8")
-        self._s3_client.put_object(
-            key=key, data=data, content_type="application/json"
-        )
+        self._s3_client.put_object(key=key, data=data, content_type="application/json")
 
     async def log_turn(self, entry: ConversationLogEntry) -> None:
         """Log a conversation turn asynchronously (fire-and-forget).

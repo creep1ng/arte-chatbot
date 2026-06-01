@@ -10,7 +10,7 @@ Design: module-level dicts for buffer state (NOT in SessionManager).
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 

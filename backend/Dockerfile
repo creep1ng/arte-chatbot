@@ -34,6 +34,12 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY backend/ ./backend/
 COPY rag/ ./rag/
 
+# Run as a non-root user in the application layer
+RUN groupadd --system app && \
+    useradd --system --gid app --home-dir /app app && \
+    chown -R app:app /app
+USER app
+
 # Expose the application port
 EXPOSE 8000
 
