@@ -67,7 +67,8 @@ function normalizeMutable(settings: MutableSettings): MutableSettingsInput {
 }
 
 function cleanMutablePayload(values: MutableSettingsInput): MutableSettings {
-  const { admin_api_key: _adminApiKey, ...safeValues } = values;
+  const safeValues = { ...values };
+  delete safeValues.admin_api_key;
 
   return Object.fromEntries(
     Object.entries(safeValues).filter(([, value]) => value !== undefined),

@@ -18,7 +18,12 @@ from backend.app.admin_schemas import (
     PresignedUploadResponse,
     S3TreeNode,
 )
-from backend.app.s3_client import S3Client, S3DownloadError, S3UploadError
+from backend.app.s3_client import (
+    S3Client,
+    S3DownloadError,
+    S3ObjectNotFoundError,
+    S3UploadError,
+)
 
 s3_router = APIRouter(prefix="/s3")
 s3_client = S3Client()
@@ -144,11 +149,10 @@ async def create_presigned_upload(
     _validate_s3_key(payload.key, ALLOWED_WRITE_PREFIXES)
     try:
         await s3_client.head_object(payload.key)
-    except S3DownloadError:
-        # Missing object is the expected path for upload creation. The current
-        # S3Client wraps all ClientErrors, so we cannot reliably distinguish
-        # NoSuchKey from other failures without leaking boto3 details here.
+    except S3ObjectNotFoundError:
         pass
+    except S3DownloadError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     else:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
