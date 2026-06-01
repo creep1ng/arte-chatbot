@@ -41,6 +41,32 @@ class TestHealthEndpoint:
         assert "docs" in data
 
 
+class TestToolErrorMessages:
+    """Tests for public tool error message handling."""
+
+    def test_public_value_error_message_returns_safe_catalog_error(self) -> None:
+        """Expected catalog failures keep their user-safe message."""
+        from backend.main import _public_value_error_message
+
+        message = (
+            "No se encontraron productos en el catálogo con los criterios "
+            "especificados. El archivo solicitado no está disponible."
+        )
+
+        assert _public_value_error_message(ValueError(message)) == message
+
+    def test_public_value_error_message_hides_internal_error(self) -> None:
+        """Unexpected validation errors use the generic fallback."""
+        from backend.main import _public_value_error_message
+
+        assert _public_value_error_message(
+            ValueError("Invalid tool arguments JSON")
+        ) == (
+            "No pude procesar esa herramienta con los datos recibidos. "
+            "Probá reformular la consulta."
+        )
+
+
 class TestChatEndpointUnit:
     """Tests for /chat endpoint using TestClient."""
 

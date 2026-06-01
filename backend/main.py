@@ -353,6 +353,24 @@ def _parse_tool_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Invalid tool arguments JSON: {e}") from e
 
 
+def _public_value_error_message(error: ValueError) -> str:
+    """Return a user-safe message for expected tool validation failures."""
+    message = str(error)
+    safe_messages = (
+        "No pude validar la ficha técnica en el catálogo",
+        "No se encontraron productos en el catálogo con los criterios especificados. "
+        "El archivo solicitado no está disponible.",
+    )
+
+    if message in safe_messages:
+        return message
+
+    return (
+        "No pude procesar esa herramienta con los datos recibidos. "
+        "Probá reformular la consulta."
+    )
+
+
 def _safe_float(value: Any) -> Optional[float]:
     """Safely convert a value to float.
 
@@ -1184,10 +1202,7 @@ async def _process_chat_message(
                         {
                             "tool_call_id": tool_call_id,
                             "function_name": function_name,
-                            "content": (
-                                "No pude procesar esa herramienta con los datos "
-                                "recibidos. Probá reformular la consulta."
-                            ),
+                            "content": _public_value_error_message(e),
                             "success": False,
                         }
                     )
