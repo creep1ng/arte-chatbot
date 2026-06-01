@@ -3,20 +3,22 @@ ARTE Chatbot Backend
 FastAPI server with /health and /chat endpoints.
 """
 
+# ruff: noqa: E402
+
 import asyncio
+import json
 import logging
+import os
+import re
 import time
+import uuid
+from datetime import datetime, timezone
+from typing import Annotated, Any, Optional
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-
-import json
-import os
-import uuid
-from datetime import datetime, timezone
-from typing import Annotated, Any, Optional
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -33,10 +35,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend.app.auth import verify_api_key
+from backend.app.auth import api_key_principal, verify_api_key
 from backend.app.catalog import CatalogError, get_catalog
 from backend.app.config import settings
-from backend.app.conversation_logger import ConversationLogEntry, ConversationLogger
+from backend.app.conversation_logger import (
+    ConversationLogEntry,
+    ConversationLogger,
+    redact_text,
+)
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.greeting import maybe_prepend_greeting
 from backend.app.llm_client import (
@@ -63,6 +69,11 @@ from backend.app.message_buffer import (
 from backend.app.message_splitter import process_split_messages
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.schemas import LLMResponse, SourceDocument
+from backend.app.security import (
+    bind_or_validate_session,
+    check_rate_limit,
+    validate_session_id,
+)
 from backend.app.session import session_manager
 from backend.app.tools import get_tool_definitions, validate_s3_path
 from backend.app.user_profiler import PROFILE_INSTRUCTIONS, infer_user_profile
@@ -91,7 +102,6 @@ OUT_OF_DOMAIN_MESSAGE = (
     "¿Hay algo relacionado con energía solar en lo que pueda ayudarte?"
 )
 
-import re
 
 INTENT_MARKER_RE = re.compile(r"\[INTENT:\s*(\w+)\]")
 
@@ -250,8 +260,12 @@ def _fire_conversation_log(
 class ChatRequest(BaseModel):
     """Request model for /chat endpoint."""
 
-    message: str = Field(..., min_length=1)
-    session_id: Optional[str] = None
+    message: str = Field(..., min_length=1, max_length=4000)
+    session_id: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
     is_final: Optional[bool] = Field(
         default=None,
         description="Hint to flush multi-message buffer immediately",
@@ -298,40 +312,6 @@ class BufferResultResponse(BaseModel):
     result: Optional[str] = Field(
         default=None,
         description="The joined message when status is ready",
-    )
-
-
-@app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
-async def get_buffer_result(session_id: str) -> BufferResultResponse:
-    """Poll for buffered message processing result.
-
-    After a 202 response from /chat, the client should poll this endpoint.
-    When the buffer window expires, the backend processes the joined message
-    with the chatbot and stores the response for pickup.
-    """
-    chat_response_json = pop_pending_chat_response(session_id)
-    if chat_response_json:
-        return BufferResultResponse(
-            status="ready",
-            session_id=session_id,
-            result=chat_response_json,
-        )
-
-    if is_buffering(session_id):
-        return BufferResultResponse(
-            status="pending",
-            session_id=session_id,
-        )
-
-    if is_processing(session_id):
-        return BufferResultResponse(
-            status="pending",
-            session_id=session_id,
-        )
-
-    return BufferResultResponse(
-        status="not_found",
-        session_id=session_id,
     )
 
 
@@ -589,6 +569,9 @@ async def _process_leer_ficha_tecnica(
     # Validate ruta_s3 for path traversal attacks (OWASP LLM07)
     if ruta_s3:
         validate_s3_path(ruta_s3)
+        catalog = get_catalog()
+        if not catalog.contains_ruta_s3(ruta_s3):
+            raise ValueError("Requested datasheet is not declared in the catalog")
 
     logger.debug(
         "Tool call parameters: function=%s, ruta_s3=%s, categoria=%s, "
@@ -753,6 +736,7 @@ async def _process_leer_ficha_tecnica(
 # Alias for backward compatibility with tests
 _process_tool_call = _process_leer_ficha_tecnica
 
+
 async def _process_chat_message(
     session_id: str,
     message: str,
@@ -769,7 +753,7 @@ async def _process_chat_message(
         "Incoming request: request_id=%s, session_id=%s, message_preview=%s",
         request_id,
         session_id,
-        message[:100],
+        redact_text(message)[:100],
     )
 
     # Infer user profile if not already inferred for this session
@@ -848,16 +832,11 @@ async def _process_chat_message(
 
     logger.debug(
         "Query expandida: original='%s', expandida='%s', session_id=%s",
-        message[:100],
-        expanded_query[:100],
+        redact_text(message)[:100],
+        redact_text(expanded_query)[:100],
         session_id,
     )
 
-    system_message = {"role": "system", "content": system_prompt_with_profile}
-    conversation_history: list[dict[str, Any]] = [
-        system_message,
-        {"role": "user", "content": expanded_query},
-    ]
     source_docs: list[SourceDocument] = []
 
     try:
@@ -1196,7 +1175,10 @@ async def _process_chat_message(
                         {
                             "tool_call_id": tool_call_id,
                             "function_name": function_name,
-                            "content": str(e),
+                            "content": (
+                                "No pude procesar esa herramienta con los datos "
+                                "recibidos. Probá reformular la consulta."
+                            ),
                             "success": False,
                         }
                     )
@@ -1441,7 +1423,13 @@ async def chat_endpoint(
     3. Loop back to LLM with tool results until no more tools called
     4. Return final response
     """
+    principal = api_key_principal(api_key)
+    check_rate_limit(principal)
+
+    is_new_session = request.session_id is None
     session_id = request.session_id or str(uuid.uuid4())
+    validate_session_id(session_id)
+    bind_or_validate_session(session_id, principal, is_new=is_new_session)
     request_id = str(uuid.uuid4())
 
     # P4: Multi-message buffer — intercept before normal processing
@@ -1452,6 +1440,10 @@ async def chat_endpoint(
             overflow_result = await add_to_buffer(session_id, request.message)
             joined = overflow_result or await flush_buffer(session_id)
             if joined:
+                if len(joined) > settings.max_chat_message_chars:
+                    raise HTTPException(
+                        status_code=413, detail="Buffered message too large"
+                    )
                 request = ChatRequest(
                     message=joined,
                     session_id=session_id,
@@ -1491,7 +1483,7 @@ async def chat_endpoint(
             session_id,
             e,
         )
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail="LLM service unavailable")
     except Exception as e:
         logger.exception(
             "Unexpected error in chat endpoint: request_id=%s, session_id=%s, error=%s",
@@ -1503,13 +1495,22 @@ async def chat_endpoint(
 
 
 @app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
-async def get_buffer_result(session_id: str) -> BufferResultResponse:
+async def get_buffer_result(
+    session_id: str,
+    api_key: Annotated[str, Depends(verify_api_key)],
+) -> BufferResultResponse:
     """Poll for buffered message processing result.
 
     After a 202 response from /chat, the client should poll this endpoint.
     When the buffer window expires, the backend processes the joined message
     with the chatbot and stores the response for pickup.
     """
+    validate_session_id(session_id)
+
+    principal = api_key_principal(api_key)
+    check_rate_limit(principal)
+    bind_or_validate_session(session_id, principal, is_new=False)
+
     chat_response_json = pop_pending_chat_response(session_id)
     if chat_response_json:
         return BufferResultResponse(
@@ -1519,6 +1520,12 @@ async def get_buffer_result(session_id: str) -> BufferResultResponse:
         )
 
     if is_buffering(session_id):
+        return BufferResultResponse(
+            status="pending",
+            session_id=session_id,
+        )
+
+    if is_processing(session_id):
         return BufferResultResponse(
             status="pending",
             session_id=session_id,

@@ -2,7 +2,6 @@
 Unit tests for the user profile inference module.
 """
 
-import pytest
 from backend.app.user_profiler import (
     infer_user_profile,
     _extract_technical_score,

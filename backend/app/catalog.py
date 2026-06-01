@@ -3,9 +3,9 @@ Catalog module for product indexing and search functionality.
 Loads catalog index from S3 and provides search capabilities.
 """
 
-import json
 import logging
-from typing import Any, List, Optional, Dict
+import json
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,10 @@ class Catalog:
         )
 
         return results
+
+    def contains_ruta_s3(self, ruta_s3: str) -> bool:
+        """Return whether the S3 key is declared by the catalog."""
+        return any(product.ruta_s3 == ruta_s3 for product in self.products)
 
 
 _catalog_instance: Optional[Catalog] = None

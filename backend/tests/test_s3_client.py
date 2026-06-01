@@ -3,6 +3,7 @@ Unit tests for the s3_client.py module.
 
 Tests the S3 client for downloading technical datasheets from AWS S3.
 """
+
 import os
 import pytest
 from unittest.mock import patch, MagicMock
@@ -19,7 +20,7 @@ class TestS3ClientInitialization:
         mock_settings.aws_access_key_id = None
         mock_settings.aws_secret_access_key = None
         mock_settings.aws_region = "us-east-1"
-        
+
         with patch.dict(os.environ, {}, clear=True):
             client = S3Client()
             # Should not raise, but bucket_name will be empty
@@ -50,7 +51,7 @@ class TestS3ClientInitialization:
         mock_settings.aws_access_key_id = None
         mock_settings.aws_secret_access_key = None
         mock_settings.aws_region = "eu-west-1"
-        
+
         with patch.dict(os.environ, {}, clear=True):
             client = S3Client()
             assert client.aws_region == "eu-west-1"
@@ -62,7 +63,7 @@ class TestS3ClientInitialization:
         mock_settings.aws_access_key_id = None
         mock_settings.aws_secret_access_key = None
         mock_settings.aws_region = "us-east-1"
-        
+
         with patch.dict(os.environ, {}, clear=True):
             client = S3Client()
             assert client.aws_region == "us-east-1"
@@ -300,9 +301,7 @@ class TestS3PutObject:
 
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
-        error_response = {
-            "Error": {"Code": "AccessDenied", "Message": "Access Denied"}
-        }
+        error_response = {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}
         mock_s3.put_object.side_effect = ClientError(error_response, "PutObject")
 
         client = S3Client(bucket_name="test-bucket")

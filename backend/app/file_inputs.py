@@ -43,7 +43,10 @@ class FileInputsClient:
     def client(self) -> OpenAI:
         """Lazy initialization of the OpenAI client."""
         if self._client is None:
-            self._client = OpenAI(api_key=self.api_key)
+            self._client = OpenAI(
+                api_key=self.api_key,
+                timeout=settings.openai_timeout_seconds,
+            )
         return self._client
 
     def upload_pdf(self, pdf_bytes: bytes, filename: str) -> str:
@@ -61,6 +64,13 @@ class FileInputsClient:
         """
         if not self.api_key:
             raise FileUploadError("OpenAI API key not configured")
+
+        if not filename.lower().endswith(".pdf"):
+            raise FileUploadError("Only PDF files can be uploaded")
+        if len(pdf_bytes) > settings.max_pdf_bytes:
+            raise FileUploadError("PDF exceeds maximum allowed size")
+        if not pdf_bytes.startswith(b"%PDF"):
+            raise FileUploadError("Invalid PDF content")
 
         try:
             logger.debug(

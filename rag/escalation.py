@@ -19,9 +19,9 @@ ESCALATION_KEYWORDS: Final[list[str]] = [
 ]
 
 # Default escalation message shown to users
-DEFAULT_ESCALATION_MESSAGE: Final[
-    str
-] = "Entiendo que necesitas asistencia personalizada. Un agente de ventas te contactará pronto para ayudarte con tu consulta."
+DEFAULT_ESCALATION_MESSAGE: Final[str] = (
+    "Entiendo que necesitas asistencia personalizada. Un agente de ventas te contactará pronto para ayudarte con tu consulta."
+)
 
 
 @dataclass(frozen=True)
@@ -76,14 +76,10 @@ class EscalationDetector:
                 reason="Empty message",
             )
 
-        search_message = (
-            message if self._case_sensitive else message.lower()
-        )
+        search_message = message if self._case_sensitive else message.lower()
 
         for keyword in self._keywords:
-            search_keyword = (
-                keyword if self._case_sensitive else keyword.lower()
-            )
+            search_keyword = keyword if self._case_sensitive else keyword.lower()
 
             if search_keyword in search_message:
                 return EscalationResult(

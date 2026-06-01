@@ -9,6 +9,7 @@ import os
 from typing import Optional
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from backend.app.config import settings
@@ -86,6 +87,10 @@ class S3Client:
                 aws_access_key_id=self.aws_access_key_id,
                 aws_secret_access_key=self.aws_secret_access_key,
                 region_name=self.aws_region,
+                config=Config(
+                    connect_timeout=settings.s3_connect_timeout_seconds,
+                    read_timeout=settings.s3_read_timeout_seconds,
+                ),
             )
         return self._client
 
@@ -113,7 +118,18 @@ class S3Client:
             )
             logger.info("Downloading S3 object: %s/%s", self.bucket_name, s3_key)
             response = self.client.get_object(Bucket=self.bucket_name, Key=s3_key)
+            content_length = response.get("ContentLength")
+            if content_length and content_length > settings.max_pdf_bytes:
+                raise S3DownloadError(
+                    f"S3 object exceeds max PDF size: {s3_key} ({content_length} bytes)"
+                )
             pdf_bytes = response["Body"].read()
+            if len(pdf_bytes) > settings.max_pdf_bytes:
+                raise S3DownloadError(
+                    f"S3 object exceeds max PDF size: {s3_key} ({len(pdf_bytes)} bytes)"
+                )
+            if s3_key.lower().endswith(".pdf") and not pdf_bytes.startswith(b"%PDF"):
+                raise S3DownloadError(f"S3 object is not a valid PDF: {s3_key}")
             logger.debug(
                 "S3 download complete: key=%s, size_bytes=%d",
                 s3_key,
