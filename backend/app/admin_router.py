@@ -8,8 +8,15 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from backend.app.admin_auth import verify_admin_key
+from backend.app.admin_catalog import catalog_router
+from backend.app.admin_guides import guides_router
+from backend.app.admin_logs import logs_router
 
 admin_router = APIRouter(prefix="/admin")
+
+admin_router.include_router(catalog_router)
+admin_router.include_router(guides_router)
+admin_router.include_router(logs_router)
 
 
 @admin_router.get("/health")

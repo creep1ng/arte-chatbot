@@ -117,6 +117,27 @@ class Catalog:
 _catalog_instance: Optional[Catalog] = None
 
 
+def save_catalog(index_data: dict, etag: Optional[str] = None) -> None:
+    """Serialize catalog index to JSON and upload to S3.
+
+    Args:
+        index_data: Dictionary representing the catalog index.
+        etag: Optional ETag for conditional upload (optimistic locking
+            is handled by the caller before invoking this function).
+    """
+    json_bytes = json.dumps(index_data, ensure_ascii=False, indent=2).encode("utf-8")
+    s3_client.put_object(
+        key=CATALOG_INDEX_PATH,
+        data=json_bytes,
+        content_type="application/json",
+    )
+
+
+def reload_catalog() -> None:
+    """Invalidate the cached catalog and force a reload from S3."""
+    get_catalog(force_reload=True)
+
+
 def get_catalog(force_reload: bool = False) -> Catalog:
     """
     Get the singleton catalog instance. Loads from S3 if not already loaded.
