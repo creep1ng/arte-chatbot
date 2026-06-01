@@ -7,6 +7,61 @@ export interface DashboardMetrics {
   intent_distribution: Record<string, number>;
 }
 
+export interface ProductVariant {
+  modelo: string;
+  parametros_clave: Record<string, unknown>;
+}
+
+export interface CatalogProduct {
+  nombre_comercial: string;
+  fabricante: string;
+  categoria: string;
+  subcategoria?: string | null;
+  descripcion?: string | null;
+  ruta_s3: string;
+  variantes: ProductVariant[];
+  parametros_comunes: Record<string, unknown>;
+}
+
+export interface CatalogIndex {
+  products: CatalogProduct[];
+}
+
+export interface GuideMeta {
+  intent: string;
+  title: string;
+  updated_at?: string | null;
+}
+
+export interface GuideContent {
+  intent: string;
+  content: string;
+}
+
+export interface S3TreeNode {
+  name: string;
+  key: string;
+  type: "folder" | "file";
+  size?: number | null;
+  last_modified?: string | null;
+  children?: S3TreeNode[] | null;
+}
+
+export interface PresignedUploadRequest {
+  key: string;
+  content_type: string;
+}
+
+export interface PresignedUploadResponse {
+  url: string;
+  fields: Record<string, string>;
+  key: string;
+}
+
+export interface DeleteS3ObjectsRequest {
+  keys: string[];
+}
+
 export interface MutableSettings {
   llm_model?: string | null;
   log_level?: string | null;

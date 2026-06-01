@@ -3,9 +3,16 @@ import { toast } from "sonner";
 
 import { STORAGE_KEY } from "@/providers/admin-auth-provider";
 import type {
+  CatalogIndex,
   CurrentSettingsSnapshot,
   DashboardMetrics,
+  DeleteS3ObjectsRequest,
+  GuideContent,
+  GuideMeta,
   MutableSettings,
+  PresignedUploadRequest,
+  PresignedUploadResponse,
+  S3TreeNode,
 } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -168,6 +175,147 @@ export function useUpdateConfig() {
         return;
       }
 
+      const message = error instanceof Error ? error.message : "Error inesperado";
+      toast.error(message);
+    },
+  });
+}
+
+export function useS3Tree(prefix = "raw/") {
+  const queryPrefix = prefix.trim();
+  return useQuery({
+    queryKey: ["admin", "s3", "tree", queryPrefix],
+    queryFn: () =>
+      adminFetch<S3TreeNode[]>(
+        `/admin/s3/tree?prefix=${encodeURIComponent(queryPrefix)}`,
+      ),
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Requests a presigned S3 POST. To upload the file, create a FormData with every
+ * response field, append `file` last, then POST it directly to `response.url`.
+ */
+export function usePresignedUpload() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: PresignedUploadRequest) =>
+      adminFetch<PresignedUploadResponse>("/admin/s3/presigned-upload", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "s3", "tree"] });
+    },
+  });
+}
+
+export function useDeleteS3Objects() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: DeleteS3ObjectsRequest) =>
+      adminFetch<{ deleted?: boolean; deleted_count?: number }>(
+        "/admin/s3/objects",
+        {
+          method: "DELETE",
+          body: JSON.stringify(data),
+        },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "s3", "tree"] });
+      toast.success("Objetos eliminados de S3");
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Error inesperado";
+      toast.error(message);
+    },
+  });
+}
+
+export function useCatalog() {
+  return useQuery({
+    queryKey: ["admin", "catalog"],
+    queryFn: () => adminFetch<CatalogIndex>("/admin/catalog"),
+    staleTime: 60_000,
+  });
+}
+
+export function useUpdateCatalog() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: CatalogIndex) =>
+      adminFetch<CatalogIndex>("/admin/catalog", {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "catalog"] });
+      toast.success("Catálogo guardado");
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Error inesperado";
+      toast.error(message);
+    },
+  });
+}
+
+export function useGuides() {
+  return useQuery({
+    queryKey: ["admin", "guides"],
+    queryFn: () => adminFetch<GuideMeta[]>("/admin/guides"),
+    staleTime: 60_000,
+  });
+}
+
+export function useGuide(intent: string) {
+  return useQuery({
+    queryKey: ["admin", "guides", intent],
+    queryFn: () =>
+      adminFetch<GuideContent>(`/admin/guides/${encodeURIComponent(intent)}`),
+    enabled: Boolean(intent),
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdateGuide() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: GuideContent) =>
+      adminFetch<GuideContent>(`/admin/guides/${encodeURIComponent(data.intent)}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "guides"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "guides", data.intent] });
+      toast.success("Guía guardada");
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Error inesperado";
+      toast.error(message);
+    },
+  });
+}
+
+export function useDeleteGuide() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (intent: string) =>
+      adminFetch<{ deleted: boolean }>(`/admin/guides/${encodeURIComponent(intent)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: (_data, intent) => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "guides"] });
+      queryClient.removeQueries({ queryKey: ["admin", "guides", intent] });
+      toast.success("Guía eliminada");
+    },
+    onError: (error) => {
       const message = error instanceof Error ? error.message : "Error inesperado";
       toast.error(message);
     },
