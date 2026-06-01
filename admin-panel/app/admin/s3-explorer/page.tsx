@@ -6,15 +6,37 @@ import { useState } from "react";
 import { S3Tree } from "@/components/s3-tree";
 import { UploadDialog } from "@/components/upload-dialog";
 import { Button } from "@/components/ui/button";
-import { useDeleteS3Objects, useS3Tree } from "@/lib/api";
+import { useDeleteS3Objects, usePresignedDownload, useS3Tree } from "@/lib/api";
 
-const PREFIXES = ["raw/", "guides/"];
+const PREFIXES = ["raw/", "guides/", "index/"];
 
 export default function S3ExplorerPage() {
   const [prefix, setPrefix] = useState(PREFIXES[0]);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const { data: nodes = [], isLoading, isError, error } = useS3Tree(prefix);
   const deleteMutation = useDeleteS3Objects();
+  const presignedDownload = usePresignedDownload();
+
+  async function openFile(key: string) {
+    const response = await presignedDownload.mutateAsync({
+      key,
+      disposition: "inline",
+    });
+    window.open(response.url, "_blank", "noopener,noreferrer");
+  }
+
+  async function downloadFile(key: string) {
+    const response = await presignedDownload.mutateAsync({
+      key,
+      disposition: "attachment",
+    });
+    const anchor = document.createElement("a");
+    anchor.href = response.url;
+    anchor.download = key.split("/").pop() ?? "ficha-tecnica.pdf";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }
 
   async function handleDelete() {
     if (selectedKeys.length === 0) {
@@ -87,6 +109,8 @@ export default function S3ExplorerPage() {
             nodes={nodes}
             selectedKeys={selectedKeys}
             onSelectedKeysChange={setSelectedKeys}
+            onViewFile={prefix === "raw/" ? openFile : undefined}
+            onDownloadFile={prefix === "raw/" ? downloadFile : undefined}
           />
         )}
       </section>

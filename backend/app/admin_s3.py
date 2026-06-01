@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from backend.app.admin_auth import verify_admin_key
 from backend.app.admin_schemas import (
     DeleteS3ObjectsRequest,
+    PresignedDownloadRequest,
+    PresignedDownloadResponse,
     PresignedUploadRequest,
     PresignedUploadResponse,
     S3TreeNode,
@@ -30,7 +32,9 @@ s3_client = S3Client()
 
 ALLOWED_READ_PREFIXES = ("", "raw/", "guides/", "index/")
 ALLOWED_WRITE_PREFIXES = ("raw/", "guides/", "index/")
+ALLOWED_DOWNLOAD_PREFIXES = ("raw/",)
 KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_\-/.]+$")
+PRESIGNED_DOWNLOAD_EXPIRES_SECONDS = 300
 
 
 def _validate_s3_key(key: str, allowed_prefixes: tuple[str, ...]) -> None:
@@ -65,6 +69,12 @@ def _format_last_modified(value: Any) -> str | None:
     return str(value)
 
 
+def _content_disposition(key: str, disposition: Literal["inline", "attachment"]) -> str:
+    """Build a safe Content-Disposition value for presigned downloads."""
+    filename = key.rsplit("/", maxsplit=1)[-1].replace('"', "")
+    return f'{disposition}; filename="{filename}"'
+
+
 def _insert_tree_object(
     roots: dict[str, dict[str, Any]],
     key: str,
@@ -81,7 +91,9 @@ def _insert_tree_object(
     for index, part in enumerate(parts):
         path_parts.append(part)
         node_key = "/".join(path_parts)
-        is_file = index == len(parts) - 1
+        is_terminal = index == len(parts) - 1
+        is_folder_marker = is_terminal and key.endswith("/")
+        is_file = is_terminal and not is_folder_marker
 
         if part not in current:
             current[part] = {
@@ -95,6 +107,13 @@ def _insert_tree_object(
                 ),
                 "children": {},
             }
+        elif not is_file:
+            node = current[part]["node"]
+            node.type = "folder"
+            node.size = None
+            node.last_modified = None
+            if node.children is None:
+                node.children = []
 
         if not is_file:
             current = current[part]["children"]
@@ -171,6 +190,38 @@ async def create_presigned_upload(
         url=presigned["url"],
         fields=presigned.get("fields", {}),
         key=payload.key,
+    )
+
+
+@s3_router.post("/presigned-download", response_model=PresignedDownloadResponse)
+async def create_presigned_download(
+    payload: PresignedDownloadRequest,
+    _admin_key: Annotated[str, Depends(verify_admin_key)],
+) -> PresignedDownloadResponse:
+    """Create a short-lived presigned GET URL for a raw S3 object."""
+    _validate_s3_key(payload.key, ALLOWED_DOWNLOAD_PREFIXES)
+    try:
+        await s3_client.head_object(payload.key)
+        url = await s3_client.generate_presigned_get_url(
+            key=payload.key,
+            response_content_disposition=_content_disposition(
+                payload.key,
+                payload.disposition,
+            ),
+            expires=PRESIGNED_DOWNLOAD_EXPIRES_SECONDS,
+        )
+    except S3ObjectNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="S3 object not found",
+        ) from exc
+    except S3DownloadError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return PresignedDownloadResponse(
+        url=url,
+        key=payload.key,
+        expires_in=PRESIGNED_DOWNLOAD_EXPIRES_SECONDS,
     )
 
 

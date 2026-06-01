@@ -53,7 +53,7 @@ class TestCatalog:
     def test_get_catalog(self, client: TestClient) -> None:
         """GET /admin/catalog returns parsed catalog index."""
         catalog_data = {
-            "products": [
+            "productos": [
                 {
                     "nombre_comercial": "Panel X",
                     "fabricante": "TestCo",

@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
-import { useCatalog, useUpdateCatalog } from "@/lib/api";
+import { useCatalog, usePresignedDownload, useUpdateCatalog } from "@/lib/api";
 import { CatalogIndexSchema } from "@/lib/schemas";
 import type { CatalogProduct } from "@/lib/types";
 
@@ -28,6 +28,7 @@ function productToJson(product: CatalogProduct): string {
 export default function CatalogPage() {
   const { data: catalog, isLoading, isError, error } = useCatalog();
   const updateCatalog = useUpdateCatalog();
+  const presignedDownload = usePresignedDownload();
   const [rows, setRows] = useState<CatalogProduct[]>([]);
   const [selectedRows, setSelectedRows] = useState<Record<number, boolean>>({});
   const [drafts, setDrafts] = useState<Record<number, string>>({});
@@ -41,6 +42,27 @@ export default function CatalogPage() {
       setSelectedRows({});
     }
   }, [catalog]);
+
+  const openTechnicalSheet = useCallback(async (key: string) => {
+    const response = await presignedDownload.mutateAsync({
+      key,
+      disposition: "inline",
+    });
+    window.open(response.url, "_blank", "noopener,noreferrer");
+  }, [presignedDownload]);
+
+  const downloadTechnicalSheet = useCallback(async (key: string) => {
+    const response = await presignedDownload.mutateAsync({
+      key,
+      disposition: "attachment",
+    });
+    const anchor = document.createElement("a");
+    anchor.href = response.url;
+    anchor.download = key.split("/").pop() ?? "ficha-tecnica.pdf";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }, [presignedDownload]);
 
   const columns = useMemo<ColumnDef<CatalogProduct>[]>(
     () => [
@@ -76,6 +98,29 @@ export default function CatalogPage() {
       {
         accessorKey: "ruta_s3",
         header: "Ruta S3",
+        cell: ({ row }) => (
+          <div className="space-y-2">
+            <code className="block max-w-xs truncate rounded bg-muted px-2 py-1 text-xs">
+              {row.original.ruta_s3}
+            </code>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => openTechnicalSheet(row.original.ruta_s3)}
+              >
+                Ver ficha
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => downloadTechnicalSheet(row.original.ruta_s3)}
+              >
+                Descargar
+              </Button>
+            </div>
+          </div>
+        ),
       },
       {
         id: "json",
@@ -101,7 +146,7 @@ export default function CatalogPage() {
         ),
       },
     ],
-    [drafts, selectedRows],
+    [downloadTechnicalSheet, drafts, openTechnicalSheet, selectedRows],
   );
 
   async function handleSave() {

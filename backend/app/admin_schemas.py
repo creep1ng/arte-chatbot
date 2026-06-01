@@ -4,7 +4,7 @@ These schemas define the request/response payloads for all /admin endpoints
 and mirror the Zod schemas used by the Next.js frontend.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -174,6 +174,21 @@ class PresignedUploadResponse(BaseModel):
     url: str
     fields: Dict[str, str] = Field(default_factory=dict)
     key: str
+
+
+class PresignedDownloadRequest(BaseModel):
+    """Request body for generating a presigned S3 read URL."""
+
+    key: str
+    disposition: Literal["inline", "attachment"] = "inline"
+
+
+class PresignedDownloadResponse(BaseModel):
+    """Response containing a presigned URL for reading an S3 object."""
+
+    url: str
+    key: str
+    expires_in: int
 
 
 class DeleteS3ObjectsRequest(BaseModel):

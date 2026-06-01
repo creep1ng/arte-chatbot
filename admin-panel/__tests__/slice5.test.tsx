@@ -115,6 +115,51 @@ describe("Slice 5 admin frontend pages", () => {
     ]);
   });
 
+  it("exposes view and download actions for S3 files", async () => {
+    const handleViewFile = vi.fn();
+    const handleDownloadFile = vi.fn();
+
+    render(
+      <S3Tree
+        nodes={[
+          {
+            name: "raw",
+            key: "raw/",
+            type: "folder",
+            children: [
+              {
+                name: "paneles",
+                key: "raw/paneles/",
+                type: "folder",
+                children: [
+                  {
+                    name: "panel-550w.pdf",
+                    key: "raw/paneles/panel-550w.pdf",
+                    type: "file",
+                    size: 2048,
+                  },
+                ],
+              },
+            ],
+          },
+        ]}
+        selectedKeys={[]}
+        onSelectedKeysChange={vi.fn()}
+        onViewFile={handleViewFile}
+        onDownloadFile={handleDownloadFile}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /expandir paneles/i }));
+    await userEvent.click(screen.getByRole("button", { name: /ver panel-550w.pdf/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /descargar panel-550w.pdf/i }),
+    );
+
+    expect(handleViewFile).toHaveBeenCalledWith("raw/paneles/panel-550w.pdf");
+    expect(handleDownloadFile).toHaveBeenCalledWith("raw/paneles/panel-550w.pdf");
+  });
+
   it("loads catalog products and renders the table", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(catalogResponse));
 
@@ -123,6 +168,72 @@ describe("Slice 5 admin frontend pages", () => {
     expect(await screen.findByText("Panel Solar 550W")).toBeInTheDocument();
     expect(screen.getByText("Arte Energy")).toBeInTheDocument();
     expect(screen.getByText("raw/paneles/panel-550w.pdf")).toBeInTheDocument();
+  });
+
+  it("opens catalog technical sheets through a presigned URL", async () => {
+    const openMock = vi.spyOn(window, "open").mockImplementation(() => null);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return jsonResponse({
+            url: "https://bucket.s3.amazonaws.com/raw/paneles/panel-550w.pdf?sig=1",
+            key: "raw/paneles/panel-550w.pdf",
+            expires_in: 300,
+          });
+        }
+        return jsonResponse(catalogResponse);
+      },
+    );
+
+    renderWithQuery(<CatalogPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /ver ficha/i }));
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(postCall).toBeTruthy();
+      expect(JSON.parse(postCall?.[1]?.body as string)).toEqual({
+        key: "raw/paneles/panel-550w.pdf",
+        disposition: "inline",
+      });
+      expect(openMock).toHaveBeenCalledWith(
+        "https://bucket.s3.amazonaws.com/raw/paneles/panel-550w.pdf?sig=1",
+        "_blank",
+        "noopener,noreferrer",
+      );
+    });
+  });
+
+  it("downloads catalog technical sheets through a presigned URL", async () => {
+    const anchorClickMock = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return jsonResponse({
+            url: "https://bucket.s3.amazonaws.com/raw/paneles/panel-550w.pdf?sig=1",
+            key: "raw/paneles/panel-550w.pdf",
+            expires_in: 300,
+          });
+        }
+        return jsonResponse(catalogResponse);
+      },
+    );
+
+    renderWithQuery(<CatalogPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /descargar/i }));
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(postCall).toBeTruthy();
+      expect(JSON.parse(postCall?.[1]?.body as string)).toEqual({
+        key: "raw/paneles/panel-550w.pdf",
+        disposition: "attachment",
+      });
+      expect(anchorClickMock).toHaveBeenCalled();
+    });
   });
 
   it("renders guide editor preview and saves markdown", async () => {

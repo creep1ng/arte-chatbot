@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, ChevronRight, File, Folder } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, Eye, File, Folder } from "lucide-react";
 import { useState } from "react";
 
 import type { S3TreeNode } from "@/lib/types";
@@ -9,6 +9,8 @@ interface S3TreeProps {
   nodes: S3TreeNode[];
   selectedKeys: string[];
   onSelectedKeysChange: (keys: string[]) => void;
+  onViewFile?: (key: string) => void;
+  onDownloadFile?: (key: string) => void;
 }
 
 interface S3TreeNodeRowProps extends S3TreeProps {
@@ -52,6 +54,8 @@ function S3TreeNodeRow({
   depth,
   selectedKeys,
   onSelectedKeysChange,
+  onViewFile,
+  onDownloadFile,
 }: S3TreeNodeRowProps) {
   const [isOpen, setIsOpen] = useState(depth === 0);
   const children = node.children ?? [];
@@ -61,7 +65,7 @@ function S3TreeNodeRow({
   return (
     <li>
       <div
-        className="grid grid-cols-[1fr_auto_auto] items-center gap-4 rounded-xl px-3 py-2 text-sm hover:bg-muted/60"
+        className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-4 rounded-xl px-3 py-2 text-sm hover:bg-muted/60"
         style={{ paddingLeft: `${depth * 1.25 + 0.75}rem` }}
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -100,6 +104,32 @@ function S3TreeNodeRow({
         <span className="hidden text-xs text-muted-foreground md:inline">
           {formatDate(node.last_modified)}
         </span>
+        {!isFolder && (onViewFile || onDownloadFile) ? (
+          <div className="flex items-center gap-1">
+            {onViewFile ? (
+              <button
+                type="button"
+                aria-label={`Ver ${node.name}`}
+                className="rounded-lg border px-2 py-1 text-xs font-semibold text-primary hover:bg-muted"
+                onClick={() => onViewFile(node.key)}
+              >
+                <Eye className="h-3.5 w-3.5" />
+                <span className="sr-only">Ver</span>
+              </button>
+            ) : null}
+            {onDownloadFile ? (
+              <button
+                type="button"
+                aria-label={`Descargar ${node.name}`}
+                className="rounded-lg border px-2 py-1 text-xs font-semibold text-primary hover:bg-muted"
+                onClick={() => onDownloadFile(node.key)}
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span className="sr-only">Descargar</span>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       {isFolder && isOpen && children.length > 0 ? (
         <ul className="space-y-1">
@@ -110,6 +140,8 @@ function S3TreeNodeRow({
               node={child}
               selectedKeys={selectedKeys}
               onSelectedKeysChange={onSelectedKeysChange}
+              onViewFile={onViewFile}
+              onDownloadFile={onDownloadFile}
               nodes={children}
             />
           ))}
@@ -119,7 +151,13 @@ function S3TreeNodeRow({
   );
 }
 
-export function S3Tree({ nodes, selectedKeys, onSelectedKeysChange }: S3TreeProps) {
+export function S3Tree({
+  nodes,
+  selectedKeys,
+  onSelectedKeysChange,
+  onViewFile,
+  onDownloadFile,
+}: S3TreeProps) {
   if (nodes.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed bg-card p-8 text-center text-sm text-muted-foreground">
@@ -138,6 +176,8 @@ export function S3Tree({ nodes, selectedKeys, onSelectedKeysChange }: S3TreeProp
           nodes={nodes}
           selectedKeys={selectedKeys}
           onSelectedKeysChange={onSelectedKeysChange}
+          onViewFile={onViewFile}
+          onDownloadFile={onDownloadFile}
         />
       ))}
     </ul>

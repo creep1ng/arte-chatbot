@@ -13,6 +13,8 @@ import type {
   GuideContent,
   GuideMeta,
   LogFilterParams,
+  PresignedDownloadRequest,
+  PresignedDownloadResponse,
   MutableSettings,
   PresignedUploadRequest,
   PresignedUploadResponse,
@@ -212,6 +214,20 @@ export function usePresignedUpload() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "s3", "tree"] });
+    },
+  });
+}
+
+export function usePresignedDownload() {
+  return useMutation({
+    mutationFn: (data: PresignedDownloadRequest) =>
+      adminFetch<PresignedDownloadResponse>("/admin/s3/presigned-download", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Error inesperado";
+      toast.error(message);
     },
   });
 }

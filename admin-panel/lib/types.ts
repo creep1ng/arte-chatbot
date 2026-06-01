@@ -58,6 +58,17 @@ export interface PresignedUploadResponse {
   key: string;
 }
 
+export interface PresignedDownloadRequest {
+  key: string;
+  disposition: "inline" | "attachment";
+}
+
+export interface PresignedDownloadResponse {
+  url: string;
+  key: string;
+  expires_in: number;
+}
+
 export interface DeleteS3ObjectsRequest {
   keys: string[];
 }

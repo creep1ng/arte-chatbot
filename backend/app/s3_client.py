@@ -353,3 +353,44 @@ class S3Client:
                 ) from e
 
         return await asyncio.to_thread(_generate)
+
+    async def generate_presigned_get_url(
+        self,
+        key: str,
+        response_content_disposition: str,
+        expires: int = 300,
+    ) -> str:
+        """Generate a presigned GET URL for browser access to an S3 object.
+
+        Args:
+            key: The S3 key (path) to read.
+            response_content_disposition: Content-Disposition override for the
+                response, usually ``inline`` or ``attachment`` with a filename.
+            expires: Expiration time in seconds. Defaults to 300.
+
+        Returns:
+            A presigned HTTPS URL for temporary object access.
+
+        Raises:
+            S3DownloadError: If generation fails or bucket is not configured.
+        """
+        if not self.bucket_name:
+            raise S3DownloadError("S3 bucket name not configured")
+
+        def _generate() -> str:
+            try:
+                return self.client.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": self.bucket_name,
+                        "Key": key,
+                        "ResponseContentDisposition": response_content_disposition,
+                    },
+                    ExpiresIn=expires,
+                )
+            except ClientError as e:
+                raise S3DownloadError(
+                    f"Presigned get URL generation failed: {e}"
+                ) from e
+
+        return await asyncio.to_thread(_generate)
