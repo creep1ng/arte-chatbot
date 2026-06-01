@@ -48,12 +48,29 @@ class TestToolErrorMessages:
         """Expected catalog failures keep their user-safe message."""
         from backend.main import _public_value_error_message
 
-        message = (
+        error = (
             "No se encontraron productos en el catálogo con los criterios "
             "especificados. El archivo solicitado no está disponible."
         )
 
-        assert _public_value_error_message(ValueError(message)) == message
+        assert _public_value_error_message(ValueError(error)) == error
+
+    def test_public_value_error_message_translates_safe_tool_errors(self) -> None:
+        """Expected tool validation errors return user-safe Spanish messages."""
+        from backend.main import _public_value_error_message
+
+        assert (
+            _public_value_error_message(
+                ValueError("Requested datasheet is not declared in the catalog")
+            )
+            == "La ficha técnica solicitada no está disponible en el catálogo."
+        )
+        assert (
+            _public_value_error_message(
+                ValueError("No products found in catalog for categoria='paneles'")
+            )
+            == "No se encontraron productos en el catálogo con esos criterios."
+        )
 
     def test_public_value_error_message_hides_internal_error(self) -> None:
         """Unexpected validation errors use the generic fallback."""

@@ -356,14 +356,31 @@ def _parse_tool_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
 def _public_value_error_message(error: ValueError) -> str:
     """Return a user-safe message for expected tool validation failures."""
     message = str(error)
-    safe_messages = (
-        "No pude validar la ficha técnica en el catálogo",
+    safe_messages = {
+        "No pude validar la ficha técnica en el catálogo": (
+            "No pude validar la ficha técnica en el catálogo. "
+            "Por favor, intenta más tarde o contacta al equipo de ventas."
+        ),
+        "Requested datasheet is not declared in the catalog": (
+            "La ficha técnica solicitada no está disponible en el catálogo."
+        ),
+        "Missing ruta_s3 in tool arguments. When ruta_s3 is not provided, "
+        "categoria is required to search the catalog.": (
+            "Necesito la categoría del producto para buscar la ficha técnica "
+            "en el catálogo."
+        ),
         "No se encontraron productos en el catálogo con los criterios especificados. "
-        "El archivo solicitado no está disponible.",
-    )
+        "El archivo solicitado no está disponible.": (
+            "No se encontraron productos en el catálogo con los criterios "
+            "especificados. El archivo solicitado no está disponible."
+        ),
+    }
 
     if message in safe_messages:
-        return message
+        return safe_messages[message]
+
+    if message.startswith("No products found in catalog for"):
+        return "No se encontraron productos en el catálogo con esos criterios."
 
     return (
         "No pude procesar esa herramienta con los datos recibidos. "
