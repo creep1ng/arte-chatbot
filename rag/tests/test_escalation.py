@@ -2,8 +2,6 @@
 Unit tests for the escalation detection module.
 """
 
-import pytest
-
 from rag.escalation import (
     DEFAULT_ESCALATION_MESSAGE,
     ESCALATION_KEYWORDS,

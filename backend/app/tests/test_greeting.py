@@ -186,9 +186,7 @@ class TestMaybePrependGreeting:
         """Greeting is NOT prepended when escalate is True."""
         mock_settings.greeting_enabled = True
         mock_sm.get_history.return_value = []
-        result = maybe_prepend_greeting(
-            "s1", "Respuesta", "escalate_technical", True
-        )
+        result = maybe_prepend_greeting("s1", "Respuesta", "escalate_technical", True)
         assert result == "Respuesta"
 
     @patch("backend.app.greeting.settings")
@@ -201,9 +199,7 @@ class TestMaybePrependGreeting:
         """Greeting is NOT prepended on fuera_de_dominio intent."""
         mock_settings.greeting_enabled = True
         mock_sm.get_history.return_value = []
-        result = maybe_prepend_greeting(
-            "s1", "Respuesta", "fuera_de_dominio", False
-        )
+        result = maybe_prepend_greeting("s1", "Respuesta", "fuera_de_dominio", False)
         assert result == "Respuesta"
 
     @patch("backend.app.greeting.settings")

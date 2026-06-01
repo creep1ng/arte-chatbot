@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
     llm_model: str = Field(default="gpt-5.4-nano", description="LLM model identifier")
+    openai_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=120.0,
+        description="Timeout for OpenAI API calls in seconds",
+    )
 
     # AWS
     aws_access_key_id: Optional[str] = Field(
@@ -49,6 +55,18 @@ class Settings(BaseSettings):
         description="S3 bucket name for technical datasheets",
     )
     aws_region: str = Field(default="us-east-1", description="AWS region")
+    s3_connect_timeout_seconds: int = Field(
+        default=5,
+        ge=1,
+        le=30,
+        description="S3 connection timeout in seconds",
+    )
+    s3_read_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=120,
+        description="S3 read timeout in seconds",
+    )
 
     # Auth
     chat_api_key: Optional[str] = Field(
@@ -57,6 +75,35 @@ class Settings(BaseSettings):
 
     # App
     log_level: str = Field(default="INFO", description="Logging level")
+    max_chat_message_chars: int = Field(
+        default=4000,
+        ge=1,
+        le=20000,
+        description="Maximum accepted characters in a chat message",
+    )
+    max_session_id_chars: int = Field(
+        default=128,
+        ge=36,
+        le=256,
+        description="Maximum accepted characters in a session identifier",
+    )
+    rate_limit_requests: int = Field(
+        default=120,
+        ge=1,
+        le=10000,
+        description="Maximum requests per principal in the rate limit window",
+    )
+    rate_limit_window_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+        description="Rate limit sliding window in seconds",
+    )
+    max_pdf_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        description="Maximum allowed PDF size before File Inputs processing",
+    )
 
     # Escalation thresholds
     escalation_confidence_threshold: float = Field(
@@ -127,6 +174,10 @@ class Settings(BaseSettings):
         default="conversations",
         description="S3 key prefix for conversation log files",
     )
+    conversation_log_redaction_enabled: bool = Field(
+        default=True,
+        description="Redact sensitive values before persisting conversation logs",
+    )
     git_commit_hash: str = Field(
         default="",
         description="Git commit hash for traceability in conversation logs",
@@ -150,9 +201,7 @@ class Settings(BaseSettings):
         try:
             ZoneInfo(self.greeting_timezone)
         except (KeyError, ZoneInfoNotFoundError):
-            raise ValueError(
-                f"Invalid IANA timezone: {self.greeting_timezone}"
-            )
+            raise ValueError(f"Invalid IANA timezone: {self.greeting_timezone}")
         return self
 
 

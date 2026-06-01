@@ -109,10 +109,7 @@ class TestLLMClientWithTools:
 
         assert isinstance(result, LLMResponse)
         assert result.tool_calls == []
-        assert (
-            result.text
-            == "Hola, soy el asistente de Arte Soluciones Energéticas."
-        )
+        assert result.text == "Hola, soy el asistente de Arte Soluciones Energéticas."
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_tools_uses_tools_parameter(
@@ -141,7 +138,7 @@ class TestLLMClientWithTools:
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "tools" in call_kwargs
         assert len(call_kwargs["tools"]) == 2
-        tool_names = [t["function"]["name"] for t in call_kwargs["tools"]]
+        tool_names = [t["name"] for t in call_kwargs["tools"]]
         assert "leer_ficha_tecnica" in tool_names
         assert "buscar_producto" in tool_names
 
@@ -225,9 +222,7 @@ class TestLLMClientWithToolsReturnsLLMResponse:
         assert result.total_tokens == 150
 
     @patch("backend.app.llm_client.OpenAI")
-    def test_usage_none_defaults_to_zero(
-        self, mock_openai_class: MagicMock
-    ) -> None:
+    def test_usage_none_defaults_to_zero(self, mock_openai_class: MagicMock) -> None:
         """Test LLMResponse defaults token fields to 0 when usage is None."""
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -388,9 +383,7 @@ class TestLLMClientWithFileReturnsLLMResponse:
         assert result.total_tokens == 300
 
     @patch("backend.app.llm_client.OpenAI")
-    def test_usage_none_defaults_to_zero(
-        self, mock_openai_class: MagicMock
-    ) -> None:
+    def test_usage_none_defaults_to_zero(self, mock_openai_class: MagicMock) -> None:
         """Test LLMResponse defaults to 0 tokens when usage is None."""
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -478,4 +471,4 @@ class TestLLMClientLazyInitialization:
 
         # Now it should be initialized
         assert client._openai_client is not None
-        mock_openai_class.assert_called_once_with(api_key="sk-test-key")
+        mock_openai_class.assert_called_once_with(api_key="sk-test-key", timeout=30.0)
