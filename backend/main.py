@@ -569,7 +569,16 @@ async def _process_leer_ficha_tecnica(
     # Validate ruta_s3 for path traversal attacks (OWASP LLM07)
     if ruta_s3:
         validate_s3_path(ruta_s3)
-        catalog = get_catalog()
+        try:
+            catalog = get_catalog()
+        except CatalogError as e:
+            logger.error(
+                "Catalog unavailable while validating ruta_s3: session_id=%s, error=%s",
+                session_id,
+                e,
+            )
+            raise ValueError("No pude validar la ficha técnica en el catálogo") from e
+
         if not catalog.contains_ruta_s3(ruta_s3):
             raise ValueError("Requested datasheet is not declared in the catalog")
 
