@@ -1,0 +1,31 @@
+change: fargate-cloudflare-cd-iac
+artifact_store: openspec
+execution_mode: interactive
+delivery_strategy: ask-on-risk
+status: design-complete
+phases:
+  explore:
+    status: complete
+    artifact: openspec/changes/fargate-cloudflare-cd-iac/exploration.md
+  proposal:
+    status: complete
+    artifact: openspec/changes/fargate-cloudflare-cd-iac/proposal.md
+  spec:
+    status: complete
+    artifacts:
+      - openspec/changes/fargate-cloudflare-cd-iac/specs/fargate-cloudflare-ingress/spec.md
+      - openspec/changes/fargate-cloudflare-cd-iac/specs/ecs-runtime-configuration/spec.md
+      - openspec/changes/fargate-cloudflare-cd-iac/specs/ecr-cd-promotion/spec.md
+      - openspec/changes/fargate-cloudflare-cd-iac/specs/local-staging-isolation/spec.md
+  design:
+    status: complete
+    artifact: openspec/changes/fargate-cloudflare-cd-iac/design.md
+  tasks:
+    status: pending
+  apply:
+    status: pending
+  verify:
+    status: pending
+  archive:
+    status: pending
+updated_at: "2026-06-02"
