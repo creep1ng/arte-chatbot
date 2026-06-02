@@ -9,7 +9,7 @@ Create Terraform-first deployment under `infra/terraform` for AWS ECS Fargate pl
 | Area | Decision | Tradeoff / rationale |
 |------|----------|----------------------|
 | Terraform layout | `infra/terraform/modules/{ecr,ecs_service,cloudflare_tunnel,ssm_secrets,github_oidc}` plus roots `envs/prod` and `envs/local-staging` | Keeps reusable service shape while isolating prod/staging state, names, variables, and secrets. |
-| Ingress | Backend service routes `api` tunnel to `http://localhost:8000`; frontend/admin service routes UI/admin hostnames to `http://localhost:3000` | Same-task localhost is simple and avoids ALB. Separate tunnel scopes avoid shared tunnel replicas receiving hostnames whose localhost origin is absent. |
+| Ingress | Backend routes `api` to `http://localhost:8000`; frontend and admin are separate images/services, each with UI hostnames to `http://localhost:3000` | Same-task localhost is simple and avoids ALB. Separate tunnel scopes avoid shared tunnel replicas receiving hostnames whose localhost origin is absent. |
 | Runtime credentials | ECS execution role pulls ECR, writes logs, and resolves ECS secret refs; task role grants app S3 access | Matches ECS role boundaries and lets boto3 use the default provider chain instead of static deployed keys. |
 | Config/secrets | Store `OPENAI_API_KEY`, `CHAT_API_KEY`, Cloudflare tunnel tokens in Secrets Manager or SSM SecureString; non-secret env via SSM/TF variables | Plaintext stays out of git, task definitions, and Terraform outputs. |
 | CD | PRs build/test/evaluate and push immutable candidate tags; `main` registers task definitions and updates prod ECS services | Promotion is gated; prod deploy is main-only. Update only services whose image digest/tag changed where workflow diffing can prove it. |
@@ -18,9 +18,10 @@ Create Terraform-first deployment under `infra/terraform` for AWS ECS Fargate pl
 ## Data Flow
 
 ```text
-Cloudflare hostname -> scoped tunnel -> cloudflared sidecar -> localhost origin
-api.example.com     -> backend tunnel -> backend:8000
-app/admin hostnames -> ui tunnel      -> frontend/admin:3000
+Cloudflare hostname  -> scoped tunnel  -> cloudflared sidecar -> localhost origin
+api.$DOMAIN          -> backend tunnel -> backend:8000
+app.$DOMAIN          -> frontend tunnel -> frontend:3000
+admin.$DOMAIN        -> admin tunnel   -> admin:3000
 
 GitHub PR -> build/test/eval -> ECR candidate tag
 main      -> promote SHA tag -> ECS task definition -> ECS service update
@@ -35,7 +36,7 @@ main      -> promote SHA tag -> ECS task definition -> ECS service update
 | `infra/terraform/modules/cloudflare_tunnel/*` | Create | Tunnel resources, public hostnames, DNS, sensitive token handling. |
 | `infra/terraform/modules/ssm_secrets/*` | Create | Parameter/secret references and path conventions. |
 | `infra/terraform/modules/github_oidc/*` | Create | Least-privilege deploy role for Actions. |
-| `infra/terraform/envs/prod/*` | Create | Prod backend + frontend/admin services and official hostnames. |
+| `infra/terraform/envs/prod/*` | Create | Prod backend, frontend, and admin services using domain variable defaulting to `artesolutions.com.co`. |
 | `infra/terraform/envs/local-staging/*` | Create | Isolated state/names/tokens, explicit image tags, expiration metadata, validation guards. |
 | `scripts/deploy-local-staging.sh` | Create | Reject CI, require staging id and ECR tags, pass TF vars. |
 | `.github/workflows/ci.yml` | Modify | Build both images, run gates, push candidate tags, deploy prod only on `main`. |
@@ -47,7 +48,7 @@ main      -> promote SHA tag -> ECS task definition -> ECS service update
 
 ## Interfaces / Contracts
 
-Terraform service inputs include `service_name`, `environment`, `image_tag`, `container_port`, `public_hostnames`, `local_origin_url`, `secret_arns`, `ssm_params`, `task_role_policy_json`, `expiration_at`. Backend env adds `ALLOWED_CORS_ORIGINS` as comma-separated origins; prod requires explicit Cloudflare frontend/admin/staging origins and rejects `*`.
+Terraform service inputs include `service_name`, `environment`, `image_tag`, `container_port`, `public_hostnames`, `domain_name`, `local_origin_url`, `secret_arns`, `ssm_params`, `task_role_policy_json`, `expiration_at`. `DOMAIN_NAME` defaults to `artesolutions.com.co` but remains variable-driven. Backend env adds `ALLOWED_CORS_ORIGINS` as comma-separated origins; prod requires explicit Cloudflare frontend/admin/staging origins and rejects `*`.
 
 ## Testing Strategy
 
@@ -64,5 +65,4 @@ No data migration. Roll out by creating ECR/roles/secrets first, then ECS servic
 
 ## Open Questions
 
-- [ ] Exact production domain names and Cloudflare zone id.
-- [ ] Whether admin is a route/hostname on the frontend image for v1 or a separate image later.
+- [ ] Cloudflare zone id and token storage path.
