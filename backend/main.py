@@ -956,9 +956,7 @@ async def _process_chat_message(
 
             if not tool_calls:
                 content = llm_response.text
-                intent_type, confidence, cleaned_content = _extract_intent_type(
-                    content
-                )
+                intent_type, confidence, cleaned_content = _extract_intent_type(content)
                 intent_for_behavior = intent_type or "FAQ"
 
                 if intent_for_behavior in ESCALATE_INTENTS:
@@ -1320,9 +1318,7 @@ async def _process_chat_message(
             session_id,
             iteration,
         )
-        intent_type, confidence, cleaned_text = _extract_intent_type(
-            last_output_text
-        )
+        intent_type, confidence, cleaned_text = _extract_intent_type(last_output_text)
         intent_for_behavior = intent_type or "FAQ"
 
         if intent_for_behavior in ESCALATE_INTENTS:
