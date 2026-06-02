@@ -137,6 +137,8 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+cloudflare_token
+cloudflare_token.env
 .venv
 env/
 venv/
