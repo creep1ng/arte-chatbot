@@ -33,10 +33,10 @@ Chain strategy: pending
 
 ## Phase 2: Terraform Infrastructure
 
-- [ ] 2.1 Create `infra/terraform/modules/{ecr,ecs_service,cloudflare_tunnel,ssm_secrets,github_oidc}/` with variables, outputs, least-privilege IAM, logs, SGs, sidecar support, and sensitive tunnel token handling.
-- [ ] 2.2 Create `infra/terraform/envs/prod/` root with variable-driven `DOMAIN_NAME` defaulting to `artesolutions.com.co`, hostnames `api`, `app`, and `admin`, and separate backend/frontend/admin ECR repos, task definitions, services, and cloudflared sidecars.
-- [ ] 2.3 Create `admin/Dockerfile`, `admin/nginx.conf`, and minimal admin image source if absent; keep admin as a separate image/service, not a frontend route.
-- [ ] 2.4 Add Terraform validation/tests for scoped tunnels, no shared unreachable localhost origins, sensitive outputs, and prod/staging name isolation.
+- [x] 2.1 Create `infra/terraform/modules/{ecr,ecs_service,cloudflare_tunnel,ssm_secrets,github_oidc}/` with variables, outputs, least-privilege IAM, logs, SGs, sidecar support, and sensitive tunnel token handling.
+- [x] 2.2 Create `infra/terraform/envs/prod/` root with variable-driven `DOMAIN_NAME` defaulting to `artesolutions.com.co`, hostnames `api`, `app`, and `admin`, and separate backend/frontend/admin ECR repos, task definitions, services, and cloudflared sidecars.
+- [x] 2.3 Create `admin/Dockerfile`, `admin/nginx.conf`, and minimal admin image source if absent; keep admin as a separate image/service, not a frontend route.
+- [x] 2.4 Add Terraform validation/tests for scoped tunnels, no shared unreachable localhost origins, sensitive outputs, and prod/staging name isolation.
 
 ## Phase 3: CD and Staging
 

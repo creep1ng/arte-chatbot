@@ -139,6 +139,15 @@ celerybeat.pid
 .envrc
 cloudflare_token
 cloudflare_token.env
+
+# Terraform local state/cache/secrets
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
 .venv
 env/
 venv/
