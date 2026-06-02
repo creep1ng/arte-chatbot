@@ -10,6 +10,31 @@ from unittest.mock import patch
 from backend.app.config import Settings
 
 
+class TestCorsConfig:
+    """Tests for CORS settings."""
+
+    def test_cors_allowed_origins_defaults_to_local_frontend(self) -> None:
+        """cors_allowed_origins must default to the local frontend origin."""
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings()
+            assert settings.cors_allowed_origins == "http://localhost:3000"
+            assert settings.cors_allowed_origin_list == ["http://localhost:3000"]
+
+    def test_cors_allowed_origins_accepts_comma_separated_env(self) -> None:
+        """cors_allowed_origins can be configured for production domains."""
+        env = {
+            "CORS_ALLOWED_ORIGINS": (
+                "https://chat.arte.example, https://preview.arte.example"
+            )
+        }
+        with patch.dict(os.environ, env, clear=True):
+            settings = Settings()
+            assert settings.cors_allowed_origin_list == [
+                "https://chat.arte.example",
+                "https://preview.arte.example",
+            ]
+
+
 class TestConversationLoggingConfig:
     """Tests for conversation logging settings."""
 

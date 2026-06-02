@@ -104,6 +104,10 @@ class Settings(BaseSettings):
         ge=1024,
         description="Maximum allowed PDF size before File Inputs processing",
     )
+    cors_allowed_origins: str = Field(
+        default="http://localhost:3000",
+        description="Allowed browser origins for CORS requests",
+    )
 
     # Escalation thresholds
     escalation_confidence_threshold: float = Field(
@@ -192,6 +196,15 @@ class Settings(BaseSettings):
                 f"msg_delay_max_ms ({self.msg_delay_max_ms})"
             )
         return self
+
+    @property
+    def cors_allowed_origin_list(self) -> list[str]:
+        """Return CORS origins parsed from comma-separated configuration."""
+        return [
+            origin.strip()
+            for origin in self.cors_allowed_origins.split(",")
+            if origin.strip()
+        ]
 
     @model_validator(mode="after")
     def _validate_greeting_timezone(self) -> "Settings":
