@@ -204,9 +204,7 @@ class TestMaybePrependGreeting:
         mock_sm.get_history.return_value = []
         mock_greeting.return_value = "Buenos días"
 
-        result = maybe_prepend_greeting(
-            "s1", "Respuesta", "escalate_quote", True
-        )
+        result = maybe_prepend_greeting("s1", "Respuesta", "escalate_quote", True)
         assert "Buenos días" in result
         assert "Respuesta" in result
 
