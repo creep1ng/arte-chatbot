@@ -294,21 +294,29 @@ class TestChatEndpointUnit:
     def test_chat_intent_marker_stripped_from_response(self, mock_llm) -> None:
         """Test that [INTENT: ...] marker is stripped from response text."""
         mock_llm.return_value = make_llm_response(
-            text="[INTENT: FAQ] Los paneles monocristalinos son más eficientes.",
+            text=(
+                "[INTENT: FAQ][CONFIDENCE: 0.92] "
+                "Los paneles monocristalinos son más eficientes."
+            ),
         )
         response = client.post(
-            "/chat", json={"message": "¿Qué tipo de panel me conviene?"}
+            "/chat",
+            json={"message": "¿Qué tipo de panel me conviene?", "is_final": True},
         )
         data = response.json()
         assert "[INTENT:" not in data["response"]
+        assert "[CONFIDENCE:" not in data["response"]
+        assert data["intent_type"] == "FAQ"
+        assert data["confidence"] == 0.92
         assert "monocristalinos" in data["response"]
 
     def test_chat_response_schema_includes_intent_type(self) -> None:
-        """Test that ChatResponse schema includes intent_type field."""
+        """Test that ChatResponse schema includes optional intent fields."""
         from backend.main import ChatResponse
 
         schema = ChatResponse.model_json_schema()
         assert "intent_type" in schema["properties"]
+        assert "confidence" in schema["properties"]
 
     def test_chat_response_schema_includes_token_fields(self) -> None:
         """Test that ChatResponse schema includes optional token fields."""
@@ -328,6 +336,8 @@ class TestChatEndpointUnit:
             response="test",
             session_id="s1",
         )
+        assert resp.intent_type is None
+        assert resp.confidence is None
         assert resp.input_tokens is None
         assert resp.output_tokens is None
         assert resp.total_tokens is None
@@ -339,10 +349,14 @@ class TestChatEndpointUnit:
         resp = ChatResponse(
             response="test",
             session_id="s1",
+            intent_type="FAQ",
+            confidence=0.87,
             input_tokens=100,
             output_tokens=50,
             total_tokens=150,
         )
+        assert resp.intent_type == "FAQ"
+        assert resp.confidence == 0.87
         assert resp.input_tokens == 100
         assert resp.output_tokens == 50
         assert resp.total_tokens == 150
@@ -940,7 +954,7 @@ class TestTokenAccumulation:
 
         response = client.post(
             "/chat",
-            json={"message": "¿Qué es un panel solar?", "session_id": "tok-s1"},
+            json={"message": "¿Qué es un panel solar?", "is_final": True},
         )
 
         assert response.status_code == 200
