@@ -191,6 +191,27 @@ class TestMaybePrependGreeting:
 
     @patch("backend.app.greeting.settings")
     @patch("backend.app.greeting.session_manager")
+    @patch("backend.app.greeting._get_time_greeting")
+    def test_greeting_prepended_on_first_contact_quote_escalation(
+        self,
+        mock_greeting: MagicMock,
+        mock_sm: MagicMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        """Quote escalation still greets first-contact users."""
+        mock_settings.greeting_enabled = True
+        mock_settings.greeting_timezone = "America/Bogota"
+        mock_sm.get_history.return_value = []
+        mock_greeting.return_value = "Buenos días"
+
+        result = maybe_prepend_greeting(
+            "s1", "Respuesta", "escalate_quote", True
+        )
+        assert "Buenos días" in result
+        assert "Respuesta" in result
+
+    @patch("backend.app.greeting.settings")
+    @patch("backend.app.greeting.session_manager")
     def test_greeting_not_prepended_on_fuera_de_dominio(
         self,
         mock_sm: MagicMock,

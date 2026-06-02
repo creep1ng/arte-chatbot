@@ -99,13 +99,18 @@ class TestChatEndpointUnit:
             text="[INTENT: escalate_quote] Un agente de ventas te contactará pronto.",
         )
         response = client.post(
-            "/chat", json={"message": "Necesito una cotización de paneles"}
+            "/chat",
+            json={
+                "message": "Necesito una cotización de paneles",
+                "is_final": True,
+            },
         )
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
         assert data["intent_type"] == "escalate_quote"
         assert data["session_id"] is not None
+        assert "asistente virtual de Arte Soluciones Energéticas" in data["response"]
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_escalate_for_pedido(self, mock_llm) -> None:

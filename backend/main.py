@@ -128,6 +128,18 @@ def _extract_intent_type(text: str) -> tuple[str, str]:
 
 
 ESCALATE_INTENTS = {"escalate_quote", "escalate_technical", "escalate_order"}
+QUOTE_ESCALATION_KEYWORDS = {"cotización", "presupuesto"}
+
+
+def _intent_type_for_escalation_keyword(matched_keyword: Optional[str]) -> str:
+    """Map rule-based escalation keywords to public intent types."""
+    if matched_keyword is None:
+        return "escalate_technical"
+    if matched_keyword.lower() in QUOTE_ESCALATION_KEYWORDS:
+        return "escalate_quote"
+    if matched_keyword.lower() == "pedido":
+        return "escalate_order"
+    return "escalate_technical"
 
 
 app = FastAPI(title="ARTE Chatbot Backend")
@@ -830,6 +842,15 @@ async def _process_chat_message(
     escalation_result = default_detector.detect(message)
 
     if escalation_result.escalate:
+        intent_type = _intent_type_for_escalation_keyword(
+            escalation_result.matched_keyword
+        )
+        response_text = maybe_prepend_greeting(
+            session_id=session_id,
+            response_text=DEFAULT_ESCALATION_MESSAGE,
+            intent_type=intent_type,
+            escalate=True,
+        )
         logger.info(
             "Escalation detected: request_id=%s, session_id=%s, reason=%s",
             request_id,
@@ -839,15 +860,15 @@ async def _process_chat_message(
         session_manager.add_turn(
             session_id=session_id,
             question=message,
-            answer=DEFAULT_ESCALATION_MESSAGE,
+            answer=response_text,
             source_documents=[],
         )
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
             session_id=session_id,
             user_message=message,
-            bot_response=DEFAULT_ESCALATION_MESSAGE,
-            intent_type="escalate_technical",
+            bot_response=response_text,
+            intent_type=intent_type,
             escalate=True,
             source_documents=[],
             input_tokens=0,
@@ -857,9 +878,9 @@ async def _process_chat_message(
             user_profile=inferred_profile,
         )
         return ChatResponse(
-            response=DEFAULT_ESCALATION_MESSAGE,
+            response=response_text,
             escalate=True,
-            intent_type="escalate_technical",
+            intent_type=intent_type,
             reason=escalation_result.reason,
             session_id=session_id,
             source_documents=[],
@@ -945,10 +966,16 @@ async def _process_chat_message(
                 intent_type, cleaned_content = _extract_intent_type(content)
 
                 if intent_type in ESCALATE_INTENTS:
+                    response_text = maybe_prepend_greeting(
+                        session_id=session_id,
+                        response_text=DEFAULT_ESCALATION_MESSAGE,
+                        intent_type=intent_type,
+                        escalate=True,
+                    )
                     session_manager.add_turn(
                         session_id=session_id,
                         question=message,
-                        answer=DEFAULT_ESCALATION_MESSAGE,
+                        answer=response_text,
                         source_documents=[],
                     )
                     session_manager.add_token_usage(
@@ -961,7 +988,7 @@ async def _process_chat_message(
                     _fire_conversation_log(
                         session_id=session_id,
                         user_message=message,
-                        bot_response=DEFAULT_ESCALATION_MESSAGE,
+                        bot_response=response_text,
                         intent_type=intent_type,
                         escalate=True,
                         source_documents=[s.ruta for s in source_docs],
@@ -972,7 +999,7 @@ async def _process_chat_message(
                         user_profile=inferred_profile,
                     )
                     return ChatResponse(
-                        response=DEFAULT_ESCALATION_MESSAGE,
+                        response=response_text,
                         escalate=True,
                         intent_type=intent_type,
                         reason=f"Intent classified as {intent_type}",
@@ -1303,10 +1330,16 @@ async def _process_chat_message(
         intent_type, cleaned_text = _extract_intent_type(last_output_text)
 
         if intent_type in ESCALATE_INTENTS:
+            response_text = maybe_prepend_greeting(
+                session_id=session_id,
+                response_text=DEFAULT_ESCALATION_MESSAGE,
+                intent_type=intent_type,
+                escalate=True,
+            )
             session_manager.add_turn(
                 session_id=session_id,
                 question=message,
-                answer=DEFAULT_ESCALATION_MESSAGE,
+                answer=response_text,
                 source_documents=[],
             )
             session_manager.add_token_usage(
@@ -1316,7 +1349,7 @@ async def _process_chat_message(
             _fire_conversation_log(
                 session_id=session_id,
                 user_message=message,
-                bot_response=DEFAULT_ESCALATION_MESSAGE,
+                bot_response=response_text,
                 intent_type=intent_type,
                 escalate=True,
                 source_documents=[s.ruta for s in source_docs],
@@ -1327,7 +1360,7 @@ async def _process_chat_message(
                 user_profile=inferred_profile,
             )
             return ChatResponse(
-                response=DEFAULT_ESCALATION_MESSAGE,
+                response=response_text,
                 escalate=True,
                 intent_type=intent_type,
                 reason=f"Intent classified as {intent_type}",
