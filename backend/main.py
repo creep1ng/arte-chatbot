@@ -124,7 +124,7 @@ app = FastAPI(title="ARTE Chatbot Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=settings.allowed_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -136,13 +136,24 @@ def _log_environment_configuration() -> None:
     required_env_vars = [
         "CHAT_API_KEY",
         "OPENAI_API_KEY",
+        "AWS_BUCKET_NAME",
+    ]
+    optional_env_vars = [
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
-        "AWS_BUCKET_NAME",
+        "AWS_SESSION_TOKEN",
+        "APP_ENV",
+        "PUBLIC_API_URL",
+        "PUBLIC_FRONTEND_URL",
+        "PUBLIC_ADMIN_URL",
+        "ALLOWED_CORS_ORIGINS",
     ]
     for env_var in required_env_vars:
         status = "set" if os.getenv(env_var) else "missing"
         logger.info("Environment check: %s is %s", env_var, status)
+    for env_var in optional_env_vars:
+        status = "set" if os.getenv(env_var) else "not set"
+        logger.info("Optional environment check: %s is %s", env_var, status)
 
 
 _log_environment_configuration()

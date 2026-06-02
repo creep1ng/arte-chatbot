@@ -220,6 +220,44 @@ class TestS3ClientLazyInitialization:
         assert client._client is not None
         mock_boto3.client.assert_called_once()
 
+    @patch("backend.app.s3_client.boto3")
+    @patch("backend.app.s3_client.settings")
+    def test_client_uses_default_credential_chain_without_static_keys(
+        self, mock_settings: MagicMock, mock_boto3: MagicMock
+    ) -> None:
+        """S3 client omits credential args when local static keys are absent."""
+        mock_settings.aws_bucket_name = "test-bucket"
+        mock_settings.aws_access_key_id = None
+        mock_settings.aws_secret_access_key = None
+        mock_settings.aws_region = "eu-west-1"
+
+        with patch.dict(os.environ, {}, clear=True):
+            client = S3Client()
+            _ = client.client
+
+        mock_boto3.client.assert_called_once_with("s3", region_name="eu-west-1")
+
+    @patch("backend.app.s3_client.boto3")
+    def test_client_uses_explicit_local_static_keys_when_provided(
+        self, mock_boto3: MagicMock
+    ) -> None:
+        """Explicit local AWS keys remain supported for developer machines."""
+        client = S3Client(
+            bucket_name="test-bucket",
+            aws_access_key_id="local-access",
+            aws_secret_access_key="local-secret",
+            aws_region="us-west-2",
+        )
+
+        _ = client.client
+
+        mock_boto3.client.assert_called_once_with(
+            "s3",
+            aws_access_key_id="local-access",
+            aws_secret_access_key="local-secret",
+            region_name="us-west-2",
+        )
+
 
 class TestS3DownloadError:
     """Tests for S3DownloadError exception."""

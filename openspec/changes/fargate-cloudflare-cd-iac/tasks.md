@@ -26,10 +26,10 @@ Chain strategy: pending
 
 ## Phase 1: Runtime Foundation
 
-- [ ] 1.1 Update `backend/app/config.py` with `APP_ENV`, `PUBLIC_API_URL`, `PUBLIC_FRONTEND_URL`, `PUBLIC_ADMIN_URL`, and `ALLOWED_CORS_ORIGINS`; fail prod when origins are missing or wildcard.
-- [ ] 1.2 Update `backend/main.py` to use configured CORS origins and stop treating static AWS keys as required deployed env.
-- [ ] 1.3 Update `backend/app/s3_client.py`, `evaluation/s3_client.py`, `evaluation/storage.py`, and `evaluation/harness/s3_upload.py` to use the AWS default credential chain when explicit local keys are absent.
-- [ ] 1.4 Add/extend `backend/tests/test_config.py`, `backend/tests/test_s3_client.py`, `evaluation/harness/tests/test_s3_upload.py`, and evaluation storage tests for CORS prod fail-fast, local origins, and boto3 client args.
+- [x] 1.1 Update `backend/app/config.py` with `APP_ENV`, `PUBLIC_API_URL`, `PUBLIC_FRONTEND_URL`, `PUBLIC_ADMIN_URL`, and `ALLOWED_CORS_ORIGINS`; fail prod when origins are missing or wildcard.
+- [x] 1.2 Update `backend/main.py` to use configured CORS origins and stop treating static AWS keys as required deployed env.
+- [x] 1.3 Update `backend/app/s3_client.py`, `evaluation/s3_client.py`, `evaluation/storage.py`, and `evaluation/harness/s3_upload.py` to use the AWS default credential chain when explicit local keys are absent.
+- [x] 1.4 Add/extend `backend/tests/test_config.py`, `backend/tests/test_s3_client.py`, `evaluation/harness/tests/test_s3_upload.py`, and evaluation storage tests for CORS prod fail-fast, local origins, and boto3 client args.
 
 ## Phase 2: Terraform Infrastructure
 
