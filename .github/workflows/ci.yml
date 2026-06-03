@@ -13,7 +13,7 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   KILO_MODEL: kilo/bytedance-seed/dola-seed-2.0-pro:free
-  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
 
 jobs:
   lint:

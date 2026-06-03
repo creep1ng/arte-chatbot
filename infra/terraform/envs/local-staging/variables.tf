@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for local staging resources."
   type        = string
-  default     = "us-east-1"
+  default     = "us-east-2"
 }
 
 variable "staging_id" {
@@ -156,7 +156,7 @@ variable "aws_bucket_name" {
   type        = string
 
   validation {
-    condition     = !contains(["arte-chatbot-data", "arte-chatbot-prod"], lower(var.aws_bucket_name))
+    condition     = !contains(["arte-chatbot-fichas-tecnicas", "arte-chatbot-prod"], lower(var.aws_bucket_name))
     error_message = "Local staging rejects production S3 buckets by default. Use a staging/test bucket or document an exception outside this root."
   }
 }

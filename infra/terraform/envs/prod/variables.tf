@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for production resources."
   type        = string
-  default     = "us-east-1"
+  default     = "us-east-2"
 }
 
 variable "name_prefix" {
@@ -71,7 +71,7 @@ variable "admin_tunnel_secret" {
 variable "aws_bucket_name" {
   description = "S3 bucket used by the backend catalog and technical PDFs."
   type        = string
-  default     = "arte-chatbot-data"
+  default     = "arte-chatbot-fichas-tecnicas"
 }
 
 variable "backend_image_tag" {

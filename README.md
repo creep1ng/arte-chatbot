@@ -42,7 +42,7 @@ Local development uses `.env`. Production ECS runtime uses AWS Secrets Manager o
 Product datasheets live in Amazon S3:
 
 ```text
-arte-chatbot-data/
+arte-chatbot-fichas-tecnicas/
 ├── raw/
 │   ├── paneles/
 │   ├── inversores/
@@ -119,7 +119,7 @@ The script rejects CI execution, production-like names, implicit tags, and expir
 
 ```bash
 python scripts/generate_index.py --dry-run
-python scripts/generate_index.py --bucket arte-chatbot-data --prefix raw/ --output docs/data/catalog_index.example.json
+python scripts/generate_index.py --bucket arte-chatbot-fichas-tecnicas --prefix raw/ --output docs/data/catalog_index.example.json
 ```
 
 ## Security rules
