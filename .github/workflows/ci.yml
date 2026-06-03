@@ -1,5 +1,6 @@
-# ARTE Chatbot CI Pipeline
-# Lint + Health Check Test for Pull Requests
+# ARTE Chatbot CI/CD pipeline
+# PRs build/test/evaluate and may publish immutable candidate images.
+# Production deploys are gated to push events on main and use AWS OIDC.
 
 name: CI
 
@@ -11,8 +12,8 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  DOCKER_COMPOSE_FILE: docker-compose.yml
   KILO_MODEL: kilo/bytedance-seed/dola-seed-2.0-pro:free
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
 
 jobs:
   lint:
@@ -33,21 +34,18 @@ jobs:
           pip install ruff
 
       - name: Run Ruff linter
-        run: |
-          ruff check backend/
+        run: ruff check backend/
         continue-on-error: true
 
       - name: Run Ruff format check
-        run: |
-          ruff format --check backend/
+        run: ruff format --check backend/
         continue-on-error: true
 
       - name: Check Python syntax
-        run: |
-          python -m py_compile backend/main.py
+        run: python -m py_compile backend/main.py
 
   build:
-    name: Build Docker Container
+    name: Build Docker Images
     runs-on: ubuntu-latest
     needs: lint
     steps:
@@ -57,17 +55,40 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
-        run: docker compose build backend
+      - name: Build backend image
+        run: docker build --build-arg GIT_COMMIT_HASH=${{ github.sha }} -t arte-chatbot-backend -f backend/Dockerfile .
 
-      - name: Export Docker image
-        run: docker save arte-chatbot-backend -o backend-image.tar
+      - name: Build frontend image
+        run: docker build --build-arg GIT_COMMIT_HASH=${{ github.sha }} -t arte-chatbot-frontend -f frontend/Dockerfile .
 
-      - name: Upload Docker image artifact
+      - name: Build admin image
+        run: docker build --build-arg GIT_COMMIT_HASH=${{ github.sha }} -t arte-chatbot-admin -f admin/Dockerfile .
+
+      - name: Export Docker images
+        run: |
+          docker save arte-chatbot-backend -o backend-image.tar
+          docker save arte-chatbot-frontend -o frontend-image.tar
+          docker save arte-chatbot-admin -o admin-image.tar
+
+      - name: Upload backend image artifact
         uses: actions/upload-artifact@v4
         with:
           name: backend-image
           path: backend-image.tar
+          retention-days: 1
+
+      - name: Upload frontend image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-image
+          path: frontend-image.tar
+          retention-days: 1
+
+      - name: Upload admin image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-image
+          path: admin-image.tar
           retention-days: 1
 
   test-health:
@@ -78,16 +99,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Download Docker image artifact
+      - name: Download backend image artifact
         uses: actions/download-artifact@v4
         with:
           name: backend-image
           path: ./artifact
 
-      - name: Load Docker image
+      - name: Load backend image
         run: docker load -i ./artifact/backend-image.tar
 
       - name: Mask secrets
@@ -95,7 +113,7 @@ jobs:
           echo "::add-mask::${{ secrets.CHAT_API_KEY }}"
           echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"
 
-      - name: Create temporary .env and start containers
+      - name: Create temporary .env and start backend
         env:
           CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -126,27 +144,13 @@ jobs:
         run: |
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)
           echo "Health check response code: $RESPONSE"
-          if [ "$RESPONSE" = "200" ]; then
-            echo "✅ Health endpoint returned 200 OK"
-          else
-            echo "❌ Health endpoint returned $RESPONSE instead of 200"
-            exit 1
-          fi
+          test "$RESPONSE" = "200"
 
       - name: Verify health response body
         run: |
           BODY=$(curl -s http://localhost:8000/health)
           echo "Health response: $BODY"
-          if echo "$BODY" | grep -q "healthy"; then
-            echo "✅ Health response contains 'healthy' status"
-          else
-            echo "❌ Health response missing 'healthy' status"
-            exit 1
-          fi
-
-      - name: Show container logs on success
-        if: success()
-        run: docker logs arte-chatbot-backend
+          echo "$BODY" | grep -q "healthy"
 
       - name: Show container logs on failure
         if: failure()
@@ -166,16 +170,13 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Download Docker image artifact
+      - name: Download backend image artifact
         uses: actions/download-artifact@v4
         with:
           name: backend-image
           path: ./artifact
 
-      - name: Load Docker image
+      - name: Load backend image
         run: docker load -i ./artifact/backend-image.tar
 
       - name: Mask secrets
@@ -183,7 +184,7 @@ jobs:
           echo "::add-mask::${{ secrets.CHAT_API_KEY }}"
           echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"
 
-      - name: Create temporary .env and start containers
+      - name: Create temporary .env and start backend
         env:
           CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -224,7 +225,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Run evaluation harness
         env:
@@ -232,8 +233,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           EVAL_S3_PREFIX: evaluation/ci/${{ github.ref_name }}/${{ github.run_id }}/
           AWS_BUCKET_NAME: ${{ secrets.AWS_BUCKET_NAME }}
-        run: |
-          uv run python -m evaluation.harness.run
+        run: uv run python -m evaluation.harness.run
 
       - name: Upload evaluation results
         uses: actions/upload-artifact@v4
@@ -246,6 +246,167 @@ jobs:
       - name: Show container logs on failure
         if: failure()
         run: docker logs arte-chatbot-backend
+
+  publish-candidate-images:
+    name: Publish PR Candidate Images
+    runs-on: ubuntu-latest
+    needs: evaluation
+    if: github.event_name == 'pull_request'
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      CANDIDATE_TAG: pr-${{ github.event.pull_request.number }}-sha-${{ github.sha }}
+      SHA_TAG: sha-${{ github.sha }}
+    steps:
+      - name: Download backend image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: ./artifact
+
+      - name: Download frontend image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+          path: ./artifact
+
+      - name: Download admin image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: admin-image
+          path: ./artifact
+
+      - name: Load built images
+        run: |
+          docker load -i ./artifact/backend-image.tar
+          docker load -i ./artifact/frontend-image.tar
+          docker load -i ./artifact/admin-image.tar
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push immutable PR candidate tags
+        run: |
+          docker tag arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
+          docker tag arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
+          docker tag arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
+          docker tag arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker tag arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker tag arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker push "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
+          docker push "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
+          docker push "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
+          docker push "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker push "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker push "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+
+  publish-release-images:
+    name: Publish Main Release Images
+    runs-on: ubuntu-latest
+    needs: evaluation
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      SHA_TAG: sha-${{ github.sha }}
+    steps:
+      - name: Download backend image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: ./artifact
+
+      - name: Download frontend image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+          path: ./artifact
+
+      - name: Download admin image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: admin-image
+          path: ./artifact
+
+      - name: Load built images
+        run: |
+          docker load -i ./artifact/backend-image.tar
+          docker load -i ./artifact/frontend-image.tar
+          docker load -i ./artifact/admin-image.tar
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push immutable release SHA tags
+        run: |
+          docker tag arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker tag arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker tag arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker push "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker push "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          docker push "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+
+  deploy-production:
+    name: Deploy Production ECS Services
+    runs-on: ubuntu-latest
+    needs: publish-release-images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      TF_IN_AUTOMATION: "true"
+      SHA_TAG: sha-${{ github.sha }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_VAR_aws_region: ${{ env.AWS_REGION }}
+      TF_VAR_vpc_id: ${{ vars.PROD_VPC_ID }}
+      TF_VAR_private_subnet_ids: ${{ vars.PROD_PRIVATE_SUBNET_IDS_JSON }}
+      TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_backend_tunnel_secret: ${{ secrets.PROD_BACKEND_TUNNEL_SECRET }}
+      TF_VAR_frontend_tunnel_secret: ${{ secrets.PROD_FRONTEND_TUNNEL_SECRET }}
+      TF_VAR_admin_tunnel_secret: ${{ secrets.PROD_ADMIN_TUNNEL_SECRET }}
+      TF_VAR_backend_runtime_secret_arns: ${{ secrets.PROD_BACKEND_RUNTIME_SECRET_ARNS_JSON }}
+      TF_VAR_aws_bucket_name: ${{ secrets.AWS_BUCKET_NAME }}
+      TF_VAR_github_owner: ${{ github.repository_owner }}
+      TF_VAR_github_repository: ${{ github.event.repository.name }}
+      TF_VAR_create_github_oidc_role: "false"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
+        run: terraform -chdir=infra/terraform/envs/prod init
+
+      - name: Terraform apply production image tags
+        run: |
+          terraform -chdir=infra/terraform/envs/prod apply -auto-approve \
+            -var="backend_image_tag=${SHA_TAG}" \
+            -var="frontend_image_tag=${SHA_TAG}" \
+            -var="admin_image_tag=${SHA_TAG}"
 
   cleanup:
     name: Cleanup Containers
@@ -263,5 +424,4 @@ jobs:
         run: docker compose down --volumes
 
       - name: Clean up Docker
-        run: |
-          docker system prune -f || true
+        run: docker system prune -f || true

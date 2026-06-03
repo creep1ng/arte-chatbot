@@ -2,16 +2,18 @@
 
 ## Status
 
-Work Unit 1 / PR1 Runtime Foundation and Work Unit 2 / PR2 Terraform Foundation are complete. PR2 stayed within the approved Terraform/admin boundary and did not implement CI/CD, local staging scripts/root, or deployment docs.
+Work Units 1-3 are complete. Runtime config, Terraform foundation, CD workflow,
+local staging, guard checks, and deployment docs are implemented; no deploy/apply
+has been executed yet.
 
 ## Workload Boundary
 
 - Mode: chained PR slice
 - Chain strategy: feature-branch-chain
 - Tracker branch: `feature/iac-boostrap`
-- Current work unit: Work Unit 2 / PR2 Terraform Foundation
-- Scope completed: tasks 1.1-1.4 and 2.1-2.4
-- Explicitly not implemented: CI/CD workflow changes, local staging script/root, deployment docs
+- Current work unit: Work Unit 3 / PR3 CD + local staging + docs
+- Scope completed: tasks 1.1-1.4, 2.1-2.4, 3.1-3.3, and 4.1
+- Explicitly not executed: Terraform apply, ECS deploy, Cloudflare DNS/tunnel creation
 
 ## Prior Safety-Net History
 
@@ -44,6 +46,10 @@ Prior blocking failures:
 - [x] 2.2 Added the production Terraform root with `domain_name` defaulting to `artesolutions.com.co`, derived `api`, `app`, and `admin` hostnames, separate ECR repos/services/task definitions, Cloudflare sidecars, and backend `ALLOWED_CORS_ORIGINS` runtime config.
 - [x] 2.3 Added a separate `admin` nginx image scaffold and minimal static source, independent from the frontend route/image.
 - [x] 2.4 Added static Terraform foundation validation checks covering scoped tunnels, no mixed unreachable localhost origins, sensitive token/secret outputs, prod/staging name isolation, and admin image separation.
+- [x] 3.1 Updated GitHub Actions to build backend, frontend, and admin images; publish PR candidate tags after health/evaluation gates; publish SHA release tags; and deploy production only from `main` using OIDC and Terraform variables.
+- [x] 3.2 Added local-staging Terraform root and `scripts/deploy-local-staging.sh` requiring explicit ECR tags, unique staging hostnames, non-CI execution, isolated state/params/secrets, Cloudflare token input, and expiration no later than 3 days.
+- [x] 3.3 Added static guard checks for PR no-prod-deploy, CI staging rejection, production URL/name rejection, rollback-visible SHA tags, required Terraform inputs, and local staging safety.
+- [x] 4.1 Updated `.env.example`, `README.md`, and `docs/deployment.md` with domain, IAM/default credential-chain usage, ECR tags, prod deploy flow, local staging cleanup, and handoff/access requirements.
 
 ## TDD Cycle Evidence
 
@@ -57,6 +63,10 @@ Prior blocking failures:
 | 2.2 | `scripts/tests/test_terraform_foundation.py`, `scripts/terraform_foundation_checks.py` | Static IaC validation | N/A (new files) | ✅ Tests failed with missing prod root/domain/hostname findings before implementation | ✅ Prod root passed derived hostnames/domain/default CORS/origin checks | ✅ Covered backend `localhost:8000`, frontend/admin `localhost:3000`, and prod name isolation | ✅ Terraform files formatted recursively |
 | 2.3 | `scripts/tests/test_terraform_foundation.py`, `scripts/terraform_foundation_checks.py` | Static scaffold validation | N/A (new files) | ✅ Test failed because admin Dockerfile/nginx/source did not exist | ✅ Admin image scaffold passed separate-image checks | ✅ Covered Dockerfile source path and nginx port 3000 | ✅ Minimal static source kept separate from frontend |
 | 2.4 | `scripts/tests/test_terraform_foundation.py`, `scripts/terraform_foundation_checks.py` | Unit/static validation | N/A (new files) | ✅ Check script/tests were written before Terraform implementation and failed on missing controls | ✅ 5/5 PR2 validation tests passed | ✅ Validated scoped tunnels, no shared unreachable localhost origins, sensitive outputs, prod/staging isolation, and admin separation | ✅ Check script refactored after `terraform fmt` to avoid brittle spacing assertions; tests remained green |
+| 3.1 | `scripts/tests/test_cd_and_staging_guards.py`, `scripts/deployment_guard_checks.py` | Static workflow validation | N/A (workflow guard added) | ✅ Tests/checks required all images, gated candidate publish, main-only deploy, OIDC, and Terraform inputs before accepting workflow | ✅ 8/8 CD/staging guard tests passed | ✅ Covered PR and main paths plus rollback-visible tags | ✅ Workflow kept staging out of CI and moved required deploy inputs into explicit env |
+| 3.2 | `scripts/tests/test_cd_and_staging_guards.py` | Script/Terraform validation | N/A (new script/root) | ✅ Tests failed until script rejected CI, implicit tags, prod names, long expiration, and missing deploy inputs | ✅ Local staging root validated with Terraform provider schemas | ✅ Covered unique hostnames, local backend state, isolated params/secrets, and required TF_VAR inputs | ✅ Script fail-fast ordering preserves useful error messages before Terraform runs |
+| 3.3 | `scripts/tests/test_cd_and_staging_guards.py`, `scripts/deployment_guard_checks.py` | Static guard validation | N/A (new checks) | ✅ Guard tests encoded no-prod-deploy, CI staging rejection, production URL/name rejection, rollback SHA tags, and required inputs | ✅ Guard tests and ruff passed | ✅ Checked workflow, script, and Terraform root without cloud/API calls | ✅ Static checks remained safe for CI |
+| 4.1 | `README.md`, `.env.example`, `docs/deployment.md` | Docs/config validation | N/A (docs update) | ✅ Documentation checklist was derived from deployment requirements before handoff | ✅ Docs now list required AWS, Cloudflare, GitHub, env, and Terraform inputs | ✅ Covered prod deploy, local staging, cleanup, verification, and secrets rules | ✅ Kept secrets out of committed examples |
 
 ## Test Results
 
@@ -107,6 +117,16 @@ terraform -chdir=infra/terraform/envs/prod validate
 
 Final result: initialized providers successfully and `terraform validate` passed.
 
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest scripts/tests/test_cd_and_staging_guards.py
+UV_CACHE_DIR=/tmp/uv-cache uv run ruff check scripts/deployment_guard_checks.py scripts/tests/test_cd_and_staging_guards.py
+terraform fmt -check -recursive infra/terraform/envs/local-staging
+terraform -chdir=infra/terraform/envs/local-staging validate
+```
+
+Result: 8 guard tests passed, ruff passed, local-staging Terraform formatting check passed,
+and local-staging `terraform validate` passed after provider initialization.
+
 Note: `backend/main.py` was excluded from the focused ruff command because it has pre-existing lint debt unrelated to this work unit (`E402`, duplicate route definition, unused local variable). The changed main behavior is limited to CORS configuration and environment diagnostics.
 
 ## Files Changed
@@ -137,11 +157,19 @@ Note: `backend/main.py` was excluded from the focused ruff command because it ha
 | `admin/src/index.html` | Created | Minimal admin placeholder source independent from frontend routing. |
 | `scripts/terraform_foundation_checks.py` | Created | Safe static validation helper for Terraform foundation invariants. |
 | `scripts/tests/test_terraform_foundation.py` | Created | Pytest coverage for scoped tunnels, sensitive outputs, prod isolation, and admin separation. |
+| `.github/workflows/ci.yml` | Modified | Builds/publishes backend/frontend/admin images, gates ECR push after evaluation, and deploys prod only from main with OIDC and explicit Terraform inputs. |
+| `infra/terraform/envs/local-staging/*` | Created | Local-only staging root with unique hostnames, isolated state, explicit ECR tags, staging secrets/params, and expiration metadata. |
+| `scripts/deploy-local-staging.sh` | Created | Developer-run deploy helper that rejects CI, implicit tags, prod-like ids, long expirations, and missing deploy inputs before Terraform. |
+| `scripts/deployment_guard_checks.py` | Created | Static guard checks for workflow and staging safety. |
+| `scripts/tests/test_cd_and_staging_guards.py` | Created | Tests for CI/CD gating, staging isolation, explicit tags, and deploy input fail-fast behavior. |
+| `.env.example` | Modified | Documents deployed runtime env, domain, immutable image tags, local staging values, and default credential-chain expectations. |
+| `README.md` | Modified | Adds project structure, runtime config, CI/CD, local staging, testing, and security guidance. |
+| `docs/deployment.md` | Created | Deployment guide and final handoff/access checklist for AWS, Cloudflare, GitHub, Terraform, and verification. |
 
 ## Deviations / Issues
 
 - No design deviations for PR1 runtime foundation.
-- No design deviations for PR2 Terraform foundation; Cloudflare tunnel token values are marked sensitive and stored into AWS Secrets Manager for ECS sidecars, but provider/state access still needs normal Terraform state protection.
+- No design deviations for PR2/PR3; Cloudflare tunnel token values are marked sensitive and stored into AWS Secrets Manager for ECS sidecars, but provider/state access still needs normal Terraform state protection.
 - The `ssm_secrets` module uses non-sensitive key sets for `for_each` while keeping secret values sensitive; Terraform cannot safely use sensitive values directly as instance keys.
 - `openspec/config.yaml` was not present, so there were no additional `rules.apply` to load from OpenSpec config.
 - Focused tests still emit the existing backend test warning about missing `OPENAI_API_KEY`/`CHAT_API_KEY`; the focused files do not import `backend.main`, so collection succeeds.
@@ -149,7 +177,4 @@ Note: `backend/main.py` was excluded from the focused ruff command because it ha
 
 ## Remaining Tasks
 
-- [ ] 3.1 Modify CI/CD workflow for image promotion and main-only deploy.
-- [ ] 3.2 Create local staging deploy script and isolated Terraform root.
-- [ ] 3.3 Add workflow/staging guard checks.
-- [ ] 4.1 Update environment/deployment documentation.
+All apply tasks in `tasks.md` are complete. Next phases: verify, then deployment execution/rectification after required secrets/vars are confirmed.

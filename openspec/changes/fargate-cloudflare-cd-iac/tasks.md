@@ -9,11 +9,11 @@
 | Chained PRs recommended | Yes |
 | Suggested split | PR1 runtime fixes → PR2 Terraform foundation → PR3 CD/staging/docs |
 | Delivery strategy | ask-on-risk |
-| Chain strategy | pending |
+| Chain strategy | feature-branch-chain |
 
 Decision needed before apply: Yes
 Chained PRs recommended: Yes
-Chain strategy: pending
+Chain strategy: feature-branch-chain
 400-line budget risk: High
 
 ### Suggested Work Units
@@ -40,10 +40,10 @@ Chain strategy: pending
 
 ## Phase 3: CD and Staging
 
-- [ ] 3.1 Modify `.github/workflows/ci.yml` to build backend, frontend, and admin images; push immutable PR candidate tags after tests/evaluation; deploy prod only on `main` using OIDC.
-- [ ] 3.2 Create `scripts/deploy-local-staging.sh` and `infra/terraform/envs/local-staging/` requiring explicit ECR tags, unique staging hostnames, non-CI execution, isolated state/secrets/params, and expiration no later than 3 days.
-- [ ] 3.3 Add workflow/staging guard checks for PR no-prod-deploy, CI staging rejection, production URL/name rejection, and rollback-visible SHA tags.
+- [x] 3.1 Modify `.github/workflows/ci.yml` to build backend, frontend, and admin images; push immutable PR candidate tags after tests/evaluation; deploy prod only on `main` using OIDC.
+- [x] 3.2 Create `scripts/deploy-local-staging.sh` and `infra/terraform/envs/local-staging/` requiring explicit ECR tags, unique staging hostnames, non-CI execution, isolated state/secrets/params, and expiration no later than 3 days.
+- [x] 3.3 Add workflow/staging guard checks for PR no-prod-deploy, CI staging rejection, production URL/name rejection, and rollback-visible SHA tags.
 
 ## Phase 4: Documentation
 
-- [ ] 4.1 Update `.env.example`, `README.md`, and deployment docs with `DOMAIN_NAME=artesolutions.com.co`, IAM/default credential-chain usage, ECR tags, prod deploy flow, and local staging cleanup.
+- [x] 4.1 Update `.env.example`, `README.md`, and deployment docs with `DOMAIN_NAME=artesolutions.com.co`, IAM/default credential-chain usage, ECR tags, prod deploy flow, and local staging cleanup.

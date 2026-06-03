@@ -2,7 +2,7 @@ change: fargate-cloudflare-cd-iac
 artifact_store: openspec
 execution_mode: interactive
 delivery_strategy: ask-on-risk
-status: tasks-complete
+status: apply-complete
 phases:
   explore:
     status: complete
@@ -29,7 +29,8 @@ phases:
       chained_prs_recommended: true
       decision_needed_before_apply: true
   apply:
-    status: pending
+    status: complete
+    artifact: openspec/changes/fargate-cloudflare-cd-iac/apply-progress.md
   verify:
     status: pending
   archive:
