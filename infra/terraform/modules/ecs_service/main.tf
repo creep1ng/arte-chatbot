@@ -183,6 +183,22 @@ resource "aws_security_group" "this" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  egress {
+    description = "Allow outbound Cloudflare Tunnel QUIC."
+    from_port   = 7844
+    to_port     = 7844
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Allow outbound Cloudflare Tunnel TCP fallback."
+    from_port   = 7844
+    to_port     = 7844
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   tags = var.tags
 }
 
