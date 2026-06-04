@@ -3,20 +3,22 @@ ARTE Chatbot Backend
 FastAPI server with /health and /chat endpoints.
 """
 
+# ruff: noqa: E402
+
 import asyncio
+import json
 import logging
+import os
+import re
 import time
+import uuid
+from datetime import datetime, timezone
+from typing import Annotated, Any, Optional
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-
-import json
-import os
-import uuid
-from datetime import datetime, timezone
-from typing import Annotated, Any, Optional
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -33,10 +35,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend.app.auth import verify_api_key
+from backend.app.auth import api_key_principal, verify_api_key
 from backend.app.catalog import CatalogError, get_catalog
 from backend.app.config import settings
-from backend.app.conversation_logger import ConversationLogEntry, ConversationLogger
+from backend.app.conversation_logger import (
+    ConversationLogEntry,
+    ConversationLogger,
+    redact_text,
+)
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.greeting import maybe_prepend_greeting
 from backend.app.llm_client import (
@@ -63,6 +69,11 @@ from backend.app.message_buffer import (
 from backend.app.message_splitter import process_split_messages
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.schemas import LLMResponse, SourceDocument
+from backend.app.security import (
+    bind_or_validate_session,
+    check_rate_limit,
+    validate_session_id,
+)
 from backend.app.session import session_manager
 from backend.app.tools import get_tool_definitions, validate_s3_path
 from backend.app.user_profiler import PROFILE_INSTRUCTIONS, infer_user_profile
@@ -91,33 +102,57 @@ OUT_OF_DOMAIN_MESSAGE = (
     "¿Hay algo relacionado con energía solar en lo que pueda ayudarte?"
 )
 
-import re
 
 INTENT_MARKER_RE = re.compile(r"\[INTENT:\s*(\w+)\]")
+CONFIDENCE_MARKER_RE = re.compile(r"\[CONFIDENCE:\s*([0-9]+(?:\.[0-9]+)?)\]")
 
 
-def _extract_intent_type(text: str) -> tuple[str, str]:
-    """Extract intent_type from LLM output text.
+def _extract_intent_type(text: str) -> tuple[Optional[str], Optional[float], str]:
+    """Extract intent_type and confidence from LLM output text.
 
-    The LLM is instructed to prefix responses with [INTENT: <type>].
-    This function parses the marker and returns the cleaned response.
+    The LLM is instructed to prefix responses with [INTENT: <type>] and
+    [CONFIDENCE: <score>]. This function parses both markers and returns
+    the cleaned response.
 
     Args:
         text: Raw LLM output text.
 
     Returns:
-        Tuple of (intent_type, cleaned_response_text).
+        Tuple of (intent_type, confidence, cleaned_response_text). intent_type is
+        None when the LLM does not provide a valid [INTENT] marker.
     """
-    match = INTENT_MARKER_RE.search(text)
-    if match:
-        intent = match.group(1)
+    intent_type: Optional[str] = None
+    intent_match = INTENT_MARKER_RE.search(text)
+    if intent_match:
+        intent = intent_match.group(1)
         if intent in INTENT_TYPES:
-            cleaned = INTENT_MARKER_RE.sub("", text).strip()
-            return intent, cleaned
-    return "FAQ", text
+            intent_type = intent
+
+    confidence: Optional[float] = None
+    confidence_match = CONFIDENCE_MARKER_RE.search(text)
+    if confidence_match:
+        confidence_value = float(confidence_match.group(1))
+        if 0.0 <= confidence_value <= 1.0:
+            confidence = confidence_value
+
+    cleaned = INTENT_MARKER_RE.sub("", text)
+    cleaned = CONFIDENCE_MARKER_RE.sub("", cleaned).strip()
+    return intent_type, confidence, cleaned
 
 
 ESCALATE_INTENTS = {"escalate_quote", "escalate_technical", "escalate_order"}
+QUOTE_ESCALATION_KEYWORDS = {"cotización", "presupuesto"}
+
+
+def _intent_type_for_escalation_keyword(matched_keyword: Optional[str]) -> str:
+    """Map rule-based escalation keywords to public intent types."""
+    if matched_keyword is None:
+        return "escalate_technical"
+    if matched_keyword.lower() in QUOTE_ESCALATION_KEYWORDS:
+        return "escalate_quote"
+    if matched_keyword.lower() == "pedido":
+        return "escalate_order"
+    return "escalate_technical"
 
 
 app = FastAPI(title="ARTE Chatbot Backend")
@@ -261,8 +296,12 @@ def _fire_conversation_log(
 class ChatRequest(BaseModel):
     """Request model for /chat endpoint."""
 
-    message: str = Field(..., min_length=1)
-    session_id: Optional[str] = None
+    message: str = Field(..., min_length=1, max_length=4000)
+    session_id: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
     is_final: Optional[bool] = Field(
         default=None,
         description="Hint to flush multi-message buffer immediately",
@@ -274,7 +313,8 @@ class ChatResponse(BaseModel):
 
     response: str
     escalate: bool = False
-    intent_type: str = "FAQ"
+    intent_type: Optional[str] = None
+    confidence: Optional[float] = None
     reason: Optional[str] = None
     session_id: str
     source_documents: list[SourceDocument] = Field(default_factory=list)
@@ -309,40 +349,6 @@ class BufferResultResponse(BaseModel):
     result: Optional[str] = Field(
         default=None,
         description="The joined message when status is ready",
-    )
-
-
-@app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
-async def get_buffer_result(session_id: str) -> BufferResultResponse:
-    """Poll for buffered message processing result.
-
-    After a 202 response from /chat, the client should poll this endpoint.
-    When the buffer window expires, the backend processes the joined message
-    with the chatbot and stores the response for pickup.
-    """
-    chat_response_json = pop_pending_chat_response(session_id)
-    if chat_response_json:
-        return BufferResultResponse(
-            status="ready",
-            session_id=session_id,
-            result=chat_response_json,
-        )
-
-    if is_buffering(session_id):
-        return BufferResultResponse(
-            status="pending",
-            session_id=session_id,
-        )
-
-    if is_processing(session_id):
-        return BufferResultResponse(
-            status="pending",
-            session_id=session_id,
-        )
-
-    return BufferResultResponse(
-        status="not_found",
-        session_id=session_id,
     )
 
 
@@ -382,6 +388,41 @@ def _parse_tool_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
         return json.loads(arguments_str)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid tool arguments JSON: {e}") from e
+
+
+def _public_value_error_message(error: ValueError) -> str:
+    """Return a user-safe message for expected tool validation failures."""
+    message = str(error)
+    safe_messages = {
+        "No pude validar la ficha técnica en el catálogo": (
+            "No pude validar la ficha técnica en el catálogo. "
+            "Por favor, intenta más tarde o contacta al equipo de ventas."
+        ),
+        "Requested datasheet is not declared in the catalog": (
+            "La ficha técnica solicitada no está disponible en el catálogo."
+        ),
+        "Missing ruta_s3 in tool arguments. When ruta_s3 is not provided, "
+        "categoria is required to search the catalog.": (
+            "Necesito la categoría del producto para buscar la ficha técnica "
+            "en el catálogo."
+        ),
+        "No se encontraron productos en el catálogo con los criterios especificados. "
+        "El archivo solicitado no está disponible.": (
+            "No se encontraron productos en el catálogo con los criterios "
+            "especificados. El archivo solicitado no está disponible."
+        ),
+    }
+
+    if message in safe_messages:
+        return safe_messages[message]
+
+    if message.startswith("No products found in catalog for"):
+        return "No se encontraron productos en el catálogo con esos criterios."
+
+    return (
+        "No pude procesar esa herramienta con los datos recibidos. "
+        "Probá reformular la consulta."
+    )
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -600,6 +641,18 @@ async def _process_leer_ficha_tecnica(
     # Validate ruta_s3 for path traversal attacks (OWASP LLM07)
     if ruta_s3:
         validate_s3_path(ruta_s3)
+        try:
+            catalog = get_catalog()
+        except CatalogError as e:
+            logger.error(
+                "Catalog unavailable while validating ruta_s3: session_id=%s, error=%s",
+                session_id,
+                e,
+            )
+            raise ValueError("No pude validar la ficha técnica en el catálogo") from e
+
+        if not catalog.contains_ruta_s3(ruta_s3):
+            raise ValueError("Requested datasheet is not declared in the catalog")
 
     logger.debug(
         "Tool call parameters: function=%s, ruta_s3=%s, categoria=%s, "
@@ -764,6 +817,7 @@ async def _process_leer_ficha_tecnica(
 # Alias for backward compatibility with tests
 _process_tool_call = _process_leer_ficha_tecnica
 
+
 async def _process_chat_message(
     session_id: str,
     message: str,
@@ -780,7 +834,7 @@ async def _process_chat_message(
         "Incoming request: request_id=%s, session_id=%s, message_preview=%s",
         request_id,
         session_id,
-        message[:100],
+        redact_text(message)[:100],
     )
 
     # Infer user profile if not already inferred for this session
@@ -813,6 +867,15 @@ async def _process_chat_message(
     escalation_result = default_detector.detect(message)
 
     if escalation_result.escalate:
+        intent_type = _intent_type_for_escalation_keyword(
+            escalation_result.matched_keyword
+        )
+        response_text = maybe_prepend_greeting(
+            session_id=session_id,
+            response_text=DEFAULT_ESCALATION_MESSAGE,
+            intent_type=intent_type,
+            escalate=True,
+        )
         logger.info(
             "Escalation detected: request_id=%s, session_id=%s, reason=%s",
             request_id,
@@ -822,15 +885,15 @@ async def _process_chat_message(
         session_manager.add_turn(
             session_id=session_id,
             question=message,
-            answer=DEFAULT_ESCALATION_MESSAGE,
+            answer=response_text,
             source_documents=[],
         )
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
             session_id=session_id,
             user_message=message,
-            bot_response=DEFAULT_ESCALATION_MESSAGE,
-            intent_type="escalate_technical",
+            bot_response=response_text,
+            intent_type=intent_type,
             escalate=True,
             source_documents=[],
             input_tokens=0,
@@ -840,9 +903,9 @@ async def _process_chat_message(
             user_profile=inferred_profile,
         )
         return ChatResponse(
-            response=DEFAULT_ESCALATION_MESSAGE,
+            response=response_text,
             escalate=True,
-            intent_type="escalate_technical",
+            intent_type=intent_type,
             reason=escalation_result.reason,
             session_id=session_id,
             source_documents=[],
@@ -859,16 +922,11 @@ async def _process_chat_message(
 
     logger.debug(
         "Query expandida: original='%s', expandida='%s', session_id=%s",
-        message[:100],
-        expanded_query[:100],
+        redact_text(message)[:100],
+        redact_text(expanded_query)[:100],
         session_id,
     )
 
-    system_message = {"role": "system", "content": system_prompt_with_profile}
-    conversation_history: list[dict[str, Any]] = [
-        system_message,
-        {"role": "user", "content": expanded_query},
-    ]
     source_docs: list[SourceDocument] = []
 
     try:
@@ -930,13 +988,20 @@ async def _process_chat_message(
 
             if not tool_calls:
                 content = llm_response.text
-                intent_type, cleaned_content = _extract_intent_type(content)
+                intent_type, confidence, cleaned_content = _extract_intent_type(content)
+                intent_for_behavior = intent_type or "FAQ"
 
-                if intent_type in ESCALATE_INTENTS:
+                if intent_for_behavior in ESCALATE_INTENTS:
+                    response_text = maybe_prepend_greeting(
+                        session_id=session_id,
+                        response_text=DEFAULT_ESCALATION_MESSAGE,
+                        intent_type=intent_for_behavior,
+                        escalate=True,
+                    )
                     session_manager.add_turn(
                         session_id=session_id,
                         question=message,
-                        answer=DEFAULT_ESCALATION_MESSAGE,
+                        answer=response_text,
                         source_documents=[],
                     )
                     session_manager.add_token_usage(
@@ -949,8 +1014,8 @@ async def _process_chat_message(
                     _fire_conversation_log(
                         session_id=session_id,
                         user_message=message,
-                        bot_response=DEFAULT_ESCALATION_MESSAGE,
-                        intent_type=intent_type,
+                        bot_response=response_text,
+                        intent_type=intent_for_behavior,
                         escalate=True,
                         source_documents=[s.ruta for s in source_docs],
                         input_tokens=acc_input_tokens,
@@ -960,10 +1025,11 @@ async def _process_chat_message(
                         user_profile=inferred_profile,
                     )
                     return ChatResponse(
-                        response=DEFAULT_ESCALATION_MESSAGE,
+                        response=response_text,
                         escalate=True,
                         intent_type=intent_type,
-                        reason=f"Intent classified as {intent_type}",
+                        confidence=confidence,
+                        reason=f"Intent classified as {intent_for_behavior}",
                         session_id=session_id,
                         source_documents=source_docs,
                         num_sources=len(source_docs),
@@ -972,7 +1038,7 @@ async def _process_chat_message(
                         total_tokens=acc_total_tokens,
                     )
 
-                if intent_type == "fuera_de_dominio":
+                if intent_for_behavior == "fuera_de_dominio":
                     session_manager.add_turn(
                         session_id=session_id,
                         question=message,
@@ -990,7 +1056,7 @@ async def _process_chat_message(
                         session_id=session_id,
                         user_message=message,
                         bot_response=OUT_OF_DOMAIN_MESSAGE,
-                        intent_type=intent_type,
+                        intent_type=intent_for_behavior,
                         escalate=False,
                         source_documents=[],
                         input_tokens=acc_input_tokens,
@@ -1003,6 +1069,7 @@ async def _process_chat_message(
                         response=OUT_OF_DOMAIN_MESSAGE,
                         escalate=False,
                         intent_type=intent_type,
+                        confidence=confidence,
                         session_id=session_id,
                         source_documents=source_docs,
                         num_sources=len(source_docs),
@@ -1018,16 +1085,16 @@ async def _process_chat_message(
 
                 split_messages, split_delays = process_split_messages(
                     text=response_text,
-                    intent_type=intent_type,
+                    intent_type=intent_for_behavior,
                     llm_regenerate_fn=None,
                 )
 
-                escalate = intent_type in ESCALATE_INTENTS
+                escalate = intent_for_behavior in ESCALATE_INTENTS
                 if split_messages:
                     split_messages[0] = maybe_prepend_greeting(
                         session_id=session_id,
                         response_text=split_messages[0],
-                        intent_type=intent_type,
+                        intent_type=intent_for_behavior,
                         escalate=escalate,
                     )
                     response_text = "\n\n".join(split_messages)
@@ -1035,7 +1102,7 @@ async def _process_chat_message(
                     response_text = maybe_prepend_greeting(
                         session_id=session_id,
                         response_text=response_text,
-                        intent_type=intent_type,
+                        intent_type=intent_for_behavior,
                         escalate=escalate,
                     )
 
@@ -1053,7 +1120,7 @@ async def _process_chat_message(
                     session_id=session_id,
                     user_message=message,
                     bot_response=response_text,
-                    intent_type=intent_type,
+                    intent_type=intent_for_behavior,
                     escalate=False,
                     source_documents=[s.ruta for s in source_docs],
                     input_tokens=acc_input_tokens,
@@ -1066,6 +1133,7 @@ async def _process_chat_message(
                     response=response_text,
                     escalate=False,
                     intent_type=intent_type,
+                    confidence=confidence,
                     session_id=session_id,
                     source_documents=source_docs,
                     num_sources=len(source_docs),
@@ -1207,7 +1275,7 @@ async def _process_chat_message(
                         {
                             "tool_call_id": tool_call_id,
                             "function_name": function_name,
-                            "content": str(e),
+                            "content": _public_value_error_message(e),
                             "success": False,
                         }
                     )
@@ -1288,13 +1356,20 @@ async def _process_chat_message(
             session_id,
             iteration,
         )
-        intent_type, cleaned_text = _extract_intent_type(last_output_text)
+        intent_type, confidence, cleaned_text = _extract_intent_type(last_output_text)
+        intent_for_behavior = intent_type or "FAQ"
 
-        if intent_type in ESCALATE_INTENTS:
+        if intent_for_behavior in ESCALATE_INTENTS:
+            response_text = maybe_prepend_greeting(
+                session_id=session_id,
+                response_text=DEFAULT_ESCALATION_MESSAGE,
+                intent_type=intent_for_behavior,
+                escalate=True,
+            )
             session_manager.add_turn(
                 session_id=session_id,
                 question=message,
-                answer=DEFAULT_ESCALATION_MESSAGE,
+                answer=response_text,
                 source_documents=[],
             )
             session_manager.add_token_usage(
@@ -1304,8 +1379,8 @@ async def _process_chat_message(
             _fire_conversation_log(
                 session_id=session_id,
                 user_message=message,
-                bot_response=DEFAULT_ESCALATION_MESSAGE,
-                intent_type=intent_type,
+                bot_response=response_text,
+                intent_type=intent_for_behavior,
                 escalate=True,
                 source_documents=[s.ruta for s in source_docs],
                 input_tokens=acc_input_tokens,
@@ -1315,10 +1390,11 @@ async def _process_chat_message(
                 user_profile=inferred_profile,
             )
             return ChatResponse(
-                response=DEFAULT_ESCALATION_MESSAGE,
+                response=response_text,
                 escalate=True,
                 intent_type=intent_type,
-                reason=f"Intent classified as {intent_type}",
+                confidence=confidence,
+                reason=f"Intent classified as {intent_for_behavior}",
                 session_id=session_id,
                 source_documents=source_docs,
                 num_sources=len(source_docs),
@@ -1338,7 +1414,7 @@ async def _process_chat_message(
                 "Se alcanzó el límite de iteraciones. Por favor, reformula "
                 "tu pregunta o contacta al equipo de ventas."
             ),
-            intent_type=intent_type,
+            intent_type=intent_for_behavior,
             escalate=False,
             source_documents=[s.ruta for s in source_docs],
             input_tokens=acc_input_tokens,
@@ -1354,6 +1430,7 @@ async def _process_chat_message(
             ),
             escalate=False,
             intent_type=intent_type,
+            confidence=confidence,
             session_id=session_id,
             source_documents=source_docs,
             num_sources=len(source_docs),
@@ -1452,7 +1529,13 @@ async def chat_endpoint(
     3. Loop back to LLM with tool results until no more tools called
     4. Return final response
     """
+    principal = api_key_principal(api_key)
+    check_rate_limit(principal)
+
+    is_new_session = request.session_id is None
     session_id = request.session_id or str(uuid.uuid4())
+    validate_session_id(session_id)
+    bind_or_validate_session(session_id, principal, is_new=is_new_session)
     request_id = str(uuid.uuid4())
 
     # P4: Multi-message buffer — intercept before normal processing
@@ -1463,6 +1546,10 @@ async def chat_endpoint(
             overflow_result = await add_to_buffer(session_id, request.message)
             joined = overflow_result or await flush_buffer(session_id)
             if joined:
+                if len(joined) > settings.max_chat_message_chars:
+                    raise HTTPException(
+                        status_code=413, detail="Buffered message too large"
+                    )
                 request = ChatRequest(
                     message=joined,
                     session_id=session_id,
@@ -1502,7 +1589,7 @@ async def chat_endpoint(
             session_id,
             e,
         )
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail="LLM service unavailable")
     except Exception as e:
         logger.exception(
             "Unexpected error in chat endpoint: request_id=%s, session_id=%s, error=%s",
@@ -1514,13 +1601,22 @@ async def chat_endpoint(
 
 
 @app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
-async def get_buffer_result(session_id: str) -> BufferResultResponse:
+async def get_buffer_result(
+    session_id: str,
+    api_key: Annotated[str, Depends(verify_api_key)],
+) -> BufferResultResponse:
     """Poll for buffered message processing result.
 
     After a 202 response from /chat, the client should poll this endpoint.
     When the buffer window expires, the backend processes the joined message
     with the chatbot and stores the response for pickup.
     """
+    validate_session_id(session_id)
+
+    principal = api_key_principal(api_key)
+    check_rate_limit(principal)
+    bind_or_validate_session(session_id, principal, is_new=False)
+
     chat_response_json = pop_pending_chat_response(session_id)
     if chat_response_json:
         return BufferResultResponse(
@@ -1530,6 +1626,12 @@ async def get_buffer_result(session_id: str) -> BufferResultResponse:
         )
 
     if is_buffering(session_id):
+        return BufferResultResponse(
+            status="pending",
+            session_id=session_id,
+        )
+
+    if is_processing(session_id):
         return BufferResultResponse(
             status="pending",
             session_id=session_id,

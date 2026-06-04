@@ -36,23 +36,29 @@ def validate_s3_path(ruta_s3: str) -> None:
     if not ruta_s3:
         raise PathTraversalError("ruta_s3 cannot be empty")
 
-    if ".." in ruta_s3 or ruta_s3.startswith("/"):
+    if ".." in ruta_s3 or ruta_s3.startswith("/") or "//" in ruta_s3:
         raise PathTraversalError(
             f"Invalid path detected in ruta_s3: '{ruta_s3}'. "
             "Path traversal attempts are not allowed."
         )
 
-    # Allow raw/ prefix used in catalog_index.json paths (e.g., raw/paneles/...)
+    if not ruta_s3.lower().endswith(".pdf"):
+        raise PathTraversalError("ruta_s3 must point to a PDF file")
+
     path_parts = ruta_s3.split("/")
-    if path_parts[0] == "raw" and len(path_parts) > 1:
-        effective_prefix = path_parts[1]
-    else:
-        effective_prefix = path_parts[0]
+    if path_parts[0] != "raw" or len(path_parts) < 3:
+        raise PathTraversalError(
+            f"Invalid S3 prefix in ruta_s3: '{ruta_s3}'. "
+            "Must start with raw/<category>/."
+        )
+
+    effective_prefix = path_parts[1]
 
     if effective_prefix not in DATASHEET_CATEGORIES:
         raise PathTraversalError(
             f"Invalid category prefix in ruta_s3: '{ruta_s3}'. "
-            f"Must start with one of: {DATASHEET_CATEGORIES} or raw/<category>."
+            f"Must start with raw/<category> where category is one of: "
+            f"{DATASHEET_CATEGORIES}."
         )
 
 
@@ -74,7 +80,7 @@ LEER_FICHA_TECNICA_TOOL: dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Ruta completa del archivo PDF en S3. Ejemplo: "
-                    "paneles/jinko-tiger-pro-460w.pdf. Si no se conoce "
+                    "raw/paneles/jinko-tiger-pro-460w.pdf. Si no se conoce "
                     "la ruta exacta, se puede omitir y el sistema "
                     "buscará por los demás campos."
                 ),

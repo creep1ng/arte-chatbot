@@ -278,7 +278,6 @@ class TestDebounce:
             results.append(msg)
 
         # Schedule flush without adding messages — buffer is empty
-        from backend.app import message_buffer
 
         # Manually set up a task without buffer entries
         schedule_flush("s1", window_seconds=1, callback=_on_flush)
@@ -535,7 +534,9 @@ class TestEndpointBufferIntegration:
         mock_llm.assert_called_once()
         call_args = mock_llm.call_args
         # The message passed to LLM should contain all buffered messages
-        called_message = call_args.kwargs.get("message", call_args[1].get("message", ""))
+        called_message = call_args.kwargs.get(
+            "message", call_args[1].get("message", "")
+        )
         assert "msg0" in called_message
         assert "msg4" in called_message
 

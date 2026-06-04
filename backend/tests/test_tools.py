@@ -184,10 +184,10 @@ class TestPathTraversalValidation:
         from backend.app.tools import validate_s3_path
 
         valid_paths = [
-            "paneles/jinko-tiger-pro-460w.pdf",
-            "inversores/fronius-primo-5kw.pdf",
-            "controladores/epever-20a.pdf",
-            "baterias/BYD-battery-box.pdf",
+            "raw/paneles/jinko-tiger-pro-460w.pdf",
+            "raw/inversores/fronius-primo-5kw.pdf",
+            "raw/controladores/epever-20a.pdf",
+            "raw/baterias/BYD-battery-box.pdf",
         ]
         for path in valid_paths:
             validate_s3_path(path)
@@ -225,7 +225,7 @@ class TestPathTraversalValidation:
         invalid_category_paths = [
             "secret/file.pdf",
             "config/data.json",
-            "raw/paneles/jinko.pdf",
+            "raw/secret/jinko.pdf",
         ]
         for path in invalid_category_paths:
             with pytest.raises(PathTraversalError):
@@ -247,5 +247,9 @@ class TestPathTraversalValidation:
         assert "Path traversal" in str(exc_info.value)
 
         with pytest.raises(PathTraversalError) as exc_info:
-            validate_s3_path("raw/paneles/jinko.pdf")
+            validate_s3_path("raw/secret/jinko.pdf")
         assert "Invalid category prefix" in str(exc_info.value)
+
+        with pytest.raises(PathTraversalError) as exc_info:
+            validate_s3_path("raw/paneles/jinko.txt")
+        assert "PDF" in str(exc_info.value)

@@ -39,8 +39,24 @@ class SessionManager:
         self.sessions: Dict[str, List[ChatTurn]] = {}
         self.profiles: Dict[str, str] = {}
         self.token_totals: Dict[str, TokenTotals] = {}
+        self.session_owners: Dict[str, str] = {}
         self.max_turns = max_turns
         self._lock = threading.Lock()
+
+    def bind_session(self, session_id: str, owner: str) -> None:
+        """Bind a session to an authenticated principal."""
+        with self._lock:
+            self.session_owners[session_id] = owner
+
+    def is_session_owner(self, session_id: str, owner: str) -> bool:
+        """Return whether the session is owned by the given principal."""
+        with self._lock:
+            return self.session_owners.get(session_id) == owner
+
+    def has_session_owner(self, session_id: str) -> bool:
+        """Return whether the backend has emitted/bound the session."""
+        with self._lock:
+            return session_id in self.session_owners
 
     def add_turn(
         self,
@@ -126,6 +142,8 @@ class SessionManager:
                 del self.profiles[session_id]
             if session_id in self.token_totals:
                 del self.token_totals[session_id]
+            if session_id in self.session_owners:
+                del self.session_owners[session_id]
 
     def set_user_profile(self, session_id: str, profile: str) -> None:
         """
