@@ -63,12 +63,12 @@ def check_foundation(project_root: Path) -> list[str]:
         findings.append("prod domain must default to artesolutions.com.co")
 
     expected_hostname_labels = [
-        r'api\s*=\s*"api"',
+        r'api\s*=\s*"chatbot"',
         r'app\s*=\s*"app"',
         r'admin\s*=\s*"admin"',
     ]
     if not all(re.search(pattern, prod_main) for pattern in expected_hostname_labels) or "var.domain_name" not in prod_main:
-        findings.append("prod hostnames must derive api, app, and admin from domain_name")
+        findings.append("prod hostnames must derive chatbot, app, and admin from domain_name")
 
     if "staging" not in prod_variables or "strcontains" not in prod_variables:
         findings.append("prod name prefix must reject staging values")

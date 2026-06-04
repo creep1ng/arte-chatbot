@@ -2,7 +2,7 @@ locals {
   environment = "prod"
 
   hostname_labels = {
-    api   = "api"
+    api   = "chatbot"
     app   = "app"
     admin = "admin"
   }

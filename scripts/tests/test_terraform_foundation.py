@@ -47,7 +47,7 @@ def test_prod_names_and_domain_are_isolated_from_staging() -> None:
     findings = _findings()
 
     assert "prod domain must default to artesolutions.com.co" not in findings
-    assert "prod hostnames must derive api, app, and admin from domain_name" not in findings
+    assert "prod hostnames must derive chatbot, app, and admin from domain_name" not in findings
     assert "prod name prefix must reject staging values" not in findings
 
 

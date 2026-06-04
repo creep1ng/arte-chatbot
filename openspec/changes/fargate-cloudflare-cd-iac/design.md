@@ -19,7 +19,7 @@ Create Terraform-first deployment under `infra/terraform` for AWS ECS Fargate pl
 
 ```text
 Cloudflare hostname  -> scoped tunnel  -> cloudflared sidecar -> localhost origin
-api.$DOMAIN          -> backend tunnel -> backend:8000
+chatbot.$DOMAIN      -> backend tunnel -> backend:8000
 app.$DOMAIN          -> frontend tunnel -> frontend:3000
 admin.$DOMAIN        -> admin tunnel   -> admin:3000
 

@@ -37,7 +37,7 @@ Production hostnames default to:
 
 | Service | Hostname |
 |---------|----------|
-| Backend API | `api.artesolutions.com.co` |
+| Backend API | `chatbot.artesolutions.com.co` |
 | Frontend | `app.artesolutions.com.co` |
 | Admin | `admin.artesolutions.com.co` |
 
