@@ -79,8 +79,7 @@ class TestRuntimeCorsConfig:
         """ALLOWED_CORS_ORIGINS accepts comma-separated origins from ECS env."""
         env = {
             "ALLOWED_CORS_ORIGINS": (
-                "https://app.artesolutions.com.co, "
-                "https://admin.artesolutions.com.co"
+                "https://app.artesolutions.com.co, https://admin.artesolutions.com.co"
             )
         }
         with patch.dict(os.environ, env, clear=True):
@@ -121,8 +120,7 @@ class TestRuntimeCorsConfig:
         env = {
             "APP_ENV": "production",
             "ALLOWED_CORS_ORIGINS": (
-                "https://app.artesolutions.com.co,"
-                "https://admin.artesolutions.com.co"
+                "https://app.artesolutions.com.co,https://admin.artesolutions.com.co"
             ),
         }
         with patch.dict(os.environ, env, clear=True):

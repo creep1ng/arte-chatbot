@@ -245,7 +245,9 @@ class TestS3ClientLazyInitialization:
         assert kwargs["region_name"] == "eu-west-1"
         assert "aws_access_key_id" not in kwargs
         assert "aws_secret_access_key" not in kwargs
-        assert kwargs["config"].connect_timeout == mock_settings.s3_connect_timeout_seconds
+        assert (
+            kwargs["config"].connect_timeout == mock_settings.s3_connect_timeout_seconds
+        )
         assert kwargs["config"].read_timeout == mock_settings.s3_read_timeout_seconds
 
     @patch("backend.app.s3_client.boto3")
