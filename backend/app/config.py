@@ -9,10 +9,18 @@ attribute access, which ensures environment variables patched by tests
 import time.
 """
 
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+LOCAL_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+]
 
 
 class Settings(BaseSettings):
@@ -74,6 +82,20 @@ class Settings(BaseSettings):
     )
 
     # App
+    app_env: str = Field(default="local", description="Runtime environment name")
+    public_api_url: Optional[str] = Field(
+        default=None, description="Public API URL published for deployed clients"
+    )
+    public_frontend_url: Optional[str] = Field(
+        default=None, description="Public frontend URL allowed to call the API"
+    )
+    public_admin_url: Optional[str] = Field(
+        default=None, description="Public admin URL allowed to call the API"
+    )
+    allowed_cors_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: LOCAL_CORS_ORIGINS.copy(),
+        description="Comma-separated browser origins allowed by CORS",
+    )
     log_level: str = Field(default="INFO", description="Logging level")
     max_chat_message_chars: int = Field(
         default=4000,
@@ -183,6 +205,24 @@ class Settings(BaseSettings):
         description="Git commit hash for traceability in conversation logs",
     )
 
+    @field_validator("app_env", mode="before")
+    @classmethod
+    def _normalize_app_env(cls, value: str) -> str:
+        """Normalize app_env for simple production checks."""
+        return str(value).strip().lower()
+
+    @field_validator("allowed_cors_origins", mode="before")
+    @classmethod
+    def _parse_allowed_cors_origins(cls, value: Any) -> list[str]:
+        """Parse comma-separated CORS origins from environment."""
+        if value is None:
+            return LOCAL_CORS_ORIGINS.copy()
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        if isinstance(value, list):
+            return [str(origin).strip() for origin in value if str(origin).strip()]
+        return value
+
     @model_validator(mode="after")
     def _validate_delay_bounds(self) -> "Settings":
         """Ensure msg_delay_min_ms <= msg_delay_max_ms."""
@@ -202,6 +242,24 @@ class Settings(BaseSettings):
             ZoneInfo(self.greeting_timezone)
         except (KeyError, ZoneInfoNotFoundError):
             raise ValueError(f"Invalid IANA timezone: {self.greeting_timezone}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_production_cors_origins(self) -> "Settings":
+        """Require explicit non-wildcard CORS origins in production."""
+        is_production = self.app_env in {"prod", "production"}
+        if not is_production:
+            return self
+
+        has_default_origins = self.allowed_cors_origins == LOCAL_CORS_ORIGINS
+        if not self.allowed_cors_origins or has_default_origins:
+            raise ValueError(
+                "ALLOWED_CORS_ORIGINS must be explicitly configured in production"
+            )
+
+        if "*" in self.allowed_cors_origins:
+            raise ValueError("CORS wildcard origins are forbidden in production")
+
         return self
 
 

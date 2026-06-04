@@ -5,8 +5,11 @@ Tests the S3 client for downloading technical datasheets from AWS S3.
 """
 
 import os
-import pytest
 from unittest.mock import patch, MagicMock
+
+import pytest
+
+from backend.app.config import settings
 from backend.app.s3_client import S3Client, S3DownloadError, S3UploadError
 
 
@@ -220,6 +223,55 @@ class TestS3ClientLazyInitialization:
         # Now it should be initialized
         assert client._client is not None
         mock_boto3.client.assert_called_once()
+
+    @patch("backend.app.s3_client.boto3")
+    @patch("backend.app.s3_client.settings")
+    def test_client_uses_default_credential_chain_without_static_keys(
+        self, mock_settings: MagicMock, mock_boto3: MagicMock
+    ) -> None:
+        """S3 client omits credential args when local static keys are absent."""
+        mock_settings.aws_bucket_name = "test-bucket"
+        mock_settings.aws_access_key_id = None
+        mock_settings.aws_secret_access_key = None
+        mock_settings.aws_region = "eu-west-1"
+
+        with patch.dict(os.environ, {}, clear=True):
+            client = S3Client()
+            _ = client.client
+
+        mock_boto3.client.assert_called_once()
+        args, kwargs = mock_boto3.client.call_args
+        assert args == ("s3",)
+        assert kwargs["region_name"] == "eu-west-1"
+        assert "aws_access_key_id" not in kwargs
+        assert "aws_secret_access_key" not in kwargs
+        assert (
+            kwargs["config"].connect_timeout == mock_settings.s3_connect_timeout_seconds
+        )
+        assert kwargs["config"].read_timeout == mock_settings.s3_read_timeout_seconds
+
+    @patch("backend.app.s3_client.boto3")
+    def test_client_uses_explicit_local_static_keys_when_provided(
+        self, mock_boto3: MagicMock
+    ) -> None:
+        """Explicit local AWS keys remain supported for developer machines."""
+        client = S3Client(
+            bucket_name="test-bucket",
+            aws_access_key_id="local-access",
+            aws_secret_access_key="local-secret",
+            aws_region="us-west-2",
+        )
+
+        _ = client.client
+
+        mock_boto3.client.assert_called_once()
+        args, kwargs = mock_boto3.client.call_args
+        assert args == ("s3",)
+        assert kwargs["aws_access_key_id"] == "local-access"
+        assert kwargs["aws_secret_access_key"] == "local-secret"
+        assert kwargs["region_name"] == "us-west-2"
+        assert kwargs["config"].connect_timeout == settings.s3_connect_timeout_seconds
+        assert kwargs["config"].read_timeout == settings.s3_read_timeout_seconds
 
 
 class TestS3DownloadError:

@@ -1,0 +1,34 @@
+# Copy to a local-only tfvars file outside git and fill in real values.
+# Do not use production tunnel secrets, API credentials, or production buckets.
+
+staging_id = "pr-123"
+domain_name = "artesolutions.com.co"
+aws_region = "us-east-2"
+
+vpc_id = "vpc-xxxxxxxx"
+private_subnet_ids = ["subnet-xxxxxxxx", "subnet-yyyyyyyy"]
+assign_public_ip = false
+
+cloudflare_account_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+cloudflare_zone_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+backend_tunnel_secret = "local-staging-backend-secret"
+frontend_tunnel_secret = "local-staging-frontend-secret"
+admin_tunnel_secret = "local-staging-admin-secret"
+
+backend_ecr_repository_url = "521170872319.dkr.ecr.us-east-2.amazonaws.com/arte-chatbot-prod-backend"
+frontend_ecr_repository_url = "521170872319.dkr.ecr.us-east-2.amazonaws.com/arte-chatbot-prod-frontend"
+admin_ecr_repository_url = "521170872319.dkr.ecr.us-east-2.amazonaws.com/arte-chatbot-prod-admin"
+backend_ecr_repository_arn = "arn:aws:ecr:us-east-2:521170872319:repository/arte-chatbot-prod-backend"
+frontend_ecr_repository_arn = "arn:aws:ecr:us-east-2:521170872319:repository/arte-chatbot-prod-frontend"
+admin_ecr_repository_arn = "arn:aws:ecr:us-east-2:521170872319:repository/arte-chatbot-prod-admin"
+
+backend_image_tag = "pr-123-sha-abcdef1"
+frontend_image_tag = "pr-123-sha-abcdef1"
+admin_image_tag = "pr-123-sha-abcdef1"
+expiration_at = "2026-06-05T12:00:00Z"
+
+aws_bucket_name = "arte-chatbot-staging-data"
+backend_runtime_secret_arns = {
+  OPENAI_API_KEY = "arn:aws:secretsmanager:us-east-2:521170872319:secret:arte-chatbot-local-staging/pr-123/openai"
+  CHAT_API_KEY   = "arn:aws:secretsmanager:us-east-2:521170872319:secret:arte-chatbot-local-staging/pr-123/chat"
+}
