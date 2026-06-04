@@ -296,18 +296,26 @@ jobs:
 
       - name: Push immutable PR candidate tags
         run: |
-          docker tag arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
-          docker tag arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
-          docker tag arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
-          docker tag arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker tag arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker tag arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker push "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
-          docker push "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
-          docker push "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${CANDIDATE_TAG}"
-          docker push "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker push "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker push "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          push_if_missing() {
+            local image_name="$1"
+            local repository_url="$2"
+            local tag="$3"
+            local repository_name="${repository_url##*/}"
+
+            docker tag "${image_name}" "${repository_url}:${tag}"
+            if aws ecr describe-images --repository-name "${repository_name}" --image-ids imageTag="${tag}" >/dev/null 2>&1; then
+              echo "ECR tag already exists, skipping push: ${repository_name}:${tag}"
+              return 0
+            fi
+            docker push "${repository_url}:${tag}"
+          }
+
+          push_if_missing arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}" "${CANDIDATE_TAG}"
+          push_if_missing arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}" "${CANDIDATE_TAG}"
+          push_if_missing arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}" "${CANDIDATE_TAG}"
+          push_if_missing arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
+          push_if_missing arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
+          push_if_missing arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
 
   publish-release-images:
     name: Publish Main Release Images
@@ -355,12 +363,23 @@ jobs:
 
       - name: Push immutable release SHA tags
         run: |
-          docker tag arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker tag arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker tag arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker push "${{ vars.BACKEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker push "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}:${SHA_TAG}"
-          docker push "${{ vars.ADMIN_ECR_REPOSITORY_URL }}:${SHA_TAG}"
+          push_if_missing() {
+            local image_name="$1"
+            local repository_url="$2"
+            local tag="$3"
+            local repository_name="${repository_url##*/}"
+
+            docker tag "${image_name}" "${repository_url}:${tag}"
+            if aws ecr describe-images --repository-name "${repository_name}" --image-ids imageTag="${tag}" >/dev/null 2>&1; then
+              echo "ECR tag already exists, skipping push: ${repository_name}:${tag}"
+              return 0
+            fi
+            docker push "${repository_url}:${tag}"
+          }
+
+          push_if_missing arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
+          push_if_missing arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
+          push_if_missing arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
 
   deploy-production:
     name: Deploy Production ECS Services
