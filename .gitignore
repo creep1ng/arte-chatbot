@@ -148,6 +148,8 @@ cloudflare_tunnel_token.env
 *.tfstate.*
 *.tfvars
 *.tfvars.json
+tfplan
+*.tfplan
 crash.log
 crash.*.log
 .venv
