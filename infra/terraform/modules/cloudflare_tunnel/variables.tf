@@ -51,7 +51,7 @@ variable "central_connector_mode" {
 }
 
 variable "tags" {
-  description = "Cloudflare DNS record tags."
+  description = "Reserved for future Cloudflare metadata. DNS record tags are intentionally not applied because some zones have a tag quota of zero."
   type        = list(string)
   default     = []
 }

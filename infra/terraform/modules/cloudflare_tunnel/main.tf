@@ -42,5 +42,4 @@ resource "cloudflare_dns_record" "hostname" {
   content = "${cloudflare_zero_trust_tunnel_cloudflared.this.id}.cfargotunnel.com"
   proxied = true
   ttl     = 1
-  tags    = var.tags
 }
