@@ -16,7 +16,7 @@ This project deploys backend, frontend, and admin containers to AWS ECS Fargate 
 |------|----------------|
 | AWS | Account permissions for ECR, ECS/Fargate, IAM pass role, CloudWatch Logs, S3, SSM, Secrets Manager, and Terraform state access. |
 | Cloudflare | Account id, zone id for `artesolutions.com.co`, and API token capable of managing tunnels/DNS. |
-| GitHub Actions secrets | `AWS_ROLE_ARN`, `OPENAI_API_KEY`, `CHAT_API_KEY`, `AWS_BUCKET_NAME`. |
+| GitHub Actions secrets | `AWS_CI_ROLE_ARN`, `AWS_DEPLOY_ROLE_ARN`, `OPENAI_API_KEY`, `CHAT_API_KEY`, `AWS_BUCKET_NAME`. |
 | GitHub Actions variables | `AWS_REGION`, `BACKEND_ECR_REPOSITORY_URL`, `FRONTEND_ECR_REPOSITORY_URL`, `ADMIN_ECR_REPOSITORY_URL`. |
 | Terraform prod vars | VPC/subnets, Cloudflare ids/secrets, runtime secret ARNs, and `DOMAIN_NAME=artesolutions.com.co`. |
 | Local `.env` | Local-only OpenAI/chat keys and optional AWS default credential-chain settings. |
@@ -29,7 +29,7 @@ This project deploys backend, frontend, and admin containers to AWS ECS Fargate 
 | Health | Backend container must answer `/health`. |
 | Evaluation | The evaluation harness must pass before any image push. |
 | ECR publish | Immutable `sha-${GITHUB_SHA}` tags are pushed. PRs also get `pr-<number>-sha-${GITHUB_SHA}` candidate tags. |
-| Deploy | `deploy-production` runs only for `push` on `refs/heads/main` and assumes `AWS_ROLE_ARN` through GitHub OIDC. |
+| Deploy | `deploy-production` runs only for `push` on `refs/heads/main` and assumes `AWS_DEPLOY_ROLE_ARN` through GitHub OIDC. |
 
 Production Terraform root: `infra/terraform/envs/prod/`.
 
