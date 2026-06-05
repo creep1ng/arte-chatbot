@@ -170,6 +170,29 @@ def test_put_config_hot_reload(
     assert settings.conversation_logging_enabled is True
 
 
+def test_put_config_enables_runtime_conversation_logger(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Conversation logger is created lazily after Config enables logging."""
+    import backend.main as main
+
+    monkeypatch.setenv("CONVERSATION_LOGGING_ENABLED", "false")
+    settings.reload()
+    main.conversation_logger = None
+
+    response = client.put(
+        "/admin/config",
+        headers={"X-Admin-API-Key": "test-admin-key"},
+        json={"conversation_logging_enabled": True},
+    )
+
+    assert response.status_code == 200
+    logger = main._get_conversation_logger()
+    assert logger is not None
+    assert logger._prefix == settings.conversation_log_prefix
+
+
 def test_put_config_ignores_redacted_admin_key(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

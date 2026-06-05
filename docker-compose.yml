@@ -15,6 +15,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORT=8000
+      # Local Docker runs include the admin Logs screen, so persist chat turns
+      # unless explicitly disabled in the shell/.env with CONVERSATION_LOGGING_ENABLED=false.
+      - CONVERSATION_LOGGING_ENABLED=${CONVERSATION_LOGGING_ENABLED:-true}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

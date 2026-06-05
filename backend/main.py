@@ -229,6 +229,31 @@ if settings.conversation_logging_enabled:
     )
 
 
+def _get_conversation_logger() -> Optional[ConversationLogger]:
+    """Return a logger that follows runtime config changes.
+
+    Admin Config can toggle conversation logging without restarting the API.
+    Keep the module-level variable for test patching/backward compatibility, but
+    create or clear the concrete logger lazily based on the current settings.
+    """
+    global conversation_logger
+    if conversation_logger is not None and not isinstance(
+        conversation_logger,
+        ConversationLogger,
+    ):
+        return conversation_logger
+    if not settings.conversation_logging_enabled:
+        conversation_logger = None
+        return None
+    if conversation_logger is None:
+        conversation_logger = ConversationLogger(
+            s3_client=s3_client,
+            bucket=settings.aws_bucket_name,
+            prefix=settings.conversation_log_prefix,
+        )
+    return conversation_logger
+
+
 def get_llm_client() -> LLMClient:
     """Dependency that provides a LLMClient instance."""
     return llm_client
@@ -273,7 +298,8 @@ def _fire_conversation_log(
     user_profile: Optional[str] = None,
 ) -> None:
     """Fire-and-forget conversation log. Never blocks or raises."""
-    if conversation_logger is None:
+    logger_instance = _get_conversation_logger()
+    if logger_instance is None:
         return
     turn_number = len(session_manager.get_history(session_id))
     entry = ConversationLogEntry(
@@ -293,7 +319,7 @@ def _fire_conversation_log(
         git_commit_hash=settings.git_commit_hash,
         user_profile=user_profile,
     )
-    asyncio.create_task(conversation_logger.log_turn(entry))
+    asyncio.create_task(logger_instance.log_turn(entry))
 
 
 class ChatRequest(BaseModel):

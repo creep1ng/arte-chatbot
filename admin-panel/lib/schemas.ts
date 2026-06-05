@@ -34,7 +34,16 @@ export const CatalogProductSchema = z.object({
   descripcion: z.string().max(2000).optional(),
   ruta_s3: z
     .string()
-    .regex(/^[a-zA-Z0-9_\-/]+\.[a-zA-Z0-9]+$/, "Ruta S3 inválida"),
+    .min(1, "Ruta S3 requerida")
+    .refine(
+      (value) =>
+        !value.startsWith("/") &&
+        !value.includes("//") &&
+        !value.split("/").includes("..") &&
+        !/[\u0000-\u001F\u007F]/.test(value) &&
+        /^raw\/.+\.[^/.]+$/.test(value),
+      "Ruta S3 inválida",
+    ),
   variantes: z.array(ProductVariantSchema).default([]),
   parametros_comunes: z.record(z.string(), z.unknown()).default({}),
 });
