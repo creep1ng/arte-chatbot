@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="${project_dir}"
+IMAGE_TAG="$${1:-}"
+CURRENT_TAG_FILE="$${PROJECT_DIR}/current-image-tag"
+PREVIOUS_TAG_FILE="$${PROJECT_DIR}/previous-image-tag"
+RUNTIME_ENV_FILE="$${PROJECT_DIR}/runtime.env"
+
+if [[ -z "$IMAGE_TAG" || ! "$IMAGE_TAG" == sha-* ]]; then
+  echo "usage: deploy.sh <sha-tag>" >&2
+  exit 64
+fi
+
+PREVIOUS_TAG=""
+if [[ -f "$CURRENT_TAG_FILE" ]]; then
+  PREVIOUS_TAG="$(cat "$CURRENT_TAG_FILE")"
+  printf '%s\n' "$PREVIOUS_TAG" > "$PREVIOUS_TAG_FILE"
+fi
+
+aws ecr get-login-password --region "${aws_region}" \
+  | docker login --username AWS --password-stdin "$(printf '%s' '${backend_image_uri}' | cut -d/ -f1)"
+
+resolve_secret() {
+  local secret_arn="$1"
+  if [[ "$secret_arn" == *":parameter/"* ]]; then
+    aws ssm get-parameter --with-decryption --name "$secret_arn" --query 'Parameter.Value' --output text --region "${aws_region}"
+    return
+  fi
+  aws secretsmanager get-secret-value --secret-id "$secret_arn" --query 'SecretString' --output text --region "${aws_region}"
+}
+
+: > "$RUNTIME_ENV_FILE"
+%{ for name, arn in backend_runtime_secret_arns ~}
+printf '%s=%q\n' '${name}' "$(resolve_secret '${arn}')" >> "$RUNTIME_ENV_FILE"
+%{ endfor ~}
+printf '%s=%q\n' 'CLOUDFLARE_TUNNEL_TOKEN' "$(resolve_secret '${cloudflare_tunnel_token_secret_arn}')" >> "$RUNTIME_ENV_FILE"
+chmod 0600 "$RUNTIME_ENV_FILE"
+
+docker compose --project-directory "$PROJECT_DIR" pull
+
+sed -i "s/:$${PREVIOUS_TAG:-bootstrap}/:$${IMAGE_TAG}/g" "$${PROJECT_DIR}/docker-compose.yml"
+printf '%s\n' "$IMAGE_TAG" > "$CURRENT_TAG_FILE"
+
+docker compose --project-directory "$PROJECT_DIR" up -d --remove-orphans
+curl -fsS --retry 12 --retry-delay 5 http://127.0.0.1:8000/health >/dev/null

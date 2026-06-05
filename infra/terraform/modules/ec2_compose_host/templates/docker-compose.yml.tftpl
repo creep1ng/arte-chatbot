@@ -1,0 +1,57 @@
+services:
+  backend:
+    image: "${backend_image_uri}:${initial_image_tag}"
+    restart: unless-stopped
+    env_file:
+      - ./runtime.env
+    environment:
+%{ for key, value in backend_environment ~}
+      ${key}: "${value}"
+%{ endfor ~}
+%{ for secret_name in backend_runtime_secret_names ~}
+      ${secret_name}: "$${${secret_name}}"
+%{ endfor ~}
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    image: "${frontend_image_uri}:${initial_image_tag}"
+    restart: unless-stopped
+    environment:
+      API_URL: "${public_api_url}"
+    expose:
+      - "3000"
+    depends_on:
+      - backend
+
+  admin:
+    image: "${admin_image_uri}:${initial_image_tag}"
+    restart: unless-stopped
+    environment:
+      API_URL: "${public_api_url}"
+    expose:
+      - "3000"
+    depends_on:
+      - backend
+
+  cloudflared:
+    image: "${cloudflared_image}"
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file:
+      - ./runtime.env
+    environment:
+      TUNNEL_TOKEN: "$${${cloudflare_tunnel_token_secret_name}}"
+      BACKEND_ORIGIN_URL: "http://backend:8000"
+      FRONTEND_ORIGIN_URL: "http://frontend:3000"
+      ADMIN_ORIGIN_URL: "http://admin:3000"
+      FALLBACK_SERVICE: "http_status:404"
+    depends_on:
+      - backend
+      - frontend
+      - admin
