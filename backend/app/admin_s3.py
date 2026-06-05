@@ -5,7 +5,6 @@ the chatbot knowledge-base bucket without exposing AWS credentials to the
 browser.
 """
 
-import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -33,7 +32,6 @@ s3_client = S3Client()
 ALLOWED_READ_PREFIXES = ("", "raw/", "guides/", "index/")
 ALLOWED_WRITE_PREFIXES = ("raw/", "guides/", "index/")
 ALLOWED_DOWNLOAD_PREFIXES = ("raw/",)
-KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_\-/.]+$")
 PRESIGNED_DOWNLOAD_EXPIRES_SECONDS = 300
 
 
@@ -47,7 +45,16 @@ def _validate_s3_key(key: str, allowed_prefixes: tuple[str, ...]) -> None:
     Raises:
         HTTPException: If the key is unsafe or outside allowed prefixes.
     """
-    if key.startswith("/") or ".." in key or not KEY_PATTERN.match(key):
+    # S3 keys commonly contain spaces, parentheses, plus signs and accented
+    # product names. Validate path safety and allowed prefixes instead of using
+    # an ASCII-only regex that rejects valid S3 object names.
+    if (
+        not key
+        or key.startswith("/")
+        or "//" in key
+        or any(part == ".." for part in key.split("/"))
+        or any(ord(char) < 32 or ord(char) == 127 for char in key)
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid S3 key",

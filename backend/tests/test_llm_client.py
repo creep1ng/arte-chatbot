@@ -5,8 +5,11 @@ Tests the LLM client for OpenAI Responses API integration with tool calling supp
 """
 
 import os
-import pytest
 from unittest.mock import patch, MagicMock
+
+import pytest
+
+from backend.app.config import settings
 from backend.app.llm_client import (
     LLMClient,
     LLMServiceError,
@@ -34,8 +37,21 @@ class TestLLMClientInitialization:
 
     def test_llm_client_default_model(self) -> None:
         """Test LLMClient uses default model."""
+        settings.reset()
         client = LLMClient()
-        assert client.model == "gpt-5.4-nano"
+        assert client.model == settings.llm_model
+
+    def test_llm_client_default_model_follows_settings_reload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default LLMClient model follows runtime settings reloads."""
+        client = LLMClient()
+        monkeypatch.setenv("LLM_MODEL", "gpt-runtime")
+        settings.reload()
+
+        assert client.model == "gpt-runtime"
+
+        settings.reset()
 
     def test_llm_client_custom_model(self) -> None:
         """Test LLMClient accepts custom model."""

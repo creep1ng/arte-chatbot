@@ -99,6 +99,30 @@ def test_presigned_upload_success(client: TestClient) -> None:
     assert data["key"] == "raw/paneles/a.pdf"
 
 
+def test_presigned_upload_accepts_real_s3_product_key(client: TestClient) -> None:
+    """POST /admin/s3/presigned-upload accepts valid S3 keys with spaces."""
+    key = "raw/paneles/Jinko Tiger Pro 460W (Ficha Técnica).pdf"
+    with patch("backend.app.admin_s3.s3_client") as mock_s3:
+        mock_s3.head_object = AsyncMock(
+            side_effect=S3ObjectNotFoundError("not found")
+        )
+        mock_s3.generate_presigned_post = AsyncMock(
+            return_value={
+                "url": "https://bucket.s3.amazonaws.com/",
+                "fields": {"key": key},
+            }
+        )
+
+        response = client.post(
+            "/admin/s3/presigned-upload",
+            headers={"X-Admin-API-Key": "test-admin-key"},
+            json={"key": key, "content_type": "application/pdf"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["key"] == key
+
+
 def test_presigned_upload_conflict(client: TestClient) -> None:
     """POST /admin/s3/presigned-upload returns 409 when object exists."""
     with patch("backend.app.admin_s3.s3_client") as mock_s3:
