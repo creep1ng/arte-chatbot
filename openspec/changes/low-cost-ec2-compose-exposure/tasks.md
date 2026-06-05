@@ -52,7 +52,7 @@ Chain strategy: feature-branch-chain
 
 ## Phase 4: Verification and Setup Evidence
 
-- [ ] 4.1 Run `terraform -chdir=infra/terraform/envs/prod fmt -recursive` and `terraform -chdir=infra/terraform/envs/prod validate`.
-- [ ] 4.2 Verify plan evidence: Ubuntu LTS AMI data source selected by default, override works, no fixed AMI ID required.
-- [ ] 4.3 Verify hostname evidence: no repo/IaC defaults for service hostnames; Cloudflare DNS may become public.
-- [ ] 4.4 Verify runtime/deploy evidence: env map, SSM instance, `docker compose ps`, Cloudflare health, rollback to Fargate.
+- [x] 4.1 Run `terraform -chdir=infra/terraform/envs/prod fmt -recursive` and `terraform -chdir=infra/terraform/envs/prod validate`.
+- [x] 4.2 Verify plan evidence: Ubuntu LTS AMI data source selected by default, override works, no fixed AMI ID required.
+- [x] 4.3 Verify hostname evidence: no repo/IaC defaults for service hostnames; Cloudflare DNS may become public.
+- [x] 4.4 Verify runtime/deploy evidence: env map, SSM instance, `docker compose ps`, Cloudflare health, rollback to Fargate.

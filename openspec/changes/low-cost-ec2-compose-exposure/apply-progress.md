@@ -5,8 +5,8 @@
 - Change: `low-cost-ec2-compose-exposure`
 - Delivery mode: chained PR slice
 - Chain strategy: `feature-branch-chain`
-- Current work unit: Unit 3 — CI deployment flow
-- PR boundary: PR #3 targets the Unit 2 branch; this slice updates GitHub Actions/static deploy checks so `main` deploys the EC2 Compose host through SSM after CI/health/evaluation gates. Phase 4 live production verification remains out of scope.
+- Current work unit: Unit 4 — verification and setup evidence
+- PR boundary: final child after Unit 3; this slice adds Phase 4 local verification evidence and static checks only. It does not commit, push, open PRs, or execute live production AWS/Cloudflare changes.
 - Mode: Strict TDD
 
 ## Completed Tasks
@@ -28,6 +28,10 @@
 - [x] 3.2 Pass `TF_VAR_backend_hostname`, `TF_VAR_frontend_hostname`, `TF_VAR_admin_hostname` from GitHub Secrets/equivalent; no workflow hardcoding.
 - [x] 3.3 Pass `TF_VAR_backend_runtime_environment_variables: ${{ vars.PROD_BACKEND_RUNTIME_ENV_JSON || '{}' }}` and keep secrets in ARNs/Secrets Manager/SSM.
 - [x] 3.4 Keep SHA-tagged ECR promotion and invoke `/opt/arte-chatbot/deploy.sh sha-${{ github.sha }}` through SSM; remove ECS deploy paths.
+- [x] 4.1 Run `terraform -chdir=infra/terraform/envs/prod fmt -recursive` and `terraform -chdir=infra/terraform/envs/prod validate`.
+- [x] 4.2 Verify plan evidence: Ubuntu LTS AMI data source selected by default, override works, no fixed AMI ID required.
+- [x] 4.3 Verify hostname evidence: no repo/IaC defaults for service hostnames; Cloudflare DNS may become public.
+- [x] 4.4 Verify runtime/deploy evidence: env map, SSM instance, `docker compose ps`, Cloudflare health, rollback to Fargate.
 
 ## TDD Cycle Evidence
 
@@ -50,6 +54,10 @@
 | 3.2 | `scripts/tests/test_workflow_deploy_checks.py` | Static/unit | ✅ Same safety net as 3.1 | ✅ Hostname input assertions failed until workflow used `secrets.PROD_BACKEND_HOSTNAME`, `secrets.PROD_FRONTEND_HOSTNAME`, and `secrets.PROD_ADMIN_HOSTNAME` | ✅ Workflow checks passed after adding sensitive hostname env pass-through and hostname masking | ✅ Covered all three service hostname inputs plus absence of hardcoded hostname literals in deploy job | ✅ Relevant tests still passed |
 | 3.3 | `scripts/tests/test_workflow_deploy_checks.py` | Static/unit | ✅ Same safety net as 3.1 | ✅ Runtime-env assertion failed until workflow passed `${{ vars.PROD_BACKEND_RUNTIME_ENV_JSON || '{}' }}` | ✅ Workflow checks passed after adding `TF_VAR_backend_runtime_environment_variables` and preserving `TF_VAR_backend_runtime_secret_arns` | ✅ Covered variable-provided JSON, `{}` fallback, and secret ARN separation | ✅ Relevant tests still passed |
 | 3.4 | `scripts/tests/test_workflow_deploy_checks.py` | Static/unit | ✅ Same safety net as 3.1 | ✅ SSM deploy/ECS-removal assertions failed against the old Terraform-only ECS-named deploy job | ✅ Workflow checks passed after preserving SHA ECR tags, applying `initial_image_tag`, reading `ec2_compose_host` output, invoking `/opt/arte-chatbot/deploy.sh ${SHA_TAG}` through SSM, and adding Cloudflare backend health check | ✅ Covered SHA release tags, SSM `send-command`/wait/status, removal of ECS deploy wording, and post-deploy health through backend hostname | ✅ `py_compile` passed for modified Python checks; relevant tests still passed |
+| 4.1 | `scripts/tests/test_phase4_verification_checks.py` plus Terraform CLI | Static/local | ✅ `uv run pytest scripts/tests/test_workflow_deploy_checks.py scripts/tests/test_prod_terraform_wiring_checks.py scripts/tests/test_ec2_compose_module_checks.py scripts/tests/test_terraform_foundation.py scripts/tests/test_cd_and_staging_guards.py` → `23 passed` before edits | ✅ New Phase 4 test first failed with `ModuleNotFoundError: No module named 'phase4_verification_checks'` | ✅ `terraform -chdir=infra/terraform/envs/prod fmt -recursive` and `terraform -chdir=infra/terraform/envs/prod validate` completed successfully | ✅ Local validation confirms formatting and Terraform syntax without touching live state | ✅ `uv run python -m py_compile scripts/phase4_verification_checks.py scripts/tests/test_phase4_verification_checks.py` passed |
+| 4.2 | `scripts/tests/test_phase4_verification_checks.py` | Static/local | ✅ Same safety net as 4.1 | ✅ Phase 4 test rejected missing AMI/hostname evidence before apply-progress was updated | ✅ Static evidence confirms `data.aws_ami.ubuntu_lts` defaults to latest Canonical Ubuntu LTS and `ami_id_override` remains optional with no fixed AMI default | ✅ Covered default data-source path and emergency override behavior without requiring cloud credentials | ✅ Phase 4 checks included in accumulated pytest run |
+| 4.3 | `scripts/tests/test_phase4_verification_checks.py` | Static/local | ✅ Same safety net as 4.1 | ✅ Phase 4 test rejected missing DNS visibility/evidence wording before apply-progress was updated | ✅ Static evidence confirms backend/frontend/admin hostnames are sensitive variables without defaults and route via `var.*_hostname`; DNS records may become public by Cloudflare design | ✅ Covered source/default non-exposure while documenting that DNS visibility is not secrecy | ✅ Phase 4 checks included in accumulated pytest run |
+| 4.4 | `scripts/tests/test_phase4_verification_checks.py` | Static/local plus documented live limitation | ✅ Same safety net as 4.1 | ✅ Phase 4 test rejected missing live AWS/Cloudflare limitation wording before apply-progress was updated | ✅ Static evidence confirms runtime env map, secret ARN separation, SSM deploy workflow, local Compose health check, and previous-tag rollback metadata | ✅ Live-only checks are explicitly bounded: SSM Run Command, `docker compose ps`, Cloudflare public health, and Fargate rollback execution require production credentials/environment | ✅ Phase 4 checks included in accumulated pytest run |
 
 ## Validation Results
 
@@ -66,6 +74,13 @@
 | `uv run pytest scripts/tests/test_workflow_deploy_checks.py scripts/tests/test_cd_and_staging_guards.py scripts/tests/test_prod_terraform_wiring_checks.py` | ✅ Pass | 15 relevant static/unit tests passed after Unit 3 implementation. |
 | `uv run python -m py_compile scripts/workflow_deploy_checks.py scripts/deployment_guard_checks.py scripts/tests/test_workflow_deploy_checks.py` | ✅ Pass | Modified Python static checks compile. |
 | `uv run python - <<'PY' ... import yaml ...` | ⚠️ Not run | PyYAML is not installed in the project environment, so a YAML parser check could not run without adding a dependency. |
+| `uv run pytest scripts/tests/test_workflow_deploy_checks.py scripts/tests/test_prod_terraform_wiring_checks.py scripts/tests/test_ec2_compose_module_checks.py scripts/tests/test_terraform_foundation.py scripts/tests/test_cd_and_staging_guards.py` | ✅ Pass | Phase 4 safety net before edits: 23 accumulated static/unit tests passed. |
+| `uv run pytest scripts/tests/test_phase4_verification_checks.py` | ✅ RED then Pass | RED first failed with missing checker module, then with missing apply-progress live limitation/evidence; GREEN completed with 2 tests passed. |
+| `terraform -chdir=infra/terraform/envs/prod fmt -recursive` | ✅ Pass | Production Terraform formatting completed with no output. |
+| `terraform -chdir=infra/terraform/envs/prod validate` | ✅ Pass | Production Terraform configuration is valid using the existing initialized working directory. |
+| `uv run python -m py_compile scripts/phase4_verification_checks.py scripts/tests/test_phase4_verification_checks.py` | ✅ Pass | New Phase 4 checker and test compile. |
+| `uv run pytest scripts/tests/test_phase4_verification_checks.py scripts/tests/test_workflow_deploy_checks.py scripts/tests/test_prod_terraform_wiring_checks.py scripts/tests/test_ec2_compose_module_checks.py scripts/tests/test_terraform_foundation.py scripts/tests/test_cd_and_staging_guards.py` | ✅ Pass | All accumulated local static/unit checks passed: 25 tests. |
+| `terraform plan` / live AWS + Cloudflare verification | ⚠️ Not run | terraform plan was not run because live AWS/Cloudflare credentials and production secrets are not available in this workspace. SSM Run Command, `docker compose ps`, Cloudflare URL health, and Fargate rollback execution require the live production environment. |
 
 ## Files Changed
 
@@ -96,14 +111,20 @@
 | `scripts/deployment_guard_checks.py` | Modified | Updated existing CD guard checks from obsolete private-subnet/per-service tunnel inputs to EC2 Compose production inputs. |
 | `openspec/changes/low-cost-ec2-compose-exposure/tasks.md` | Updated | Marked Phase 3 tasks complete only. |
 | `openspec/changes/low-cost-ec2-compose-exposure/apply-progress.md` | Updated | Recorded cumulative Unit 1 + Unit 2 + Unit 3 progress and TDD cycle evidence. |
+| `scripts/tests/test_phase4_verification_checks.py` | Created | Added strict-TDD static tests for Phase 4 verification/setup evidence. |
+| `scripts/phase4_verification_checks.py` | Created | Added repository-only validation for AMI, hostname, runtime/deploy, rollback metadata, and live-validation limitation evidence. |
+| `openspec/changes/low-cost-ec2-compose-exposure/tasks.md` | Updated | Marked Phase 4 tasks complete. |
+| `openspec/changes/low-cost-ec2-compose-exposure/apply-progress.md` | Updated | Merged cumulative Unit 1 + Unit 2 + Unit 3 + Phase 4 progress and TDD evidence. |
 
 ## Deviations and Limitations
 
-- No deviation from the selected Unit 3 boundary: live Terraform apply, SSM command execution, and Cloudflare URL evidence remain Phase 4 because credentials/sensitive deploy inputs are intentionally not used in this slice.
+- No deviation from the selected Phase 4 boundary: local/static verification evidence was added without live production mutation.
 - Static checks validate the workflow source only. They cannot prove GitHub expression evaluation or AWS SSM execution without running the workflow on `main` with configured secrets/variables.
 - A YAML parser check could not run because PyYAML and Ruby/actionlint are not available in the workspace; workflow validation is covered by repository static checks instead.
 - Review-budget risk remains controlled by the feature-branch-chain boundary: this slice touches only GitHub Actions deploy flow and related static checks.
+- terraform plan was not run because live AWS/Cloudflare credentials and production secrets are not available in this workspace.
+- SSM Run Command, `docker compose ps`, Cloudflare URL health, and Fargate rollback execution require the live production environment.
 
 ## Remaining Tasks
 
-- [ ] Phase 4 verification and setup evidence tasks.
+- None for this OpenSpec apply slice. Live production execution remains an operator/verify activity once credentials, GitHub Secrets/Variables, AWS, and Cloudflare are available.
