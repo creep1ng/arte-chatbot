@@ -1,0 +1,40 @@
+change: fargate-cloudflare-cd-iac
+artifact_store: openspec
+execution_mode: interactive
+delivery_strategy: ask-on-risk
+status: archived
+phases:
+  explore:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/exploration.md
+  proposal:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/proposal.md
+  spec:
+    status: complete
+    artifacts:
+      - openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/specs/fargate-cloudflare-ingress/spec.md
+      - openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/specs/ecs-runtime-configuration/spec.md
+      - openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/specs/ecr-cd-promotion/spec.md
+      - openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/specs/local-staging-isolation/spec.md
+  design:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/design.md
+  tasks:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/tasks.md
+    review_workload:
+      estimated_changed_lines: 1200-1800
+      budget_risk: high
+      chained_prs_recommended: true
+      decision_needed_before_apply: true
+  apply:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/apply-progress.md
+  verify:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/verify-report.md
+  archive:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-05-fargate-cloudflare-cd-iac/archive-report.md
+updated_at: "2026-06-05"
