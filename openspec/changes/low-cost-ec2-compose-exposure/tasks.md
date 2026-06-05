@@ -45,10 +45,10 @@ Chain strategy: feature-branch-chain
 
 ## Phase 3: CI Deployment Flow
 
-- [ ] 3.1 Add workflow checks for `.github/workflows/ci.yml`: PRs never deploy; `main` deploys after CI, health, evaluation gates.
-- [ ] 3.2 Pass `TF_VAR_backend_hostname`, `TF_VAR_frontend_hostname`, `TF_VAR_admin_hostname` from GitHub Secrets/equivalent; no workflow hardcoding.
-- [ ] 3.3 Pass `TF_VAR_backend_runtime_environment_variables: ${{ vars.PROD_BACKEND_RUNTIME_ENV_JSON || '{}' }}` and keep secrets in ARNs/Secrets Manager/SSM.
-- [ ] 3.4 Keep SHA-tagged ECR promotion and invoke `/opt/arte-chatbot/deploy.sh sha-${{ github.sha }}` through SSM; remove ECS deploy paths.
+- [x] 3.1 Add workflow checks for `.github/workflows/ci.yml`: PRs never deploy; `main` deploys after CI, health, evaluation gates.
+- [x] 3.2 Pass `TF_VAR_backend_hostname`, `TF_VAR_frontend_hostname`, `TF_VAR_admin_hostname` from GitHub Secrets/equivalent; no workflow hardcoding.
+- [x] 3.3 Pass `TF_VAR_backend_runtime_environment_variables: ${{ vars.PROD_BACKEND_RUNTIME_ENV_JSON || '{}' }}` and keep secrets in ARNs/Secrets Manager/SSM.
+- [x] 3.4 Keep SHA-tagged ECR promotion and invoke `/opt/arte-chatbot/deploy.sh sha-${{ github.sha }}` through SSM; remove ECS deploy paths.
 
 ## Phase 4: Verification and Setup Evidence
 

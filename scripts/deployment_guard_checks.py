@@ -60,7 +60,13 @@ def _check_workflow(workflow: str) -> list[str]:
         findings.append("production deploy job must configure AWS credentials through OIDC")
     if not deploy_job or not _contains_all(
         deploy_job,
-        ["CLOUDFLARE_API_TOKEN", "TF_VAR_vpc_id", "TF_VAR_private_subnet_ids", "TF_VAR_backend_runtime_secret_arns"],
+        [
+            "CLOUDFLARE_API_TOKEN",
+            "TF_VAR_vpc_id",
+            "TF_VAR_public_subnet_id",
+            "TF_VAR_edge_tunnel_secret",
+            "TF_VAR_backend_runtime_secret_arns",
+        ],
     ):
         findings.append("production deploy job must provide Terraform AWS and Cloudflare inputs")
 

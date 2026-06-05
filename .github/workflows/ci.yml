@@ -382,7 +382,7 @@ jobs:
           push_if_missing arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
 
   deploy-production:
-    name: Deploy Production ECS Services
+    name: Deploy Production EC2 Compose
     runs-on: ubuntu-latest
     needs: publish-release-images
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -395,13 +395,15 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-2' }}
       TF_VAR_vpc_id: ${{ vars.PROD_VPC_ID }}
-      TF_VAR_private_subnet_ids: ${{ vars.PROD_PRIVATE_SUBNET_IDS_JSON }}
-      TF_VAR_assign_public_ip: ${{ vars.PROD_ASSIGN_PUBLIC_IP || 'false' }}
+      TF_VAR_public_subnet_id: ${{ vars.PROD_PUBLIC_SUBNET_ID }}
+      TF_VAR_ec2_compose_instance_type: ${{ vars.PROD_EC2_COMPOSE_INSTANCE_TYPE || 't3.small' }}
       TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
-      TF_VAR_backend_tunnel_secret: ${{ secrets.PROD_BACKEND_TUNNEL_SECRET }}
-      TF_VAR_frontend_tunnel_secret: ${{ secrets.PROD_FRONTEND_TUNNEL_SECRET }}
-      TF_VAR_admin_tunnel_secret: ${{ secrets.PROD_ADMIN_TUNNEL_SECRET }}
+      TF_VAR_backend_hostname: ${{ secrets.PROD_BACKEND_HOSTNAME }}
+      TF_VAR_frontend_hostname: ${{ secrets.PROD_FRONTEND_HOSTNAME }}
+      TF_VAR_admin_hostname: ${{ secrets.PROD_ADMIN_HOSTNAME }}
+      TF_VAR_edge_tunnel_secret: ${{ secrets.PROD_EDGE_TUNNEL_SECRET }}
+      TF_VAR_backend_runtime_environment_variables: ${{ vars.PROD_BACKEND_RUNTIME_ENV_JSON || '{}' }}
       TF_VAR_backend_runtime_secret_arns: ${{ secrets.PROD_BACKEND_RUNTIME_SECRET_ARNS_JSON }}
       TF_VAR_aws_bucket_name: ${{ secrets.AWS_BUCKET_NAME }}
       TF_VAR_github_owner: ${{ github.repository_owner }}
@@ -420,15 +422,57 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Mask externally supplied hostnames
+        run: |
+          echo "::add-mask::${TF_VAR_backend_hostname}"
+          echo "::add-mask::${TF_VAR_frontend_hostname}"
+          echo "::add-mask::${TF_VAR_admin_hostname}"
+
       - name: Terraform init
         run: terraform -chdir=infra/terraform/envs/prod init
 
-      - name: Terraform apply production image tags
+      - name: Terraform apply production EC2 Compose inputs
         run: |
           terraform -chdir=infra/terraform/envs/prod apply -auto-approve \
-            -var="backend_image_tag=${SHA_TAG}" \
-            -var="frontend_image_tag=${SHA_TAG}" \
-            -var="admin_image_tag=${SHA_TAG}"
+            -var="initial_image_tag=${SHA_TAG}"
+
+      - name: Capture EC2 Compose host metadata
+        id: compose-host
+        run: |
+          INSTANCE_ID=$(terraform -chdir=infra/terraform/envs/prod output -json ec2_compose_host | python -c 'import json, sys; print(json.load(sys.stdin)["instance_id"])')
+          echo "instance-id=${INSTANCE_ID}" >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy EC2 Compose stack through SSM
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ steps.compose-host.outputs.instance-id }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy arte-chatbot ${SHA_TAG}" \
+            --parameters commands="/opt/arte-chatbot/deploy.sh ${SHA_TAG}" \
+            --query "Command.CommandId" \
+            --output text)
+
+          aws ssm wait command-executed \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${{ steps.compose-host.outputs.instance-id }}"
+
+          aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${{ steps.compose-host.outputs.instance-id }}" \
+            --query "{Status:Status,ResponseCode:ResponseCode}" \
+            --output table
+
+      - name: Verify backend health through Cloudflare
+        run: |
+          for i in {1..30}; do
+            if curl -fsS "https://${TF_VAR_backend_hostname}/health"; then
+              exit 0
+            fi
+            echo "Attempt $i/30: production backend health is not ready yet"
+            sleep 10
+          done
+          echo "Production backend health check failed"
+          exit 1
 
   cleanup:
     name: Cleanup Containers

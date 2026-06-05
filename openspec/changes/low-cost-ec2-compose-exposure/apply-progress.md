@@ -5,8 +5,8 @@
 - Change: `low-cost-ec2-compose-exposure`
 - Delivery mode: chained PR slice
 - Chain strategy: `feature-branch-chain`
-- Current work unit: Unit 2 — Production Terraform wiring
-- PR boundary: PR #2 targets the Unit 1 branch; this slice wires the reusable EC2 Compose module into `infra/terraform/envs/prod`, replaces production per-service ECS/tunnel wiring with one central tunnel, and updates Terraform-only deploy role permissions. GitHub Actions/SSM deploy workflow remains out of scope for Unit 3.
+- Current work unit: Unit 3 — CI deployment flow
+- PR boundary: PR #3 targets the Unit 2 branch; this slice updates GitHub Actions/static deploy checks so `main` deploys the EC2 Compose host through SSM after CI/health/evaluation gates. Phase 4 live production verification remains out of scope.
 - Mode: Strict TDD
 
 ## Completed Tasks
@@ -24,6 +24,10 @@
 - [x] 2.6 Replace ECS/per-service production tunnels in `infra/terraform/envs/prod/main.tf` with one `edge_tunnel` plus `ec2_compose_host`.
 - [x] 2.7 Update `infra/terraform/envs/prod/{variables.tf,outputs.tf}` for EC2 inputs, one tunnel secret, runtime secret refs, sensitive derived outputs, backend env map default `{}`.
 - [x] 2.8 Update `infra/terraform/modules/github_oidc/*` from ECS/pass-role permissions to scoped SSM Run Command/status reads.
+- [x] 3.1 Add workflow checks for `.github/workflows/ci.yml`: PRs never deploy; `main` deploys after CI, health, evaluation gates.
+- [x] 3.2 Pass `TF_VAR_backend_hostname`, `TF_VAR_frontend_hostname`, `TF_VAR_admin_hostname` from GitHub Secrets/equivalent; no workflow hardcoding.
+- [x] 3.3 Pass `TF_VAR_backend_runtime_environment_variables: ${{ vars.PROD_BACKEND_RUNTIME_ENV_JSON || '{}' }}` and keep secrets in ARNs/Secrets Manager/SSM.
+- [x] 3.4 Keep SHA-tagged ECR promotion and invoke `/opt/arte-chatbot/deploy.sh sha-${{ github.sha }}` through SSM; remove ECS deploy paths.
 
 ## TDD Cycle Evidence
 
@@ -42,6 +46,10 @@
 | 2.6 | `scripts/tests/test_prod_terraform_wiring_checks.py` | Static/unit | ✅ Same safety net as 2.1 | ✅ Tests initially rejected missing one-tunnel/Compose-host production wiring | ✅ Prod root check passed after replacing ECS/per-service tunnel modules with one `edge_tunnel` and `compose_host` | ✅ Covered no per-service production tunnel module names and all three Compose DNS origins | ✅ `terraform validate` passed |
 | 2.7 | `scripts/tests/test_prod_terraform_wiring_checks.py` | Static/unit | ✅ Same safety net as 2.1 | ✅ Tests initially rejected missing EC2 variables/outputs/runtime env map | ✅ Prod variables/outputs checks passed after adding EC2 inputs, one tunnel secret, env map default `{}`, runtime secret refs, and sensitive derived outputs | ✅ Covered host metadata outputs and removal of obsolete ECS service outputs | ✅ `terraform fmt`; relevant tests still passed |
 | 2.8 | `scripts/tests/test_prod_terraform_wiring_checks.py` | Static/unit | ✅ Same safety net as 2.1 | ✅ Tests initially rejected ECS/pass-role deploy permissions | ✅ OIDC checks passed after replacing ECS/pass-role variables with scoped SSM `SendCommand`/status-read permissions | ✅ Covered SSM instance/document ARNs and absence of ECS/pass-role strings | ✅ `terraform validate` passed |
+| 3.1 | `scripts/tests/test_workflow_deploy_checks.py` | Static/unit | ✅ `uv run pytest scripts/tests/test_cd_and_staging_guards.py scripts/tests/test_prod_terraform_wiring_checks.py` → `11 passed` before edits | ✅ New workflow test first failed with `ModuleNotFoundError: No module named 'workflow_deploy_checks'`; after checker stub, workflow gate assertions failed against the old ECS deploy job | ✅ `uv run pytest scripts/tests/test_workflow_deploy_checks.py` → `4 passed` after adding workflow checks and updating deploy job gates | ✅ Covered main-only deploy, dependency on release images after evaluation, and no PR deploy path | ✅ Existing CD guard checker updated for EC2 Compose inputs; relevant tests still passed |
+| 3.2 | `scripts/tests/test_workflow_deploy_checks.py` | Static/unit | ✅ Same safety net as 3.1 | ✅ Hostname input assertions failed until workflow used `secrets.PROD_BACKEND_HOSTNAME`, `secrets.PROD_FRONTEND_HOSTNAME`, and `secrets.PROD_ADMIN_HOSTNAME` | ✅ Workflow checks passed after adding sensitive hostname env pass-through and hostname masking | ✅ Covered all three service hostname inputs plus absence of hardcoded hostname literals in deploy job | ✅ Relevant tests still passed |
+| 3.3 | `scripts/tests/test_workflow_deploy_checks.py` | Static/unit | ✅ Same safety net as 3.1 | ✅ Runtime-env assertion failed until workflow passed `${{ vars.PROD_BACKEND_RUNTIME_ENV_JSON || '{}' }}` | ✅ Workflow checks passed after adding `TF_VAR_backend_runtime_environment_variables` and preserving `TF_VAR_backend_runtime_secret_arns` | ✅ Covered variable-provided JSON, `{}` fallback, and secret ARN separation | ✅ Relevant tests still passed |
+| 3.4 | `scripts/tests/test_workflow_deploy_checks.py` | Static/unit | ✅ Same safety net as 3.1 | ✅ SSM deploy/ECS-removal assertions failed against the old Terraform-only ECS-named deploy job | ✅ Workflow checks passed after preserving SHA ECR tags, applying `initial_image_tag`, reading `ec2_compose_host` output, invoking `/opt/arte-chatbot/deploy.sh ${SHA_TAG}` through SSM, and adding Cloudflare backend health check | ✅ Covered SHA release tags, SSM `send-command`/wait/status, removal of ECS deploy wording, and post-deploy health through backend hostname | ✅ `py_compile` passed for modified Python checks; relevant tests still passed |
 
 ## Validation Results
 
@@ -53,6 +61,11 @@
 | `uv run pytest scripts/tests/test_prod_terraform_wiring_checks.py scripts/tests/test_ec2_compose_module_checks.py scripts/tests/test_terraform_foundation.py` | ✅ Pass | 11 relevant static/unit tests passed after implementation and refactor. |
 | `terraform -chdir=infra/terraform/envs/prod init -backend=false` | ✅ Pass | Providers/modules initialized without touching remote backend. |
 | `terraform -chdir=infra/terraform/envs/prod validate` | ✅ Pass | Production Terraform configuration is valid. |
+| `uv run pytest scripts/tests/test_cd_and_staging_guards.py scripts/tests/test_prod_terraform_wiring_checks.py` | ✅ Pass | Unit 3 safety net before edits: 11 tests passed. |
+| `uv run pytest scripts/tests/test_workflow_deploy_checks.py` | ✅ RED then Pass | RED first failed with missing checker module, then with old workflow findings; GREEN completed with 4 tests passed. |
+| `uv run pytest scripts/tests/test_workflow_deploy_checks.py scripts/tests/test_cd_and_staging_guards.py scripts/tests/test_prod_terraform_wiring_checks.py` | ✅ Pass | 15 relevant static/unit tests passed after Unit 3 implementation. |
+| `uv run python -m py_compile scripts/workflow_deploy_checks.py scripts/deployment_guard_checks.py scripts/tests/test_workflow_deploy_checks.py` | ✅ Pass | Modified Python static checks compile. |
+| `uv run python - <<'PY' ... import yaml ...` | ⚠️ Not run | PyYAML is not installed in the project environment, so a YAML parser check could not run without adding a dependency. |
 
 ## Files Changed
 
@@ -77,14 +90,20 @@
 | `scripts/tests/test_terraform_foundation.py` | Modified | Updated foundation tests to assert central tunnel and external hostname behavior instead of obsolete per-service Fargate sidecars. |
 | `openspec/changes/low-cost-ec2-compose-exposure/tasks.md` | Updated | Marked Phase 2 tasks complete only. |
 | `openspec/changes/low-cost-ec2-compose-exposure/apply-progress.md` | Updated | Recorded cumulative Unit 1 + Unit 2 progress and TDD cycle evidence. |
+| `scripts/tests/test_workflow_deploy_checks.py` | Created | Added strict-TDD static checks for the Unit 3 GitHub Actions deploy workflow contract. |
+| `scripts/workflow_deploy_checks.py` | Created | Added repository-only validation for main-only deploy gates, hostname/runtime env pass-through, SSM deploy, ECS removal, and Cloudflare health check. |
+| `.github/workflows/ci.yml` | Modified | Replaced the production ECS deploy job with EC2 Compose deploy flow: external hostnames, runtime env variable fallback, Terraform `initial_image_tag`, SSM Run Command, and backend Cloudflare health check. |
+| `scripts/deployment_guard_checks.py` | Modified | Updated existing CD guard checks from obsolete private-subnet/per-service tunnel inputs to EC2 Compose production inputs. |
+| `openspec/changes/low-cost-ec2-compose-exposure/tasks.md` | Updated | Marked Phase 3 tasks complete only. |
+| `openspec/changes/low-cost-ec2-compose-exposure/apply-progress.md` | Updated | Recorded cumulative Unit 1 + Unit 2 + Unit 3 progress and TDD cycle evidence. |
 
 ## Deviations and Limitations
 
-- No deviation from the selected Unit 2 boundary: GitHub Actions workflow deploy changes and live EC2/Cloudflare verification remain out of scope for Unit 3/Phase 4.
-- `terraform validate` proves syntax/module wiring only; no `terraform plan/apply` was run because production credentials, sensitive hostname inputs, and tunnel secret values are intentionally not present in the workspace.
-- Review-budget risk remains high because replacing the production root necessarily removes the old ECS/per-service tunnel wiring; this slice is still focused on one autonomous PR boundary.
+- No deviation from the selected Unit 3 boundary: live Terraform apply, SSM command execution, and Cloudflare URL evidence remain Phase 4 because credentials/sensitive deploy inputs are intentionally not used in this slice.
+- Static checks validate the workflow source only. They cannot prove GitHub expression evaluation or AWS SSM execution without running the workflow on `main` with configured secrets/variables.
+- A YAML parser check could not run because PyYAML and Ruby/actionlint are not available in the workspace; workflow validation is covered by repository static checks instead.
+- Review-budget risk remains controlled by the feature-branch-chain boundary: this slice touches only GitHub Actions deploy flow and related static checks.
 
 ## Remaining Tasks
 
-- [ ] Phase 3 CI deployment flow tasks.
 - [ ] Phase 4 verification and setup evidence tasks.
