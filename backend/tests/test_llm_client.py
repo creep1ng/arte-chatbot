@@ -160,9 +160,10 @@ class TestLLMClientWithTools:
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_tools_uses_instructions(
-        self, mock_openai_class: MagicMock
+        self, mock_openai_class: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test get_llm_response_with_tools passes instructions parameter."""
+        monkeypatch.setenv("WHATSAPP_FORMATTER_ENABLED", "false")
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
 
