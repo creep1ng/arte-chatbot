@@ -32,7 +32,8 @@ phases:
     status: complete
     artifact: openspec/changes/fargate-cloudflare-cd-iac/apply-progress.md
   verify:
-    status: pending
+    status: complete
+    artifact: openspec/changes/fargate-cloudflare-cd-iac/verify-report.md
   archive:
     status: pending
 updated_at: "2026-06-02"

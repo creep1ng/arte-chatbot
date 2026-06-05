@@ -1,179 +1,79 @@
 # Verification Report: Fargate Cloudflare CD IaC
 
-**Change**: `fargate-cloudflare-cd-iac`  
-**Mode**: Strict TDD / OpenSpec  
-**Verified commits**: `e0cee28`, `a834307`, `e43a710`  
-**Verdict**: PASS WITH WARNINGS
+## Verdict
 
-The implementation satisfies the OpenSpec requirements through source inspection, focused runtime tests, static IaC/CD guard tests, Terraform formatting, and Terraform validation. No Terraform apply, AWS mutation, or Cloudflare mutation was executed.
+PASS WITH WARNINGS
+
+The implementation satisfies the SDD change requirements and the production CD path has been exercised successfully through GitHub Actions and public Cloudflare endpoints. One operational warning remains: production ECS services currently use `assign_public_ip=true` as the short-term egress fix; the more robust long-term path is NAT or VPC endpoints for AWS dependencies plus Cloudflare egress.
 
 ## Completeness
 
-| Metric | Value |
-|--------|-------|
-| Tasks total | 12 |
-| Tasks complete | 12 |
-| Tasks incomplete | 0 |
-| Specs verified | 4 |
-| Scenario groups verified | 43 |
+| Area | Status | Evidence |
+|---|---:|---|
+| Proposal success criteria | PASS | PR/main gates, ECR publish, Terraform deploy, and public hostnames verified. |
+| Tasks 1.1-4.1 | PASS | All tasks marked complete in `tasks.md`; implementation present in `main`. |
+| Runtime config / default credential chain | PASS | Focused runtime tests passed. |
+| Terraform/IaC foundation | PASS | Guard tests passed; production Terraform apply passed in GitHub Actions. |
+| CD promotion/deploy | PASS | GitHub Actions run `26991613251` passed through deploy-production. |
+| Public production endpoints | PASS | Backend health, app, and admin respond through Cloudflare. |
+| ECS stable via local AWS CLI | WARNING | Local AWS session expired before final CLI stability check; public endpoint checks and successful deploy provide runtime evidence. |
 
-## Build & Tests Execution
-
-### Required test suite
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run pytest backend/tests/test_config.py backend/tests/test_s3_client.py evaluation/harness/tests/test_s3_upload.py evaluation/tests/test_s3_client.py evaluation/tests/test_storage.py scripts/tests/test_terraform_foundation.py scripts/tests/test_cd_and_staging_guards.py
-```
-
-Result: ✅ Passed — 67 collected, 67 passed in 0.23s.
-
-Note: pytest emitted the existing warning from `backend/tests/conftest.py` that `OPENAI_API_KEY` and `CHAT_API_KEY` are missing for tests that import `backend.main`; the focused verification suite does not import `backend.main` and passed.
-
-### Required script ruff check
+## Command and Runtime Evidence
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run ruff check scripts/terraform_foundation_checks.py scripts/deployment_guard_checks.py scripts/tests/test_terraform_foundation.py scripts/tests/test_cd_and_staging_guards.py
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest   backend/tests/test_config.py   backend/tests/test_s3_client.py   evaluation/harness/tests/test_s3_upload.py   evaluation/tests/test_s3_client.py   evaluation/tests/test_storage.py   scripts/tests/test_terraform_foundation.py   scripts/tests/test_cd_and_staging_guards.py
 ```
 
-Result: ✅ Passed — all checks passed.
-
-### Terraform formatting
+Result: `67 passed in 0.55s`.
 
 ```bash
-terraform fmt -check -recursive infra/terraform
+gh run watch 26991613251 --repo creep1ng/arte-chatbot --exit-status
 ```
 
-Result: ✅ Passed.
+Result: success. Jobs passed:
 
-### Terraform validation
+- Lint Code
+- Build Docker Images
+- Test /health Endpoint
+- Run Evaluation Harness
+- Publish Main Release Images
+- Deploy Production ECS Services
 
 ```bash
-terraform -chdir=infra/terraform/envs/prod validate
-terraform -chdir=infra/terraform/envs/local-staging validate
+curl -fsS https://chatbot.artesolutions.com.co/health
 ```
 
-Initial sandbox result: ⚠️ Failed to load provider schemas because Terraform could not instantiate the AWS and Cloudflare provider plugins. Exact error included `Unrecognized remote plugin message` and `Failed to read any lines from plugin's stdout` for:
+Result:
 
-- `.terraform/providers/registry.terraform.io/cloudflare/cloudflare/5.19.1/linux_amd64/terraform-provider-cloudflare_v5.19.1`
-- `.terraform/providers/registry.terraform.io/hashicorp/aws/6.47.0/linux_amd64/terraform-provider-aws_v6.47.0_x5`
-
-Escalated validation result: ✅ Passed for both prod and local-staging — `Success! The configuration is valid.`
-
-### Additional changed-file quality check
+```json
+{"status":"healthy","service":"arte-chatbot-backend","version":"1.0.0"}
+```
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run ruff check backend/app/config.py backend/app/s3_client.py backend/main.py backend/tests/test_config.py backend/tests/test_s3_client.py evaluation/harness/s3_upload.py evaluation/harness/tests/test_s3_upload.py evaluation/s3_client.py evaluation/storage.py evaluation/tests/test_s3_client.py evaluation/tests/test_storage.py scripts/terraform_foundation_checks.py scripts/deployment_guard_checks.py scripts/tests/test_terraform_foundation.py scripts/tests/test_cd_and_staging_guards.py
+curl -fsSIL https://app.artesolutions.com.co
+curl -fsSIL https://admin.artesolutions.com.co
 ```
 
-Result: ⚠️ 30 ruff errors in `backend/main.py` only: existing `E402` import-order debt, `F841 conversation_history`, and duplicate `get_buffer_result` (`F811`). The focused script ruff command required for this change passed.
-
-### Tool availability
-
-- Coverage: ➖ skipped — `pytest_cov` and `coverage` are not installed in the current environment.
-- Type checker: ➖ skipped — `mypy` is not installed in the current environment.
-
-## TDD Compliance
-
-| Check | Result | Details |
-|-------|--------|---------|
-| TDD Evidence reported | ✅ | `apply-progress.md` includes a TDD Cycle Evidence table. |
-| All tasks have verification evidence | ✅ | 12/12 tasks include test/static/docs evidence. |
-| Executable test/static files present | ✅ | Test/check files exist for runtime, S3, Terraform, CD, and staging tasks. Docs task is checklist-validated. |
-| RED confirmed | ✅ | Apply-progress reports pre-implementation failures for each work unit. |
-| GREEN confirmed | ✅ | Required verification tests passed: 67/67. |
-| Triangulation adequate | ✅ | CORS, S3 credential-chain, scoped tunnels, CD gating, and staging guards each cover multiple paths. |
-| Safety net for modified files | ⚠️ | Runtime S3 work had approved baseline failures before PR1; apply-progress records them explicitly. |
-
-**TDD Compliance**: 6/7 checks clean, 1 warning.
-
-## Test Layer Distribution
-
-| Layer | Tests | Files | Tools |
-|-------|-------|-------|-------|
-| Unit/config/static | 67 | 7 | pytest, ruff, static guard scripts |
-| Integration | 0 | 0 | Not used |
-| E2E | 0 | 0 | Not used |
-| **Total** | **67** | **7** | |
-
-## Changed File Coverage
-
-Coverage analysis skipped — no coverage tool detected (`pytest_cov=False`, `coverage=False`).
-
-## Assertion Quality
-
-Scanned these changed/related test files:
-
-- `backend/tests/test_config.py` — 13 tests, no banned assertion patterns.
-- `backend/tests/test_s3_client.py` — 25 tests, no banned assertion patterns.
-- `evaluation/harness/tests/test_s3_upload.py` — 12 tests, no banned assertion patterns.
-- `evaluation/tests/test_s3_client.py` — 2 tests, mock call assertions validate boto3 client kwargs.
-- `evaluation/tests/test_storage.py` — 2 tests, no banned assertion patterns.
-- `scripts/tests/test_terraform_foundation.py` — 5 tests, no banned assertion patterns.
-- `scripts/tests/test_cd_and_staging_guards.py` — 8 tests, no banned assertion patterns.
-
-**Assertion quality**: ✅ All assertions verify concrete behavior or static invariants; no tautologies, ghost loops, smoke-only tests, or empty orphan assertions found.
+Result: both returned HTTP 200.
 
 ## Spec Compliance Matrix
 
-| Spec | Requirement / Scenario group | Evidence | Result |
-|------|------------------------------|----------|--------|
-| `ecs-runtime-configuration` | Task role S3 access and no static deployed AWS keys | `backend/app/s3_client.py`, `evaluation/s3_client.py`, `evaluation/storage.py`, `evaluation/harness/s3_upload.py`; S3 tests passed. | ✅ COMPLIANT |
-| `ecs-runtime-configuration` | Missing S3 permission fails safely without hardcoded fallback | `ClientError`/`NoCredentialsError` handling and no static fallback; S3 tests passed. | ✅ COMPLIANT |
-| `ecs-runtime-configuration` | Secrets/config injected from Secrets Manager/SSM/task config | `ecs_service` and `ssm_secrets` modules; prod/local-staging roots; Terraform validate passed. | ✅ COMPLIANT |
-| `ecs-runtime-configuration` | Production CORS has explicit origins and no wildcard fallback | `Settings._validate_production_cors_origins`; `backend/tests/test_config.py`; prod Terraform `ALLOWED_CORS_ORIGINS`. | ✅ COMPLIANT |
-| `ecs-runtime-configuration` | Local development origins remain supported | `LOCAL_CORS_ORIGINS`; config tests passed. | ✅ COMPLIANT |
-| `ecs-runtime-configuration` | Public runtime URLs are published to backend/frontend/admin | prod and staging Terraform roots set `PUBLIC_*` and `API_URL`; Terraform validate passed. | ✅ COMPLIANT |
-| `fargate-cloudflare-ingress` | Same-task cloudflared sidecars route backend to `localhost:8000` | prod/staging `backend_service` sidecars and static Terraform checks; tests passed. | ✅ COMPLIANT |
-| `fargate-cloudflare-ingress` | Same-task cloudflared sidecars route frontend/admin to `localhost:3000` | prod/staging frontend/admin service modules and static checks; tests passed. | ✅ COMPLIANT |
-| `fargate-cloudflare-ingress` | Scoped tunnel ownership; no mixed unreachable localhost origins | separate backend/frontend/admin tunnel modules plus `central_connector_mode` validation; tests passed. | ✅ COMPLIANT |
-| `fargate-cloudflare-ingress` | Terraform-managed Cloudflare routes/DNS and sensitive tunnel token output | Cloudflare tunnel module, sensitive token output, Secrets Manager storage; Terraform validate passed. | ✅ COMPLIANT |
-| `fargate-cloudflare-ingress` | Fargate logs, security groups, outbound HTTPS, health checks | `ecs_service` module provisions logs, outbound SG, task health checks, task/execution roles. | ✅ COMPLIANT |
-| `ecr-cd-promotion` | CI/evaluation gate before candidate image promotion | `.github/workflows/ci.yml`; `publish-candidate-images` needs `evaluation`; guard tests passed. | ✅ COMPLIANT |
-| `ecr-cd-promotion` | Production deploy only from `main`; PRs do not deploy prod | `deploy-production` gated by push on `refs/heads/main`; guard tests passed. | ✅ COMPLIANT |
-| `ecr-cd-promotion` | Immutable SHA/PR candidate tags and rollback-visible image tags | workflow uses `pr-<number>-sha-<sha>` and `sha-<sha>`; guard tests passed. | ✅ COMPLIANT |
-| `ecr-cd-promotion` | OIDC and least-privilege deployment role | workflow uses `aws-actions/configure-aws-credentials@v4`; `github_oidc` module scopes ECR/ECS/pass-role/secrets. | ✅ COMPLIANT |
-| `local-staging-isolation` | Local-only staging; CI rejection before Terraform | `scripts/deploy-local-staging.sh`; guard tests passed. | ✅ COMPLIANT |
-| `local-staging-isolation` | Explicit ECR tags for backend/frontend/admin | deploy script and Terraform variable validations; guard tests passed. | ✅ COMPLIANT |
-| `local-staging-isolation` | Expiration metadata <= 3 days and cleanup visibility | deploy script date guard; Terraform tags/SSM params; guard tests passed. | ✅ COMPLIANT |
-| `local-staging-isolation` | Isolated local Terraform state, names, params, tags | local backend, `arte-chatbot-local-staging-<id>`, `/local-staging/<id>/...`; guard tests passed. | ✅ COMPLIANT |
-| `local-staging-isolation` | Separate staging tunnel tokens/secrets/params | local-staging tunnel secrets and validation for staging-scoped runtime secret ARNs. | ✅ COMPLIANT |
-| `local-staging-isolation` | Production hostnames/ids/buckets rejected by default | staging id/domain/bucket validations and production hostname guard; guard tests passed. | ✅ COMPLIANT |
-| `local-staging-isolation` | Unique staging Cloudflare hostnames | `staging-chatbot-api-<id>`, `staging-chatbot-<id>`, `staging-chatbot-admin-<id>`; guard tests passed. | ✅ COMPLIANT |
+| Capability / Requirement | Status | Evidence |
+|---|---:|---|
+| `fargate-cloudflare-ingress`: same-task `cloudflared` sidecars route to localhost origins | PASS | Terraform service modules/root define backend `localhost:8000` and UI/admin `localhost:3000`; public endpoints respond. |
+| Scoped tunnel ownership | PASS | Separate backend, frontend, and admin tunnel scopes are defined and deployed. |
+| Terraform-managed Cloudflare routes and non-plaintext tunnel token outputs | PASS | Terraform apply completed; endpoints resolve through Cloudflare; token outputs are sensitive and injected through Secrets Manager. |
+| Fargate network and health configuration | PASS WITH WARNING | Services deploy and public endpoints respond. Short-term egress uses public ENIs; NAT/VPC endpoints should replace this later. |
+| Task role S3/default credential chain | PASS | Runtime/S3 focused tests passed; code omits static credential args when absent. |
+| Secrets/config injection | PASS | ECS task definitions reference Secrets Manager secrets; deploy passed. |
+| Configured CORS origins and runtime URLs | PASS | Config tests passed; Terraform provides public URLs/origins. |
+| CI/evaluation gate before promotion | PASS | Main workflow passed lint, build, health, evaluation before release image publish. |
+| Production deploy only from main | PASS | PR candidate publish was verified earlier; prod deploy job runs only on `main`. |
+| Immutable SHA/task definition promotion | PASS | Main workflow deployed SHA-based image tags and registered ECS task definitions. |
+| OIDC short-lived deployment credentials | PASS | GitHub Actions used `AWS_CI_ROLE_ARN` and `AWS_DEPLOY_ROLE_ARN`; no long-lived AWS keys used for prod deploy. |
+| Local-only staging isolation | PASS | Guard tests passed for local staging rejection in CI, explicit tags, isolated names/state, and production URL/name rejection. |
 
-**Compliance summary**: 43/43 scenario groups covered by passing tests, static checks, source inspection, or Terraform validation. Live AWS/ECS/Cloudflare behavior was not applied by design.
-
-## Correctness (Static Evidence)
-
-| Requirement | Status | Notes |
-|------------|--------|-------|
-| CORS no wildcard prod fallback | ✅ Implemented | Production rejects missing/default origins and `*`; prod Terraform injects app/admin origins. |
-| Local CORS support | ✅ Implemented | Local defaults include localhost/127.0.0.1 ports 3000 and 5173. |
-| S3 default credential chain | ✅ Implemented | boto3 kwargs omit static credential args when absent. |
-| Fargate cloudflared sidecars | ✅ Implemented | Each service includes a same-task `cloudflared` sidecar. |
-| Scoped tunnels | ✅ Implemented | Backend, frontend, and admin each have separate tunnel modules. |
-| Admin separate service/image | ✅ Implemented | `admin/Dockerfile`, nginx config, source, ECR repo, ECS service. |
-| CI PR candidate tags | ✅ Implemented | PR job publishes immutable candidate and SHA tags after evaluation. |
-| Main-only production deploy | ✅ Implemented | Deploy job is push-main only and uses OIDC. |
-| Local staging no CI | ✅ Implemented | Script fails before Terraform when `CI` or `GITHUB_ACTIONS` is true. |
-| Local staging explicit tags | ✅ Implemented | Script and Terraform reject `latest`/implicit tags. |
-| Local staging unique hostnames | ✅ Implemented | Hostnames derive from `staging_id`. |
-| Production URL/name rejection | ✅ Implemented | Staging IDs, hostnames, bucket names, and secret ARNs are guarded. |
-| Expiration <= 3 days | ✅ Implemented | Script enforces no more than 3 days. |
-| Sensitive files | ✅ Clean | `.env`, `cloudflare_token.env`, and `cloudflare_token` are ignored and untracked; not read or printed. |
-
-## Coherence (Design)
-
-| Decision | Followed? | Notes |
-|----------|-----------|-------|
-| Terraform modules plus prod/local-staging roots | ✅ Yes | Reusable modules under `infra/terraform/modules/*`; isolated roots exist. |
-| No ALB; Cloudflare Tunnel sidecars over localhost | ✅ Yes | Same-task sidecars use localhost origins. |
-| Separate admin image/service | ✅ Yes | Admin is independent from frontend routing. |
-| Task role for S3; execution role for pull/log/secret refs | ✅ Yes | Role split appears in `ecs_service` and prod/staging roots. |
-| Secrets from Secrets Manager/SSM | ✅ Yes | Tunnel tokens are stored as Secrets Manager values and injected as ECS secrets. |
-| PR build/evaluate/candidate; main deploy | ✅ Yes | Workflow implements candidate and main release paths separately. |
-| Local staging developer-run only | ✅ Yes | Deploy script rejects CI and requires explicit inputs. |
-
-## Issues Found
+## Issues
 
 ### CRITICAL
 
@@ -181,29 +81,16 @@ None.
 
 ### WARNING
 
-1. Terraform provider plugin execution failed in the sandbox for both prod and local-staging validates. The same validate commands passed when run outside the sandbox with approval, so this is an environment/sandbox execution warning, not an IaC syntax failure.
-2. Changed-file ruff across all changed Python files still fails on `backend/main.py` pre-existing lint debt (`E402`, `F841`, `F811`). The required focused ruff command for new scripts passed.
-3. Strict TDD safety-net evidence includes approved baseline failures for the runtime S3 upload tests before PR1 fixes. The final focused suite is green, but the safety net was not fully clean at the start.
-4. Live AWS/ECS/Cloudflare behavior was not applied or smoke-tested. This is expected because verification was explicitly read/test/validate only and must not mutate infrastructure.
+1. **Short-term public egress**: `PROD_ASSIGN_PUBLIC_IP=true` is currently required because the selected subnets lacked NAT/VPC endpoint egress to Secrets Manager/Cloudflare. Recommended follow-up: provision NAT or VPC endpoints and return `assign_public_ip=false`.
+2. **Local AWS CLI verification unavailable**: local `AWS_PROFILE=default` session expired before final `ecs wait services-stable`; production public endpoints and GitHub deploy evidence passed.
+3. **GitHub Actions Node.js 20 deprecation warning**: actions still run on Node.js 20 and GitHub warns about future Node.js 24 migration.
 
 ### SUGGESTION
 
-1. Before production deployment, run a controlled `terraform plan` with real non-secret vars and masked secrets, then deploy one service at a time with health checks.
-2. Consider addressing `backend/main.py` lint debt in a separate cleanup work unit so changed-file quality gates can run cleanly.
+- Add a small local script to sync GitHub Actions variables/secrets from checked-in templates plus ignored secret `.env` files, so CD setup is repeatable without manual `gh secret set` calls.
 
-## Sensitive File Check
+## Final Decision
 
-Commands confirmed:
+PASS WITH WARNINGS.
 
-- `git status --short -- .env cloudflare_token.env cloudflare_token .kilo/package-lock.json` showed only the known unrelated `.kilo/package-lock.json` modification.
-- `git ls-files .env cloudflare_token.env cloudflare_token` returned no tracked files.
-- `git check-ignore -v .env cloudflare_token.env cloudflare_token` confirmed all three are ignored.
-- `git diff --cached --name-only` returned no staged files.
-
-The known unrelated `.kilo/package-lock.json` modification was not touched or included in this verification.
-
-## Final Verdict
-
-**PASS WITH WARNINGS**
-
-All required tests, required ruff check, Terraform formatting, and Terraform validation passed. The warnings are limited to sandbox plugin execution, pre-existing lint debt in `backend/main.py`, initial approved safety-net failures, and the expected absence of live AWS/Cloudflare apply evidence.
+The change is implemented and deployed. Proceed to archive once the team accepts the short-term public egress tradeoff or opens a follow-up change for private egress via NAT/VPC endpoints.
