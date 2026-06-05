@@ -99,12 +99,8 @@ class MutableSettings(BaseModel):
     escalation_confidence_threshold: Optional[float] = Field(
         default=None, ge=0.0, le=1.0
     )
-    false_positive_limit: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0
-    )
-    false_negative_limit: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0
-    )
+    false_positive_limit: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    false_negative_limit: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     whatsapp_formatter_enabled: Optional[bool] = None
     split_messages_enabled: Optional[bool] = None
     msg_delay_min_ms: Optional[int] = Field(default=None, ge=1000, le=10000)

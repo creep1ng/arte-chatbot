@@ -76,7 +76,10 @@ def _aggregate_log_metrics(
 ) -> tuple[float, dict[str, int]]:
     """Aggregate escalation rate and intent distribution from log entries."""
     if not entries:
-        return session_manager.get_escalation_rate(), session_manager.get_intent_distribution()
+        return (
+            session_manager.get_escalation_rate(),
+            session_manager.get_intent_distribution(),
+        )
 
     escalated_count = sum(1 for entry in entries if entry.escalate)
     intent_distribution = Counter(entry.intent_type for entry in entries)

@@ -74,9 +74,7 @@ def _current_settings_snapshot() -> CurrentSettingsSnapshot:
     by ``settings.reload()``. It intentionally does not rewrite .env or any
     external secret store; container restarts still require real env config.
     """
-    mutable_values = {
-        field: getattr(settings, field) for field in MUTABLE_ENV_NAMES
-    }
+    mutable_values = {field: getattr(settings, field) for field in MUTABLE_ENV_NAMES}
     if mutable_values.get("admin_api_key"):
         mutable_values["admin_api_key"] = REDACTED
 

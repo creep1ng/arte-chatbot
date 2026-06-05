@@ -43,9 +43,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]
 class TestAdminHealth:
     """Authentication and health checks for the admin router."""
 
-    def test_admin_health_authenticated(
-        self, client: TestClient
-    ) -> None:
+    def test_admin_health_authenticated(self, client: TestClient) -> None:
         """GET /admin/health with valid key returns 200 and correct payload."""
         response = client.get(
             "/admin/health",
@@ -56,17 +54,13 @@ class TestAdminHealth:
         assert data["status"] == "healthy"
         assert data["service"] == "arte-chatbot-admin"
 
-    def test_admin_health_missing_key(
-        self, client: TestClient
-    ) -> None:
+    def test_admin_health_missing_key(self, client: TestClient) -> None:
         """GET /admin/health without key returns 401."""
         response = client.get("/admin/health")
         assert response.status_code == 401
         assert "Missing admin API key" in response.json()["detail"]
 
-    def test_admin_health_invalid_key(
-        self, client: TestClient
-    ) -> None:
+    def test_admin_health_invalid_key(self, client: TestClient) -> None:
         """GET /admin/health with wrong key returns 403."""
         response = client.get(
             "/admin/health",
@@ -250,6 +244,7 @@ class TestSettingsReload:
         reload() is called repeatedly.
         """
         import threading
+
         _reset_settings()
 
         errors: list[Exception] = []

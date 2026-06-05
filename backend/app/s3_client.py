@@ -260,9 +260,7 @@ class S3Client:
             try:
                 paginator = self.client.get_paginator("list_objects_v2")
                 results: List[Dict[str, Any]] = []
-                for page in paginator.paginate(
-                    Bucket=self.bucket_name, Prefix=prefix
-                ):
+                for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
                     results.extend(page.get("Contents", []))
                 return results
             except ClientError as e:
@@ -287,16 +285,12 @@ class S3Client:
 
         def _head() -> Dict[str, Any]:
             try:
-                response = self.client.head_object(
-                    Bucket=self.bucket_name, Key=key
-                )
+                response = self.client.head_object(Bucket=self.bucket_name, Key=key)
                 return dict(response)
             except ClientError as e:
                 error_code = e.response.get("Error", {}).get("Code", "Unknown")
                 if error_code in {"404", "NoSuchKey", "NotFound"}:
-                    raise S3ObjectNotFoundError(
-                        f"S3 object not found: {key}"
-                    ) from e
+                    raise S3ObjectNotFoundError(f"S3 object not found: {key}") from e
                 raise S3DownloadError(f"S3 head_object failed: {e}") from e
 
         return await asyncio.to_thread(_head)
@@ -382,9 +376,7 @@ class S3Client:
                     ExpiresIn=expires,
                 )
             except ClientError as e:
-                raise S3UploadError(
-                    f"Presigned post generation failed: {e}"
-                ) from e
+                raise S3UploadError(f"Presigned post generation failed: {e}") from e
 
         return await asyncio.to_thread(_generate)
 

@@ -79,9 +79,7 @@ def test_s3_tree_rejects_unsafe_prefix(client: TestClient) -> None:
 def test_presigned_upload_success(client: TestClient) -> None:
     """POST /admin/s3/presigned-upload returns URL and fields."""
     with patch("backend.app.admin_s3.s3_client") as mock_s3:
-        mock_s3.head_object = AsyncMock(
-            side_effect=S3ObjectNotFoundError("not found")
-        )
+        mock_s3.head_object = AsyncMock(side_effect=S3ObjectNotFoundError("not found"))
         mock_s3.generate_presigned_post = AsyncMock(
             return_value={
                 "url": "https://bucket.s3.amazonaws.com/",
@@ -175,9 +173,7 @@ def test_presigned_download_returns_404_for_missing_object(
 ) -> None:
     """POST /admin/s3/presigned-download returns 404 when the file is missing."""
     with patch("backend.app.admin_s3.s3_client") as mock_s3:
-        mock_s3.head_object = AsyncMock(
-            side_effect=S3ObjectNotFoundError("not found")
-        )
+        mock_s3.head_object = AsyncMock(side_effect=S3ObjectNotFoundError("not found"))
 
         response = client.post(
             "/admin/s3/presigned-download",

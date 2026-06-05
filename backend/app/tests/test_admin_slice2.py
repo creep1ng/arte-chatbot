@@ -170,9 +170,7 @@ class TestGuides:
     def test_get_guide(self, client: TestClient) -> None:
         """GET /admin/guides/{intent} returns markdown content."""
         with patch("backend.app.admin_guides.s3_client") as mock_s3:
-            mock_s3.download_pdf = MagicMock(
-                return_value=b"# FAQ\n\nThis is the FAQ."
-            )
+            mock_s3.download_pdf = MagicMock(return_value=b"# FAQ\n\nThis is the FAQ.")
             response = client.get(
                 "/admin/guides/faq",
                 headers={"X-Admin-API-Key": "test-admin-key"},
@@ -215,9 +213,7 @@ class TestGuides:
         from backend.app.s3_client import S3DownloadError
 
         with patch("backend.app.admin_guides.s3_client") as mock_s3:
-            mock_s3.head_object = AsyncMock(
-                side_effect=S3DownloadError("NoSuchKey")
-            )
+            mock_s3.head_object = AsyncMock(side_effect=S3DownloadError("NoSuchKey"))
             response = client.delete(
                 "/admin/guides/faq",
                 headers={"X-Admin-API-Key": "test-admin-key"},
