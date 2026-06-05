@@ -24,18 +24,13 @@ variable "ecr_repository_arns" {
   type        = list(string)
 }
 
-variable "ecs_cluster_arn" {
-  description = "ECS cluster Actions can deploy to."
-  type        = string
-}
-
-variable "ecs_service_arns" {
-  description = "ECS services Actions can update."
+variable "ssm_instance_arns" {
+  description = "EC2 instance ARNs that Actions can target with SSM Run Command."
   type        = list(string)
 }
 
-variable "pass_role_arns" {
-  description = "Task and execution roles Actions may pass to ECS."
+variable "ssm_document_arns" {
+  description = "SSM document ARNs Actions can invoke for deployment commands."
   type        = list(string)
 }
 

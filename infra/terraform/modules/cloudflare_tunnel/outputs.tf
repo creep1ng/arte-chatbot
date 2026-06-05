@@ -14,7 +14,7 @@ output "hostnames" {
 }
 
 output "tunnel_token" {
-  description = "Sensitive cloudflared connector token for ECS sidecar secret injection."
+  description = "Sensitive cloudflared connector token for runtime secret injection."
   value       = data.cloudflare_zero_trust_tunnel_cloudflared_token.this.token
   sensitive   = true
 }

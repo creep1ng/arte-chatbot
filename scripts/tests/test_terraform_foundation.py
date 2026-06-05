@@ -15,22 +15,22 @@ def _findings() -> list[str]:
     return check_foundation(ROOT)
 
 
-def test_prod_uses_scoped_cloudflare_tunnels_and_local_origins() -> None:
-    """Each public service must own a scoped tunnel reaching its same-task origin."""
+def test_prod_uses_central_cloudflare_tunnel_and_compose_origins() -> None:
+    """Production must use one central tunnel reaching Compose DNS origins."""
     findings = _findings()
 
-    assert "prod must declare backend, frontend, and admin scoped tunnels" not in findings
-    assert "backend tunnel must route api hostname to localhost:8000" not in findings
-    assert "frontend tunnel must route app hostname to localhost:3000" not in findings
-    assert "admin tunnel must route admin hostname to localhost:3000" not in findings
+    assert "prod must declare one central edge tunnel" not in findings
+    assert "backend route must target Compose DNS origin backend:8000" not in findings
+    assert "frontend route must target Compose DNS origin frontend:3000" not in findings
+    assert "admin route must target Compose DNS origin admin:3000" not in findings
 
 
-def test_no_shared_unreachable_localhost_origins() -> None:
-    """A tunnel must not mix backend and UI localhost origins in this Fargate layout."""
+def test_central_connector_mode_allows_reachable_mixed_origins() -> None:
+    """Mixed origins are allowed only for explicit central connector mode."""
     findings = _findings()
 
     assert "cloudflare tunnel module must reject mixed localhost origins" not in findings
-    assert "prod must not reuse one tunnel for backend, frontend, and admin" not in findings
+    assert "prod central tunnel must enable central connector mode" not in findings
 
 
 def test_tunnel_tokens_and_secret_outputs_are_sensitive() -> None:
@@ -42,12 +42,12 @@ def test_tunnel_tokens_and_secret_outputs_are_sensitive() -> None:
     assert "prod outputs must not expose tunnel tokens" not in findings
 
 
-def test_prod_names_and_domain_are_isolated_from_staging() -> None:
-    """Prod root must keep Arte hostnames variable-driven without staging names."""
+def test_prod_hostnames_are_external_and_name_is_isolated_from_staging() -> None:
+    """Prod root must use external sensitive hostnames without staging names."""
     findings = _findings()
 
-    assert "prod domain must default to artesolutions.com.co" not in findings
-    assert "prod hostnames must derive chatbot, app, and admin from domain_name" not in findings
+    assert "prod hostname variables must be sensitive inputs without defaults" not in findings
+    assert "prod hostnames must not derive chatbot, app, and admin from domain_name" not in findings
     assert "prod name prefix must reject staging values" not in findings
 
 

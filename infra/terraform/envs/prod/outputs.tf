@@ -1,15 +1,11 @@
-output "cluster_name" {
-  description = "Production ECS cluster name."
-  value       = aws_ecs_cluster.this.name
-}
-
 output "public_urls" {
-  description = "Production Cloudflare public URLs."
+  description = "Production Cloudflare public URLs derived from externally supplied hostnames."
   value = {
     api   = local.public_api_url
     app   = local.public_frontend_url
     admin = local.public_admin_url
   }
+  sensitive = true
 }
 
 output "ecr_repository_urls" {
@@ -21,13 +17,24 @@ output "ecr_repository_urls" {
   }
 }
 
-output "ecs_services" {
-  description = "ECS service names."
+output "ec2_compose_host" {
+  description = "Production EC2 Compose host metadata for SSM deploys."
   value = {
-    backend  = module.backend_service.service_name
-    frontend = module.frontend_service.service_name
-    admin    = module.admin_service.service_name
+    instance_id               = module.compose_host.instance_id
+    security_group_id         = module.compose_host.security_group_id
+    deploy_script_path        = module.compose_host.deploy_script_path
+    compose_project_directory = module.compose_host.compose_project_directory
   }
+}
+
+output "edge_tunnel" {
+  description = "Central production Cloudflare tunnel metadata."
+  value = {
+    tunnel_id   = module.edge_tunnel.tunnel_id
+    tunnel_name = module.edge_tunnel.tunnel_name
+    hostnames   = module.edge_tunnel.hostnames
+  }
+  sensitive = true
 }
 
 output "github_deploy_role_arn" {

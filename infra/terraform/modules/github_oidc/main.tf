@@ -67,26 +67,21 @@ data "aws_iam_policy_document" "deploy" {
   }
 
   statement {
-    sid = "EcsDeploy"
+    sid = "SsmDeployCommand"
     actions = [
-      "ecs:DescribeServices",
-      "ecs:DescribeTaskDefinition",
-      "ecs:RegisterTaskDefinition",
-      "ecs:UpdateService",
+      "ssm:SendCommand",
     ]
-    resources = concat([var.ecs_cluster_arn], var.ecs_service_arns)
+    resources = concat(var.ssm_instance_arns, var.ssm_document_arns)
   }
 
   statement {
-    sid       = "PassTaskRoles"
-    actions   = ["iam:PassRole"]
-    resources = var.pass_role_arns
-
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PassedToService"
-      values   = ["ecs-tasks.amazonaws.com"]
-    }
+    sid = "SsmDeployStatusReads"
+    actions = [
+      "ssm:GetCommandInvocation",
+      "ssm:ListCommandInvocations",
+      "ssm:ListCommands",
+    ]
+    resources = ["*"]
   }
 
   dynamic "statement" {

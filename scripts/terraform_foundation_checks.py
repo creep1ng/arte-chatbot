@@ -26,28 +26,21 @@ def check_foundation(project_root: Path) -> list[str]:
     admin_dockerfile = _read(project_root / "admin" / "Dockerfile")
     admin_nginx = _read(project_root / "admin" / "nginx.conf")
 
-    if not _contains_all(
-        prod_main,
-        [
-            'module "backend_cloudflare_tunnel"',
-            'module "frontend_cloudflare_tunnel"',
-            'module "admin_cloudflare_tunnel"',
-        ],
-    ):
-        findings.append("prod must declare backend, frontend, and admin scoped tunnels")
+    if 'module "edge_tunnel"' not in prod_main:
+        findings.append("prod must declare one central edge tunnel")
 
-    if "localhost:8000" not in prod_main or "local.backend_hostname" not in prod_main:
-        findings.append("backend tunnel must route api hostname to localhost:8000")
-    if "localhost:3000" not in prod_main or "local.frontend_hostname" not in prod_main:
-        findings.append("frontend tunnel must route app hostname to localhost:3000")
-    if "localhost:3000" not in prod_main or "local.admin_hostname" not in prod_main:
-        findings.append("admin tunnel must route admin hostname to localhost:3000")
+    if "http://backend:8000" not in prod_main or "var.backend_hostname" not in prod_main:
+        findings.append("backend route must target Compose DNS origin backend:8000")
+    if "http://frontend:3000" not in prod_main or "var.frontend_hostname" not in prod_main:
+        findings.append("frontend route must target Compose DNS origin frontend:3000")
+    if "http://admin:3000" not in prod_main or "var.admin_hostname" not in prod_main:
+        findings.append("admin route must target Compose DNS origin admin:3000")
 
     if "central_connector_mode" not in tunnel_variables or "distinct" not in tunnel_variables:
         findings.append("cloudflare tunnel module must reject mixed localhost origins")
 
-    if len(re.findall(r'module\s+"[^"]+_cloudflare_tunnel"', prod_main)) < 3:
-        findings.append("prod must not reuse one tunnel for backend, frontend, and admin")
+    if "central_connector_mode = true" not in prod_main:
+        findings.append("prod central tunnel must enable central connector mode")
 
     if not _output_block_is_sensitive(tunnel_outputs, "tunnel_token"):
         findings.append("cloudflare tunnel token output must be sensitive")
@@ -59,16 +52,16 @@ def check_foundation(project_root: Path) -> list[str]:
     if "tunnel_token" in prod_outputs.lower():
         findings.append("prod outputs must not expose tunnel tokens")
 
-    if "artesolutions.com.co" not in prod_variables:
-        findings.append("prod domain must default to artesolutions.com.co")
-
-    expected_hostname_labels = [
-        r'api\s*=\s*"chatbot"',
-        r'app\s*=\s*"app"',
-        r'admin\s*=\s*"admin"',
+    hostname_variables = [
+        _variable_block(prod_variables, "backend_hostname"),
+        _variable_block(prod_variables, "frontend_hostname"),
+        _variable_block(prod_variables, "admin_hostname"),
     ]
-    if not all(re.search(pattern, prod_main) for pattern in expected_hostname_labels) or "var.domain_name" not in prod_main:
-        findings.append("prod hostnames must derive chatbot, app, and admin from domain_name")
+    if any(not block or "sensitive   = true" not in block or re.search(r"(?m)^\s*default\s*=", block) for block in hostname_variables):
+        findings.append("prod hostname variables must be sensitive inputs without defaults")
+
+    if "hostname_labels" in prod_main or "var.domain_name" in prod_main:
+        findings.append("prod hostnames must not derive chatbot, app, and admin from domain_name")
 
     if "staging" not in prod_variables or "strcontains" not in prod_variables:
         findings.append("prod name prefix must reject staging values")
@@ -97,3 +90,9 @@ def _output_block_is_sensitive(text: str, output_name: str) -> bool:
     pattern = re.compile(rf'output\s+"{re.escape(output_name)}"\s+{{(?P<body>.*?)\n}}', re.DOTALL)
     match = pattern.search(text)
     return bool(match and re.search(r"sensitive\s*=\s*true", match.group("body")))
+
+
+def _variable_block(text: str, variable_name: str) -> str:
+    pattern = re.compile(rf'variable\s+"{re.escape(variable_name)}"\s+{{(?P<body>.*?)\n}}', re.DOTALL)
+    match = pattern.search(text)
+    return match.group(0) if match else ""

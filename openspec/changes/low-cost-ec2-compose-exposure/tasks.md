@@ -34,14 +34,14 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Production Infrastructure Wiring
 
-- [ ] 2.1 Add `data.aws_ami.ubuntu_lts` in `infra/terraform/envs/prod/main.tf` with Canonical owner, HVM/EBS filters, Ubuntu LTS pattern, `most_recent = true`.
-- [ ] 2.2 Resolve image from `ami_id_override` or `data.aws_ami.ubuntu_lts.id`; commit no fixed AMI IDs.
-- [ ] 2.3 Add sensitive `backend_hostname`, `frontend_hostname`, `admin_hostname` in `infra/terraform/envs/prod/variables.tf` with no defaults.
-- [ ] 2.4 Wire hostnames into Cloudflare routes/DNS, public URLs, CORS origins, UI API URL; remove hardcoded hostname defaults/labels.
-- [ ] 2.5 Update `infra/terraform/modules/cloudflare_tunnel/*` for central connector mode with Compose DNS origins and retained non-production sidecar support.
-- [ ] 2.6 Replace ECS/per-service production tunnels in `infra/terraform/envs/prod/main.tf` with one `edge_tunnel` plus `ec2_compose_host`.
-- [ ] 2.7 Update `infra/terraform/envs/prod/{variables.tf,outputs.tf}` for EC2 inputs, one tunnel secret, runtime secret refs, sensitive derived outputs, backend env map default `{}`.
-- [ ] 2.8 Update `infra/terraform/modules/github_oidc/*` from ECS/pass-role permissions to scoped SSM Run Command/status reads.
+- [x] 2.1 Add `data.aws_ami.ubuntu_lts` in `infra/terraform/envs/prod/main.tf` with Canonical owner, HVM/EBS filters, Ubuntu LTS pattern, `most_recent = true`.
+- [x] 2.2 Resolve image from `ami_id_override` or `data.aws_ami.ubuntu_lts.id`; commit no fixed AMI IDs.
+- [x] 2.3 Add sensitive `backend_hostname`, `frontend_hostname`, `admin_hostname` in `infra/terraform/envs/prod/variables.tf` with no defaults.
+- [x] 2.4 Wire hostnames into Cloudflare routes/DNS, public URLs, CORS origins, UI API URL; remove hardcoded hostname defaults/labels.
+- [x] 2.5 Update `infra/terraform/modules/cloudflare_tunnel/*` for central connector mode with Compose DNS origins and retained non-production sidecar support.
+- [x] 2.6 Replace ECS/per-service production tunnels in `infra/terraform/envs/prod/main.tf` with one `edge_tunnel` plus `ec2_compose_host`.
+- [x] 2.7 Update `infra/terraform/envs/prod/{variables.tf,outputs.tf}` for EC2 inputs, one tunnel secret, runtime secret refs, sensitive derived outputs, backend env map default `{}`.
+- [x] 2.8 Update `infra/terraform/modules/github_oidc/*` from ECS/pass-role permissions to scoped SSM Run Command/status reads.
 
 ## Phase 3: CI Deployment Flow
 

@@ -18,26 +18,26 @@ variable "name_prefix" {
   }
 }
 
-variable "domain_name" {
-  description = "Base domain for production Cloudflare hostnames."
-  type        = string
-  default     = "artesolutions.com.co"
-}
-
 variable "vpc_id" {
   description = "Production VPC id."
   type        = string
 }
 
-variable "private_subnet_ids" {
-  description = "Private subnet ids for ECS tasks. These need NAT or VPC endpoints for AWS and Cloudflare outbound access."
-  type        = list(string)
+variable "public_subnet_id" {
+  description = "Public subnet id for the low-cost EC2 Compose host. The host exposes no public app ports and uses Cloudflare Tunnel for ingress."
+  type        = string
 }
 
-variable "assign_public_ip" {
-  description = "Assign public IPs to tasks. Prefer false when private subnets have NAT or VPC endpoints."
-  type        = bool
-  default     = false
+variable "ec2_compose_instance_type" {
+  description = "EC2 instance type for the production Docker Compose host."
+  type        = string
+  default     = "t3.small"
+}
+
+variable "ami_id_override" {
+  description = "Optional emergency AMI id override. Leave null to use the latest Ubuntu LTS AMI data source."
+  type        = string
+  default     = null
 }
 
 variable "cloudflare_account_id" {
@@ -46,24 +46,30 @@ variable "cloudflare_account_id" {
 }
 
 variable "cloudflare_zone_id" {
-  description = "Cloudflare zone id for domain_name."
+  description = "Cloudflare zone id for production DNS records."
   type        = string
 }
 
-variable "backend_tunnel_secret" {
-  description = "Secure base64 tunnel secret for the backend Cloudflare tunnel."
-  type        = string
-  sensitive   = true
-}
-
-variable "frontend_tunnel_secret" {
-  description = "Secure base64 tunnel secret for the frontend Cloudflare tunnel."
+variable "backend_hostname" {
+  description = "Externally supplied production backend/API hostname. DNS may become public, but source defaults must not expose it."
   type        = string
   sensitive   = true
 }
 
-variable "admin_tunnel_secret" {
-  description = "Secure base64 tunnel secret for the admin Cloudflare tunnel."
+variable "frontend_hostname" {
+  description = "Externally supplied production frontend/app hostname. DNS may become public, but source defaults must not expose it."
+  type        = string
+  sensitive   = true
+}
+
+variable "admin_hostname" {
+  description = "Externally supplied production admin hostname. DNS may become public, but source defaults must not expose it."
+  type        = string
+  sensitive   = true
+}
+
+variable "edge_tunnel_secret" {
+  description = "Secure base64 tunnel secret for the central production Cloudflare tunnel."
   type        = string
   sensitive   = true
 }
@@ -74,28 +80,22 @@ variable "aws_bucket_name" {
   default     = "arte-chatbot-fichas-tecnicas"
 }
 
-variable "backend_image_tag" {
-  description = "Immutable backend image tag to deploy."
-  type        = string
-  default     = "bootstrap"
-}
-
-variable "frontend_image_tag" {
-  description = "Immutable frontend image tag to deploy."
-  type        = string
-  default     = "bootstrap"
-}
-
-variable "admin_image_tag" {
-  description = "Immutable admin image tag to deploy."
+variable "initial_image_tag" {
+  description = "Initial immutable image tag written before the first SSM deploy."
   type        = string
   default     = "bootstrap"
 }
 
 variable "cloudflared_image" {
-  description = "cloudflared sidecar image."
+  description = "cloudflared connector image."
   type        = string
   default     = "cloudflare/cloudflared:latest"
+}
+
+variable "backend_runtime_environment_variables" {
+  description = "Additional non-sensitive backend environment variables. Values must remain strings and must not contain secrets."
+  type        = map(string)
+  default     = {}
 }
 
 variable "backend_runtime_secret_arns" {
@@ -104,22 +104,10 @@ variable "backend_runtime_secret_arns" {
   default     = {}
 }
 
-variable "task_cpu" {
-  description = "Default Fargate CPU units for each service."
-  type        = number
-  default     = 512
-}
-
-variable "task_memory" {
-  description = "Default Fargate memory MiB for each service."
-  type        = number
-  default     = 1024
-}
-
-variable "desired_count" {
-  description = "Desired count for each production ECS service."
-  type        = number
-  default     = 1
+variable "kms_key_arns" {
+  description = "Optional KMS keys needed by the EC2 host to decrypt runtime secrets."
+  type        = list(string)
+  default     = []
 }
 
 variable "github_owner" {
