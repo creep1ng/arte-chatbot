@@ -105,37 +105,62 @@ OUT_OF_DOMAIN_MESSAGE = (
 
 
 INTENT_MARKER_RE = re.compile(r"\[INTENT:\s*(\w+)\]")
+CONFIDENCE_MARKER_RE = re.compile(r"\[CONFIDENCE:\s*([0-9]+(?:\.[0-9]+)?)\]")
 
 
-def _extract_intent_type(text: str) -> tuple[str, str]:
-    """Extract intent_type from LLM output text.
+def _extract_intent_type(text: str) -> tuple[Optional[str], Optional[float], str]:
+    """Extract intent_type and confidence from LLM output text.
 
-    The LLM is instructed to prefix responses with [INTENT: <type>].
-    This function parses the marker and returns the cleaned response.
+    The LLM is instructed to prefix responses with [INTENT: <type>] and
+    [CONFIDENCE: <score>]. This function parses both markers and returns
+    the cleaned response.
 
     Args:
         text: Raw LLM output text.
 
     Returns:
-        Tuple of (intent_type, cleaned_response_text).
+        Tuple of (intent_type, confidence, cleaned_response_text). intent_type is
+        None when the LLM does not provide a valid [INTENT] marker.
     """
-    match = INTENT_MARKER_RE.search(text)
-    if match:
-        intent = match.group(1)
+    intent_type: Optional[str] = None
+    intent_match = INTENT_MARKER_RE.search(text)
+    if intent_match:
+        intent = intent_match.group(1)
         if intent in INTENT_TYPES:
-            cleaned = INTENT_MARKER_RE.sub("", text).strip()
-            return intent, cleaned
-    return "FAQ", text
+            intent_type = intent
+
+    confidence: Optional[float] = None
+    confidence_match = CONFIDENCE_MARKER_RE.search(text)
+    if confidence_match:
+        confidence_value = float(confidence_match.group(1))
+        if 0.0 <= confidence_value <= 1.0:
+            confidence = confidence_value
+
+    cleaned = INTENT_MARKER_RE.sub("", text)
+    cleaned = CONFIDENCE_MARKER_RE.sub("", cleaned).strip()
+    return intent_type, confidence, cleaned
 
 
 ESCALATE_INTENTS = {"escalate_quote", "escalate_technical", "escalate_order"}
+QUOTE_ESCALATION_KEYWORDS = {"cotización", "presupuesto"}
+
+
+def _intent_type_for_escalation_keyword(matched_keyword: Optional[str]) -> str:
+    """Map rule-based escalation keywords to public intent types."""
+    if matched_keyword is None:
+        return "escalate_technical"
+    if matched_keyword.lower() in QUOTE_ESCALATION_KEYWORDS:
+        return "escalate_quote"
+    if matched_keyword.lower() == "pedido":
+        return "escalate_order"
+    return "escalate_technical"
 
 
 app = FastAPI(title="ARTE Chatbot Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=settings.allowed_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -149,13 +174,24 @@ def _log_environment_configuration() -> None:
     required_env_vars = [
         "CHAT_API_KEY",
         "OPENAI_API_KEY",
+        "AWS_BUCKET_NAME",
+    ]
+    optional_env_vars = [
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
-        "AWS_BUCKET_NAME",
+        "AWS_SESSION_TOKEN",
+        "APP_ENV",
+        "PUBLIC_API_URL",
+        "PUBLIC_FRONTEND_URL",
+        "PUBLIC_ADMIN_URL",
+        "ALLOWED_CORS_ORIGINS",
     ]
     for env_var in required_env_vars:
         status = "set" if os.getenv(env_var) else "missing"
         logger.info("Environment check: %s is %s", env_var, status)
+    for env_var in optional_env_vars:
+        status = "set" if os.getenv(env_var) else "not set"
+        logger.info("Optional environment check: %s is %s", env_var, status)
 
 
 _log_environment_configuration()
@@ -280,7 +316,8 @@ class ChatResponse(BaseModel):
 
     response: str
     escalate: bool = False
-    intent_type: str = "FAQ"
+    intent_type: Optional[str] = None
+    confidence: Optional[float] = None
     reason: Optional[str] = None
     session_id: str
     source_documents: list[SourceDocument] = Field(default_factory=list)
@@ -833,6 +870,15 @@ async def _process_chat_message(
     escalation_result = default_detector.detect(message)
 
     if escalation_result.escalate:
+        intent_type = _intent_type_for_escalation_keyword(
+            escalation_result.matched_keyword
+        )
+        response_text = maybe_prepend_greeting(
+            session_id=session_id,
+            response_text=DEFAULT_ESCALATION_MESSAGE,
+            intent_type=intent_type,
+            escalate=True,
+        )
         logger.info(
             "Escalation detected: request_id=%s, session_id=%s, reason=%s",
             request_id,
@@ -842,15 +888,15 @@ async def _process_chat_message(
         session_manager.add_turn(
             session_id=session_id,
             question=message,
-            answer=DEFAULT_ESCALATION_MESSAGE,
+            answer=response_text,
             source_documents=[],
         )
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
             session_id=session_id,
             user_message=message,
-            bot_response=DEFAULT_ESCALATION_MESSAGE,
-            intent_type="escalate_technical",
+            bot_response=response_text,
+            intent_type=intent_type,
             escalate=True,
             source_documents=[],
             input_tokens=0,
@@ -860,9 +906,9 @@ async def _process_chat_message(
             user_profile=inferred_profile,
         )
         return ChatResponse(
-            response=DEFAULT_ESCALATION_MESSAGE,
+            response=response_text,
             escalate=True,
-            intent_type="escalate_technical",
+            intent_type=intent_type,
             reason=escalation_result.reason,
             session_id=session_id,
             source_documents=[],
@@ -945,13 +991,20 @@ async def _process_chat_message(
 
             if not tool_calls:
                 content = llm_response.text
-                intent_type, cleaned_content = _extract_intent_type(content)
+                intent_type, confidence, cleaned_content = _extract_intent_type(content)
+                intent_for_behavior = intent_type or "FAQ"
 
-                if intent_type in ESCALATE_INTENTS:
+                if intent_for_behavior in ESCALATE_INTENTS:
+                    response_text = maybe_prepend_greeting(
+                        session_id=session_id,
+                        response_text=DEFAULT_ESCALATION_MESSAGE,
+                        intent_type=intent_for_behavior,
+                        escalate=True,
+                    )
                     session_manager.add_turn(
                         session_id=session_id,
                         question=message,
-                        answer=DEFAULT_ESCALATION_MESSAGE,
+                        answer=response_text,
                         source_documents=[],
                     )
                     session_manager.add_token_usage(
@@ -964,8 +1017,8 @@ async def _process_chat_message(
                     _fire_conversation_log(
                         session_id=session_id,
                         user_message=message,
-                        bot_response=DEFAULT_ESCALATION_MESSAGE,
-                        intent_type=intent_type,
+                        bot_response=response_text,
+                        intent_type=intent_for_behavior,
                         escalate=True,
                         source_documents=[s.ruta for s in source_docs],
                         input_tokens=acc_input_tokens,
@@ -975,10 +1028,11 @@ async def _process_chat_message(
                         user_profile=inferred_profile,
                     )
                     return ChatResponse(
-                        response=DEFAULT_ESCALATION_MESSAGE,
+                        response=response_text,
                         escalate=True,
                         intent_type=intent_type,
-                        reason=f"Intent classified as {intent_type}",
+                        confidence=confidence,
+                        reason=f"Intent classified as {intent_for_behavior}",
                         session_id=session_id,
                         source_documents=source_docs,
                         num_sources=len(source_docs),
@@ -987,7 +1041,7 @@ async def _process_chat_message(
                         total_tokens=acc_total_tokens,
                     )
 
-                if intent_type == "fuera_de_dominio":
+                if intent_for_behavior == "fuera_de_dominio":
                     session_manager.add_turn(
                         session_id=session_id,
                         question=message,
@@ -1005,7 +1059,7 @@ async def _process_chat_message(
                         session_id=session_id,
                         user_message=message,
                         bot_response=OUT_OF_DOMAIN_MESSAGE,
-                        intent_type=intent_type,
+                        intent_type=intent_for_behavior,
                         escalate=False,
                         source_documents=[],
                         input_tokens=acc_input_tokens,
@@ -1018,6 +1072,7 @@ async def _process_chat_message(
                         response=OUT_OF_DOMAIN_MESSAGE,
                         escalate=False,
                         intent_type=intent_type,
+                        confidence=confidence,
                         session_id=session_id,
                         source_documents=source_docs,
                         num_sources=len(source_docs),
@@ -1033,16 +1088,16 @@ async def _process_chat_message(
 
                 split_messages, split_delays = process_split_messages(
                     text=response_text,
-                    intent_type=intent_type,
+                    intent_type=intent_for_behavior,
                     llm_regenerate_fn=None,
                 )
 
-                escalate = intent_type in ESCALATE_INTENTS
+                escalate = intent_for_behavior in ESCALATE_INTENTS
                 if split_messages:
                     split_messages[0] = maybe_prepend_greeting(
                         session_id=session_id,
                         response_text=split_messages[0],
-                        intent_type=intent_type,
+                        intent_type=intent_for_behavior,
                         escalate=escalate,
                     )
                     response_text = "\n\n".join(split_messages)
@@ -1050,7 +1105,7 @@ async def _process_chat_message(
                     response_text = maybe_prepend_greeting(
                         session_id=session_id,
                         response_text=response_text,
-                        intent_type=intent_type,
+                        intent_type=intent_for_behavior,
                         escalate=escalate,
                     )
 
@@ -1068,7 +1123,7 @@ async def _process_chat_message(
                     session_id=session_id,
                     user_message=message,
                     bot_response=response_text,
-                    intent_type=intent_type,
+                    intent_type=intent_for_behavior,
                     escalate=False,
                     source_documents=[s.ruta for s in source_docs],
                     input_tokens=acc_input_tokens,
@@ -1081,6 +1136,7 @@ async def _process_chat_message(
                     response=response_text,
                     escalate=False,
                     intent_type=intent_type,
+                    confidence=confidence,
                     session_id=session_id,
                     source_documents=source_docs,
                     num_sources=len(source_docs),
@@ -1303,13 +1359,20 @@ async def _process_chat_message(
             session_id,
             iteration,
         )
-        intent_type, cleaned_text = _extract_intent_type(last_output_text)
+        intent_type, confidence, cleaned_text = _extract_intent_type(last_output_text)
+        intent_for_behavior = intent_type or "FAQ"
 
-        if intent_type in ESCALATE_INTENTS:
+        if intent_for_behavior in ESCALATE_INTENTS:
+            response_text = maybe_prepend_greeting(
+                session_id=session_id,
+                response_text=DEFAULT_ESCALATION_MESSAGE,
+                intent_type=intent_for_behavior,
+                escalate=True,
+            )
             session_manager.add_turn(
                 session_id=session_id,
                 question=message,
-                answer=DEFAULT_ESCALATION_MESSAGE,
+                answer=response_text,
                 source_documents=[],
             )
             session_manager.add_token_usage(
@@ -1319,8 +1382,8 @@ async def _process_chat_message(
             _fire_conversation_log(
                 session_id=session_id,
                 user_message=message,
-                bot_response=DEFAULT_ESCALATION_MESSAGE,
-                intent_type=intent_type,
+                bot_response=response_text,
+                intent_type=intent_for_behavior,
                 escalate=True,
                 source_documents=[s.ruta for s in source_docs],
                 input_tokens=acc_input_tokens,
@@ -1330,10 +1393,11 @@ async def _process_chat_message(
                 user_profile=inferred_profile,
             )
             return ChatResponse(
-                response=DEFAULT_ESCALATION_MESSAGE,
+                response=response_text,
                 escalate=True,
                 intent_type=intent_type,
-                reason=f"Intent classified as {intent_type}",
+                confidence=confidence,
+                reason=f"Intent classified as {intent_for_behavior}",
                 session_id=session_id,
                 source_documents=source_docs,
                 num_sources=len(source_docs),
@@ -1353,7 +1417,7 @@ async def _process_chat_message(
                 "Se alcanzó el límite de iteraciones. Por favor, reformula "
                 "tu pregunta o contacta al equipo de ventas."
             ),
-            intent_type=intent_type,
+            intent_type=intent_for_behavior,
             escalate=False,
             source_documents=[s.ruta for s in source_docs],
             input_tokens=acc_input_tokens,
@@ -1369,6 +1433,7 @@ async def _process_chat_message(
             ),
             escalate=False,
             intent_type=intent_type,
+            confidence=confidence,
             session_id=session_id,
             source_documents=source_docs,
             num_sources=len(source_docs),

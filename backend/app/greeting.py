@@ -66,7 +66,7 @@ def maybe_prepend_greeting(
 
     The greeting is prepended ONLY when ALL of the following are true:
     - greeting_enabled setting is True
-    - escalate is False
+    - escalate is False, except first-contact quote escalation
     - intent_type is not "fuera_de_dominio"
     - This is the first contact for the session
 
@@ -81,7 +81,9 @@ def maybe_prepend_greeting(
     """
     if not settings.greeting_enabled:
         return response_text
-    if escalate or intent_type == "fuera_de_dominio":
+    if intent_type == "fuera_de_dominio":
+        return response_text
+    if escalate and intent_type != "escalate_quote":
         return response_text
     if not is_first_contact(session_id):
         return response_text

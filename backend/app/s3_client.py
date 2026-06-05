@@ -18,6 +18,22 @@ from backend.app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _build_s3_client_kwargs(
+    aws_access_key_id: Optional[str],
+    aws_secret_access_key: Optional[str],
+    aws_region: str,
+) -> dict[str, Any]:
+    """Build boto3 S3 client kwargs without disabling the default credential chain."""
+    kwargs: dict[str, Any] = {"region_name": aws_region}
+    if aws_access_key_id and aws_secret_access_key:
+        kwargs["aws_access_key_id"] = aws_access_key_id
+        kwargs["aws_secret_access_key"] = aws_secret_access_key
+        session_token = os.getenv("AWS_SESSION_TOKEN")
+        if session_token:
+            kwargs["aws_session_token"] = session_token
+    return kwargs
+
+
 class S3DownloadError(Exception):
     """Raised when S3 download operations fail."""
 
@@ -91,9 +107,11 @@ class S3Client:
         if self._client is None:
             self._client = boto3.client(
                 "s3",
-                aws_access_key_id=self.aws_access_key_id,
-                aws_secret_access_key=self.aws_secret_access_key,
-                region_name=self.aws_region,
+                **_build_s3_client_kwargs(
+                    self.aws_access_key_id,
+                    self.aws_secret_access_key,
+                    self.aws_region,
+                ),
                 config=Config(
                     connect_timeout=settings.s3_connect_timeout_seconds,
                     read_timeout=settings.s3_read_timeout_seconds,

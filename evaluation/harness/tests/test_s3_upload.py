@@ -1,8 +1,5 @@
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from evaluation.harness.s3_upload import (
     build_prefix,
@@ -61,7 +58,10 @@ class TestGetHarnessVersion:
 
 
 class TestUploadResults:
-    @patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "fake", "AWS_SECRET_ACCESS_KEY": "fake"})
+    @patch.dict(
+        "os.environ",
+        {"AWS_ACCESS_KEY_ID": "fake", "AWS_SECRET_ACCESS_KEY": "fake"},
+    )
     @patch("evaluation.harness.s3_upload.boto3.client")
     def test_uploads_all_json_and_csv_files(
         self, mock_boto: MagicMock, tmp_path: Path
@@ -82,11 +82,24 @@ class TestUploadResults:
         assert mock_s3.upload_file.call_count == 2
 
     @patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""})
-    def test_returns_none_when_no_credentials(self, tmp_path: Path) -> None:
-        keys = upload_results(tmp_path, "test/")
-        assert keys is None
+    @patch("evaluation.harness.s3_upload.boto3.client")
+    def test_uses_default_credential_chain_when_no_static_credentials(
+        self, mock_boto: MagicMock, tmp_path: Path
+    ) -> None:
+        json_file = tmp_path / "results.json"
+        json_file.write_text('{"test": true}')
 
-    @patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "fake", "AWS_SECRET_ACCESS_KEY": "fake"})
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        keys = upload_results(tmp_path, "test/")
+        assert keys == ["test/results.json"]
+        mock_boto.assert_called_once_with("s3", region_name="us-east-1")
+
+    @patch.dict(
+        "os.environ",
+        {"AWS_ACCESS_KEY_ID": "fake", "AWS_SECRET_ACCESS_KEY": "fake"},
+    )
     @patch("evaluation.harness.s3_upload.boto3.client")
     def test_handles_s3_error_gracefully(
         self, mock_boto: MagicMock, tmp_path: Path
@@ -113,7 +126,7 @@ class TestUploadResultsWithMetadata:
     )
     @patch("evaluation.harness.s3_upload.boto3.client")
     @patch("evaluation.harness.s3_upload.subprocess.run")
-    def test_returns_none_when_credentials_missing(
+    def test_uploads_metadata_with_default_credential_chain(
         self, mock_run: MagicMock, mock_boto: MagicMock, tmp_path: Path
     ) -> None:
         mock_run.return_value = MagicMock(stdout="abc1234", returncode=0)
@@ -121,12 +134,19 @@ class TestUploadResultsWithMetadata:
         json_file = tmp_path / "results.json"
         json_file.write_text('{"test": true}')
 
-        # Simulate credentials missing during upload_results_with_metadata
-        with patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""}):
+        with patch.dict(
+            "os.environ",
+            {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""},
+        ):
             keys = upload_results_with_metadata(
                 tmp_path, "evaluation/manual/testuser/", "manual", "testuser"
             )
-        assert keys is None
+        assert keys == [
+            "evaluation/manual/testuser/results.json",
+            "evaluation/manual/testuser/metadata.json",
+        ]
+        assert mock_boto.call_args_list[0].args == ("s3",)
+        assert mock_boto.call_args_list[0].kwargs == {"region_name": "us-east-1"}
 
     @patch.dict(
         "os.environ",
