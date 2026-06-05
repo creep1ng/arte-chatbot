@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from backend.app.admin_auth import verify_admin_key
 from backend.app.admin_schemas import (
     ConversationLogEntry,
-    ConversationLogSummary,
     LogFilterParams,
 )
 from backend.app.conversation_logger import get_log, list_logs

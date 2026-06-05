@@ -6,10 +6,8 @@ Covers:
 - Settings reload atomicity
 """
 
-import asyncio
-import os
 from typing import Any, Generator
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -234,9 +232,8 @@ class TestSettingsReload:
         monkeypatch.setenv("LLM_MODEL", "gpt-test-reload")
         _reset_settings()
 
-        # Before reload, the old cached instance may still have the old value.
-        # We force instantiation first.
-        old_model = settings.llm_model
+        # Force instantiation before reload so the swap is exercised.
+        _ = settings.llm_model
 
         monkeypatch.setenv("LLM_MODEL", "gpt-reloaded-value")
         settings.reload()
@@ -253,8 +250,6 @@ class TestSettingsReload:
         reload() is called repeatedly.
         """
         import threading
-        import time
-
         _reset_settings()
 
         errors: list[Exception] = []
