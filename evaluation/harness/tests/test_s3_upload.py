@@ -81,7 +81,14 @@ class TestUploadResults:
         assert "results.csv" in keys[1]
         assert mock_s3.upload_file.call_count == 2
 
-    @patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""})
+    @patch.dict(
+        "os.environ",
+        {
+            "AWS_ACCESS_KEY_ID": "",
+            "AWS_SECRET_ACCESS_KEY": "",
+            "AWS_REGION": "us-east-1",
+        },
+    )
     @patch("evaluation.harness.s3_upload.boto3.client")
     def test_uses_default_credential_chain_when_no_static_credentials(
         self, mock_boto: MagicMock, tmp_path: Path
@@ -136,7 +143,11 @@ class TestUploadResultsWithMetadata:
 
         with patch.dict(
             "os.environ",
-            {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""},
+            {
+                "AWS_ACCESS_KEY_ID": "",
+                "AWS_SECRET_ACCESS_KEY": "",
+                "AWS_REGION": "us-east-1",
+            },
         ):
             keys = upload_results_with_metadata(
                 tmp_path, "evaluation/manual/testuser/", "manual", "testuser"
