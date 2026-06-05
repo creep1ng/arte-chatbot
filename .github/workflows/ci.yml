@@ -396,6 +396,7 @@ jobs:
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-2' }}
       TF_VAR_vpc_id: ${{ vars.PROD_VPC_ID }}
       TF_VAR_private_subnet_ids: ${{ vars.PROD_PRIVATE_SUBNET_IDS_JSON }}
+      TF_VAR_assign_public_ip: ${{ vars.PROD_ASSIGN_PUBLIC_IP || 'false' }}
       TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
       TF_VAR_backend_tunnel_secret: ${{ secrets.PROD_BACKEND_TUNNEL_SECRET }}
