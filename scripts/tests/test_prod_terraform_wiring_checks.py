@@ -41,6 +41,7 @@ def test_prod_wires_ec2_compose_runtime_outputs_and_ssm_deploy_permissions() -> 
     findings = _findings()
 
     assert "prod variables must expose EC2 host inputs, one tunnel secret, runtime env map, and runtime secret refs" not in findings
+    assert "prod must reject raw secret values in backend_runtime_secret_arns" not in findings
     assert "prod must call the ec2_compose_host module with ECR images, URLs, env, secrets, and tunnel token secret" not in findings
     assert "prod outputs must expose EC2 deploy metadata and mark hostname-derived URLs sensitive" not in findings
     assert "github OIDC module must use scoped SSM deploy permissions instead of ECS/pass-role permissions" not in findings

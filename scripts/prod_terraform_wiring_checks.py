@@ -123,6 +123,10 @@ def _check_ec2_outputs_and_ssm(
     ):
         findings.append("prod variables must expose EC2 host inputs, one tunnel secret, runtime env map, and runtime secret refs")
 
+    runtime_secret_arns = _block(prod_variables, "variable", "backend_runtime_secret_arns")
+    if 'startswith(value, "arn:")' not in runtime_secret_arns:
+        findings.append("prod must reject raw secret values in backend_runtime_secret_arns")
+
     if 'module "compose_host"' not in prod_main or not _contains_all(
         prod_main,
         [

@@ -102,6 +102,13 @@ variable "backend_runtime_secret_arns" {
   description = "Backend app secret environment variables mapped to Secrets Manager or SSM ARNs, such as OPENAI_API_KEY and CHAT_API_KEY."
   type        = map(string)
   default     = {}
+
+  validation {
+    condition = alltrue([
+      for value in values(var.backend_runtime_secret_arns) : startswith(value, "arn:")
+    ])
+    error_message = "backend_runtime_secret_arns values must be Secrets Manager or SSM ARNs, not raw secret values."
+  }
 }
 
 variable "kms_key_arns" {
