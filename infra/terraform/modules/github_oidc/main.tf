@@ -78,6 +78,7 @@ data "aws_iam_policy_document" "deploy" {
     sid = "SsmDeployStatusReads"
     actions = [
       "ssm:GetCommandInvocation",
+      "ssm:DescribeInstanceInformation",
       "ssm:ListCommandInvocations",
       "ssm:ListCommands",
     ]
