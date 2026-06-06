@@ -33,6 +33,7 @@ def test_prod_externalizes_hostnames_and_routes_single_central_tunnel() -> None:
     assert "prod must configure one central Cloudflare tunnel with Compose DNS origins" not in findings
     assert "prod must not keep per-service production Cloudflare tunnels" not in findings
     assert "cloudflare tunnel module output wording must not be ECS-sidecar specific" not in findings
+    assert "cloudflare tunnel DNS for_each keys must unwrap externally supplied sensitive hostnames" not in findings
 
 
 def test_prod_wires_ec2_compose_runtime_outputs_and_ssm_deploy_permissions() -> None:

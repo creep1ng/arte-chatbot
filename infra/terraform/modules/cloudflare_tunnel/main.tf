@@ -33,7 +33,7 @@ data "cloudflare_zero_trust_tunnel_cloudflared_token" "this" {
 
 resource "cloudflare_dns_record" "hostname" {
   for_each = {
-    for route in var.public_hostnames : route.hostname => route
+    for route in var.public_hostnames : nonsensitive(route.hostname) => route
   }
 
   zone_id = var.zone_id

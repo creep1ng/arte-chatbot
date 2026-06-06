@@ -21,11 +21,12 @@ def check_prod_terraform_wiring(project_root: Path) -> list[str]:
     prod_variables = _read(project_root / PROD_ROOT / "variables.tf")
     prod_outputs = _read(project_root / PROD_ROOT / "outputs.tf")
     tunnel_outputs = _read(project_root / CLOUDFLARE_TUNNEL_ROOT / "outputs.tf")
+    tunnel_main = _read(project_root / CLOUDFLARE_TUNNEL_ROOT / "main.tf")
     github_main = _read(project_root / GITHUB_OIDC_ROOT / "main.tf")
     github_variables = _read(project_root / GITHUB_OIDC_ROOT / "variables.tf")
 
     findings.extend(_check_ami_selection(prod_main, prod_variables))
-    findings.extend(_check_hostnames_and_tunnel(prod_main, prod_variables, tunnel_outputs))
+    findings.extend(_check_hostnames_and_tunnel(prod_main, prod_variables, tunnel_main, tunnel_outputs))
     findings.extend(_check_ec2_outputs_and_ssm(prod_main, prod_variables, prod_outputs, github_main, github_variables))
 
     return findings
@@ -60,7 +61,7 @@ def _check_ami_selection(prod_main: str, prod_variables: str) -> list[str]:
     return findings
 
 
-def _check_hostnames_and_tunnel(prod_main: str, prod_variables: str, tunnel_outputs: str) -> list[str]:
+def _check_hostnames_and_tunnel(prod_main: str, prod_variables: str, tunnel_main: str, tunnel_outputs: str) -> list[str]:
     findings: list[str] = []
     hostname_names = ["backend_hostname", "frontend_hostname", "admin_hostname"]
     hostname_blocks = [_block(prod_variables, "variable", name) for name in hostname_names]
@@ -91,6 +92,9 @@ def _check_hostnames_and_tunnel(prod_main: str, prod_variables: str, tunnel_outp
 
     if "ECS sidecar" in tunnel_outputs:
         findings.append("cloudflare tunnel module output wording must not be ECS-sidecar specific")
+
+    if "nonsensitive(route.hostname) => route" not in tunnel_main:
+        findings.append("cloudflare tunnel DNS for_each keys must unwrap externally supplied sensitive hostnames")
 
     return findings
 
