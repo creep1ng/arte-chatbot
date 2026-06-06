@@ -95,6 +95,9 @@ def _check_module_contract(variables: str, outputs: str, main: str) -> list[str]
     if not security_group_block or "egress" not in security_group_block or re.search(r"(?m)^\s+ingress\s*{", security_group_block):
         findings.append("instance security group must be outbound-only with no ingress blocks")
 
+    if not _contains_all(security_group_block, ['from_port   = 80', 'to_port     = 80']):
+        findings.append("instance security group must allow outbound HTTP for Ubuntu package bootstrap")
+
     required_iam = ["AmazonSSMManagedInstanceCore", "ecr:GetAuthorizationToken", "s3:GetObject", "secretsmanager:GetSecretValue", "ssm:GetParameters"]
     if not _contains_all(main, required_iam):
         findings.append("instance role must allow SSM, ECR pull, S3 data access, and runtime secret reads")

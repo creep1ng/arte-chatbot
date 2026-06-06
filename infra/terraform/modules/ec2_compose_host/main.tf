@@ -149,6 +149,14 @@ resource "aws_security_group" "this" {
   }
 
   egress {
+    description = "Allow outbound HTTP for Ubuntu package repositories during bootstrap."
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
     description = "Allow outbound Cloudflare Tunnel QUIC."
     from_port   = 7844
     to_port     = 7844

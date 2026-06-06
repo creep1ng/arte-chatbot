@@ -41,5 +41,6 @@ def test_module_declares_host_inputs_outputs_and_outbound_only_security() -> Non
     assert "module variables must include subnet, optional AMI override, size, images, urls, bucket, secrets, tunnel token, and deploy metadata" not in findings
     assert "module outputs must expose host and deploy metadata without secret values" not in findings
     assert "instance security group must be outbound-only with no ingress blocks" not in findings
+    assert "instance security group must allow outbound HTTP for Ubuntu package bootstrap" not in findings
     assert "instance role must allow SSM, ECR pull, S3 data access, and runtime secret reads" not in findings
     assert "bootstrap must install Docker Compose assets under /opt/arte-chatbot" not in findings
