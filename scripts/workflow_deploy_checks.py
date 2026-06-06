@@ -90,6 +90,8 @@ def _check_ssm_deploy(deploy_job: str, publish_release_job: str) -> list[str]:
         findings.append("production deploy must keep SHA-tagged ECR release images")
 
     ssm_needles = [
+        "aws ssm describe-instance-information",
+        "InstanceInformationList[0].PingStatus",
         "aws ssm send-command",
         "AWS-RunShellScript",
         "/opt/arte-chatbot/deploy.sh ${SHA_TAG}",

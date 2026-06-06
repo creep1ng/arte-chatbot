@@ -444,6 +444,27 @@ jobs:
 
       - name: Deploy EC2 Compose stack through SSM
         run: |
+          echo "Waiting for EC2 instance to become SSM-managed: ${{ steps.compose-host.outputs.instance-id }}"
+          for i in {1..40}; do
+            PING_STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${{ steps.compose-host.outputs.instance-id }}" \
+              --query "InstanceInformationList[0].PingStatus" \
+              --output text)
+
+            if [[ "${PING_STATUS}" == "Online" ]]; then
+              echo "EC2 instance is online in SSM"
+              break
+            fi
+
+            echo "Attempt $i/40: SSM status is ${PING_STATUS}; waiting..."
+            sleep 15
+          done
+
+          if [[ "${PING_STATUS}" != "Online" ]]; then
+            echo "EC2 instance did not become SSM-managed in time"
+            exit 1
+          fi
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ steps.compose-host.outputs.instance-id }}" \
             --document-name "AWS-RunShellScript" \

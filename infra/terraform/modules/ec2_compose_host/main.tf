@@ -20,7 +20,7 @@ locals {
     frontend_image_uri  = var.frontend_image_uri
     admin_image_uri     = var.admin_image_uri
     cloudflared_image   = var.cloudflared_image
-    initial_image_tag   = var.initial_image_tag
+    initial_image_tag   = "bootstrap"
     backend_environment = local.backend_environment
     public_api_url      = var.public_api_url
     public_frontend_url = var.public_frontend_url
@@ -193,7 +193,7 @@ resource "aws_instance" "this" {
     ${indent(4, local.deploy_script)}
     DEPLOY
     chmod 0755 ${local.project_dir}/deploy.sh
-    printf '%s\n' '${var.initial_image_tag}' > ${local.project_dir}/current-image-tag
+    printf '%s\n' 'bootstrap' > ${local.project_dir}/current-image-tag
 
     apt-get update
     apt-get install -y awscli ca-certificates curl docker.io docker-compose-v2 unzip
