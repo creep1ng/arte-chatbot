@@ -34,7 +34,7 @@ resolve_secret() {
 %{ for name, arn in backend_runtime_secret_arns ~}
 printf '%s=%q\n' '${name}' "$(resolve_secret '${arn}')" >> "$RUNTIME_ENV_FILE"
 %{ endfor ~}
-printf '%s=%q\n' 'CLOUDFLARE_TUNNEL_TOKEN' "$(resolve_secret '${cloudflare_tunnel_token_secret_arn}')" >> "$RUNTIME_ENV_FILE"
+printf '%s=%q\n' 'TUNNEL_TOKEN' "$(resolve_secret '${cloudflare_tunnel_token_secret_arn}')" >> "$RUNTIME_ENV_FILE"
 chmod 0600 "$RUNTIME_ENV_FILE"
 
 docker compose --project-directory "$PROJECT_DIR" pull
@@ -42,5 +42,15 @@ docker compose --project-directory "$PROJECT_DIR" pull
 sed -i "s/:$${PREVIOUS_TAG:-bootstrap}/:$${IMAGE_TAG}/g" "$${PROJECT_DIR}/docker-compose.yml"
 printf '%s\n' "$IMAGE_TAG" > "$CURRENT_TAG_FILE"
 
-docker compose --project-directory "$PROJECT_DIR" up -d --remove-orphans
-curl -fsS --retry 12 --retry-delay 5 http://127.0.0.1:8000/health >/dev/null
+docker compose --project-directory "$PROJECT_DIR" up -d --remove-orphans --wait --wait-timeout 120
+
+for attempt in {1..12}; do
+  if docker compose --project-directory "$PROJECT_DIR" exec -T backend \
+    curl -fsS http://127.0.0.1:8000/health >/dev/null; then
+    exit 0
+  fi
+  sleep 5
+done
+
+echo "backend health check failed" >&2
+exit 7

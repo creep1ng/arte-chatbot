@@ -8,9 +8,6 @@ services:
 %{ for key, value in backend_environment ~}
       ${key}: "${value}"
 %{ endfor ~}
-%{ for secret_name in backend_runtime_secret_names ~}
-      ${secret_name}: "$${${secret_name}}"
-%{ endfor ~}
     expose:
       - "8000"
     healthcheck:
@@ -46,7 +43,6 @@ services:
     env_file:
       - ./runtime.env
     environment:
-      TUNNEL_TOKEN: "$${${cloudflare_tunnel_token_secret_name}}"
       BACKEND_ORIGIN_URL: "http://backend:8000"
       FRONTEND_ORIGIN_URL: "http://frontend:3000"
       ADMIN_ORIGIN_URL: "http://admin:3000"

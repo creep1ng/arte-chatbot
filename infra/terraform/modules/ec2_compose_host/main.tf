@@ -16,17 +16,15 @@ locals {
   )
 
   compose_yaml = templatefile("${path.module}/templates/docker-compose.yml.tftpl", {
-    backend_image_uri                   = var.backend_image_uri
-    frontend_image_uri                  = var.frontend_image_uri
-    admin_image_uri                     = var.admin_image_uri
-    cloudflared_image                   = var.cloudflared_image
-    initial_image_tag                   = var.initial_image_tag
-    backend_environment                 = local.backend_environment
-    backend_runtime_secret_names        = keys(var.backend_runtime_secret_arns)
-    cloudflare_tunnel_token_secret_name = "CLOUDFLARE_TUNNEL_TOKEN"
-    public_api_url                      = var.public_api_url
-    public_frontend_url                 = var.public_frontend_url
-    public_admin_url                    = var.public_admin_url
+    backend_image_uri   = var.backend_image_uri
+    frontend_image_uri  = var.frontend_image_uri
+    admin_image_uri     = var.admin_image_uri
+    cloudflared_image   = var.cloudflared_image
+    initial_image_tag   = var.initial_image_tag
+    backend_environment = local.backend_environment
+    public_api_url      = var.public_api_url
+    public_frontend_url = var.public_frontend_url
+    public_admin_url    = var.public_admin_url
   })
 
   deploy_script = templatefile("${path.module}/templates/deploy.sh.tftpl", {
@@ -198,7 +196,7 @@ resource "aws_instance" "this" {
     printf '%s\n' '${var.initial_image_tag}' > ${local.project_dir}/current-image-tag
 
     apt-get update
-    apt-get install -y awscli ca-certificates curl docker.io unzip
+    apt-get install -y awscli ca-certificates curl docker.io docker-compose-v2 unzip
     systemctl enable --now docker
     usermod -aG docker ubuntu || true
   USERDATA
