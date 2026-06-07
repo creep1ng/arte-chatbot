@@ -4,9 +4,10 @@ This module provides a client to interact with AWS S3 for downloading
 PDF files containing technical product datasheets.
 """
 
+import asyncio
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.config import Config
@@ -35,6 +36,12 @@ def _build_s3_client_kwargs(
 
 class S3DownloadError(Exception):
     """Raised when S3 download operations fail."""
+
+    pass
+
+
+class S3ObjectNotFoundError(S3DownloadError):
+    """Raised when an S3 object does not exist."""
 
     pass
 
@@ -233,3 +240,183 @@ class S3Client:
         except Exception as e:
             logger.exception("Unexpected error uploading to S3: %s", e)
             raise S3UploadError(f"Unexpected S3 upload error: {e}") from e
+
+    async def list_objects(self, prefix: str = "") -> List[Dict[str, Any]]:
+        """List objects under a prefix using list_objects_v2.
+
+        Args:
+            prefix: S3 key prefix to filter objects.
+
+        Returns:
+            List of dicts with keys such as Key, Size, LastModified.
+
+        Raises:
+            S3DownloadError: If the listing fails or bucket is not configured.
+        """
+        if not self.bucket_name:
+            raise S3DownloadError("S3 bucket name not configured")
+
+        def _list() -> List[Dict[str, Any]]:
+            try:
+                paginator = self.client.get_paginator("list_objects_v2")
+                results: List[Dict[str, Any]] = []
+                for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+                    results.extend(page.get("Contents", []))
+                return results
+            except ClientError as e:
+                raise S3DownloadError(f"S3 list failed: {e}") from e
+
+        return await asyncio.to_thread(_list)
+
+    async def head_object(self, key: str) -> Dict[str, Any]:
+        """Return metadata for a single S3 object.
+
+        Args:
+            key: The S3 key (path) to inspect.
+
+        Returns:
+            Dict with metadata fields such as ETag, ContentLength, LastModified.
+
+        Raises:
+            S3DownloadError: If the object does not exist or the request fails.
+        """
+        if not self.bucket_name:
+            raise S3DownloadError("S3 bucket name not configured")
+
+        def _head() -> Dict[str, Any]:
+            try:
+                response = self.client.head_object(Bucket=self.bucket_name, Key=key)
+                return dict(response)
+            except ClientError as e:
+                error_code = e.response.get("Error", {}).get("Code", "Unknown")
+                if error_code in {"404", "NoSuchKey", "NotFound"}:
+                    raise S3ObjectNotFoundError(f"S3 object not found: {key}") from e
+                raise S3DownloadError(f"S3 head_object failed: {e}") from e
+
+        return await asyncio.to_thread(_head)
+
+    async def delete_object(self, key: str) -> None:
+        """Delete a single object from S3.
+
+        Args:
+            key: The S3 key (path) to delete.
+
+        Raises:
+            S3UploadError: If the deletion fails or bucket is not configured.
+        """
+        if not self.bucket_name:
+            raise S3UploadError("S3 bucket name not configured")
+
+        def _delete() -> None:
+            try:
+                self.client.delete_object(Bucket=self.bucket_name, Key=key)
+            except ClientError as e:
+                raise S3UploadError(f"S3 delete failed: {e}") from e
+
+        await asyncio.to_thread(_delete)
+
+    async def delete_objects(self, keys: List[str]) -> None:
+        """Delete multiple objects via delete_objects batch API.
+
+        Args:
+            keys: List of S3 keys to delete.
+
+        Raises:
+            S3UploadError: If the batch deletion fails or bucket is not configured.
+        """
+        if not self.bucket_name:
+            raise S3UploadError("S3 bucket name not configured")
+
+        def _delete_batch() -> None:
+            try:
+                self.client.delete_objects(
+                    Bucket=self.bucket_name,
+                    Delete={
+                        "Objects": [{"Key": k} for k in keys],
+                        "Quiet": True,
+                    },
+                )
+            except ClientError as e:
+                raise S3UploadError(f"S3 batch delete failed: {e}") from e
+
+        await asyncio.to_thread(_delete_batch)
+
+    async def generate_presigned_post(
+        self,
+        key: str,
+        content_type: str = "application/pdf",
+        expires: int = 3600,
+    ) -> Dict[str, Any]:
+        """Generate a presigned POST URL for direct browser upload.
+
+        Args:
+            key: The S3 key (path) where the uploaded object will be stored.
+            content_type: Expected Content-Type of the upload. Defaults to application/pdf.
+            expires: Expiration time in seconds. Defaults to 3600.
+
+        Returns:
+            Dict with "url" and "fields" for the presigned POST.
+
+        Raises:
+            S3UploadError: If generation fails or bucket is not configured.
+        """
+        if not self.bucket_name:
+            raise S3UploadError("S3 bucket name not configured")
+
+        def _generate() -> Dict[str, Any]:
+            try:
+                return self.client.generate_presigned_post(
+                    Bucket=self.bucket_name,
+                    Key=key,
+                    Fields={"Content-Type": content_type},
+                    Conditions=[
+                        {"Content-Type": content_type},
+                        ["content-length-range", 1024, 104_857_600],
+                    ],
+                    ExpiresIn=expires,
+                )
+            except ClientError as e:
+                raise S3UploadError(f"Presigned post generation failed: {e}") from e
+
+        return await asyncio.to_thread(_generate)
+
+    async def generate_presigned_get_url(
+        self,
+        key: str,
+        response_content_disposition: str,
+        expires: int = 300,
+    ) -> str:
+        """Generate a presigned GET URL for browser access to an S3 object.
+
+        Args:
+            key: The S3 key (path) to read.
+            response_content_disposition: Content-Disposition override for the
+                response, usually ``inline`` or ``attachment`` with a filename.
+            expires: Expiration time in seconds. Defaults to 300.
+
+        Returns:
+            A presigned HTTPS URL for temporary object access.
+
+        Raises:
+            S3DownloadError: If generation fails or bucket is not configured.
+        """
+        if not self.bucket_name:
+            raise S3DownloadError("S3 bucket name not configured")
+
+        def _generate() -> str:
+            try:
+                return self.client.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": self.bucket_name,
+                        "Key": key,
+                        "ResponseContentDisposition": response_content_disposition,
+                    },
+                    ExpiresIn=expires,
+                )
+            except ClientError as e:
+                raise S3DownloadError(
+                    f"Presigned get URL generation failed: {e}"
+                ) from e
+
+        return await asyncio.to_thread(_generate)

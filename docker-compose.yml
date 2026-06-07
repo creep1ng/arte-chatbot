@@ -15,6 +15,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORT=8000
+      # Local Docker runs include the admin Logs screen, so persist chat turns
+      # unless explicitly disabled in the shell/.env with CONVERSATION_LOGGING_ENABLED=false.
+      - CONVERSATION_LOGGING_ENABLED=${CONVERSATION_LOGGING_ENABLED:-true}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -37,6 +40,20 @@ services:
     environment:
       - API_URL=http://localhost:8000
       - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  admin-panel:
+    build:
+      context: ./admin-panel
+      dockerfile: Dockerfile
+    container_name: arte-admin-panel
+    ports:
+      - "3001:3000"
+    environment:
+      # This is a NEXT_PUBLIC value consumed by the browser; use localhost for local Docker runs.
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
       - backend
     restart: unless-stopped

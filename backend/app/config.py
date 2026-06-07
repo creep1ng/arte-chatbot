@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     chat_api_key: Optional[str] = Field(
         default=None, description="API key for authenticating /chat endpoint clients"
     )
+    admin_api_key: Optional[str] = Field(
+        default=None, description="API key for authenticating /admin endpoint clients"
+    )
 
     # App
     app_env: str = Field(default="local", description="Runtime environment name")
@@ -281,6 +284,16 @@ class _SettingsProxy:
         access creates a fresh Settings() that reads the updated env.
         """
         self._instance = None
+
+    def reload(self) -> None:
+        """Atomically reload settings from environment variables.
+
+        Creates a new Settings() instance and swaps the internal reference.
+        Concurrent reads are safe because Python reference assignment is
+        atomic under the GIL; readers will see either the old or new
+        instance, never a partially constructed one.
+        """
+        self._instance = Settings()
 
     def _ensure_instance(self) -> Settings:
         if self._instance is None:

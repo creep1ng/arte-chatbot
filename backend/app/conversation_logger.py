@@ -5,12 +5,15 @@ conversation is serialized as a Pydantic model and uploaded to S3
 as a JSON file. Failures are caught silently to never block responses.
 """
 
+import asyncio
+from collections import defaultdict
 import logging
 import re
-from typing import Optional
+from typing import Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 
+from backend.app.admin_schemas import ConversationLogSummary, LogFilterParams
 from backend.app.config import settings
 from backend.app.s3_client import S3Client
 
@@ -30,6 +33,9 @@ def redact_text(text: str) -> str:
     for pattern in _REDACTION_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
     return redacted
+
+
+_log_reader_s3 = S3Client()
 
 
 class ConversationLogEntry(BaseModel):
@@ -127,8 +133,6 @@ class ConversationLogger:
             entry: The conversation log entry to log.
         """
         try:
-            import asyncio
-
             await asyncio.to_thread(self._upload, entry)
         except Exception:
             logger.warning(
@@ -137,3 +141,96 @@ class ConversationLogger:
                 entry.turn_number,
                 exc_info=True,
             )
+
+
+async def list_logs(
+    filters: LogFilterParams,
+) -> Tuple[list[ConversationLogSummary], int]:
+    """List and filter conversation logs from S3.
+
+    Args:
+        filters: Filtering and pagination parameters.
+
+    Returns:
+        Tuple of (paginated summaries, total count).
+    """
+    prefix = f"{settings.conversation_log_prefix}/"
+    objects = await _log_reader_s3.list_objects(prefix=prefix)
+
+    entries: list[ConversationLogEntry] = []
+    for obj in objects:
+        key = obj.get("Key", "")
+        if not key.endswith(".json"):
+            continue
+        try:
+            data = await asyncio.to_thread(_log_reader_s3.download_pdf, key)
+            entry = ConversationLogEntry.model_validate_json(data)
+            entries.append(entry)
+        except Exception:
+            continue
+
+    filtered = entries
+    if filters.session_id:
+        filtered = [e for e in filtered if e.session_id == filters.session_id]
+    if filters.intent_type:
+        filtered = [e for e in filtered if e.intent_type == filters.intent_type]
+    if filters.escalated is not None:
+        filtered = [e for e in filtered if e.escalate == filters.escalated]
+    if filters.date_from:
+        filtered = [e for e in filtered if e.timestamp >= filters.date_from]
+    if filters.date_to:
+        filtered = [e for e in filtered if e.timestamp <= filters.date_to]
+
+    sessions: dict[str, list[ConversationLogEntry]] = defaultdict(list)
+    for e in filtered:
+        sessions[e.session_id].append(e)
+
+    summaries: list[ConversationLogSummary] = []
+    for session_id, session_entries in sessions.items():
+        sorted_entries = sorted(session_entries, key=lambda x: x.turn_number)
+        intent_types = list({e.intent_type for e in sorted_entries})
+        escalated = any(e.escalate for e in sorted_entries)
+        last_ts = sorted_entries[-1].timestamp if sorted_entries else None
+        summaries.append(
+            ConversationLogSummary(
+                session_id=session_id,
+                turn_count=len(sorted_entries),
+                last_timestamp=last_ts,
+                intent_types=intent_types,
+                escalated=escalated,
+            )
+        )
+
+    summaries.sort(key=lambda s: s.last_timestamp or "", reverse=True)
+
+    total = len(summaries)
+    paginated = summaries[filters.offset : filters.offset + filters.limit]
+    return paginated, total
+
+
+async def get_log(session_id: str) -> list[ConversationLogEntry]:
+    """Retrieve the full transcript for a session.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        List of ConversationLogEntry sorted by turn_number.
+    """
+    prefix = f"{settings.conversation_log_prefix}/{session_id}/"
+    objects = await _log_reader_s3.list_objects(prefix=prefix)
+
+    entries: list[ConversationLogEntry] = []
+    for obj in objects:
+        key = obj.get("Key", "")
+        if not key.endswith(".json"):
+            continue
+        try:
+            data = await asyncio.to_thread(_log_reader_s3.download_pdf, key)
+            entry = ConversationLogEntry.model_validate_json(data)
+            entries.append(entry)
+        except Exception:
+            continue
+
+    entries.sort(key=lambda e: e.turn_number)
+    return entries

@@ -3,8 +3,8 @@ Catalog module for product indexing and search functionality.
 Loads catalog index from S3 and provides search capabilities.
 """
 
-import logging
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -54,7 +54,9 @@ class Catalog:
     def _load_index(self, index_data: Dict[str, Any]) -> None:
         """Load and validate catalog index data."""
         try:
-            products_data = index_data.get("productos", index_data.get("products", []))
+            products_data = index_data.get("products")
+            if products_data is None:
+                products_data = index_data.get("productos", [])
             self.products = [CatalogProduct(**p) for p in products_data]
             logger.info("Loaded %d products into catalog", len(self.products))
         except Exception as e:
@@ -119,6 +121,27 @@ class Catalog:
 
 
 _catalog_instance: Optional[Catalog] = None
+
+
+def save_catalog(index_data: dict, etag: Optional[str] = None) -> None:
+    """Serialize catalog index to JSON and upload to S3.
+
+    Args:
+        index_data: Dictionary representing the catalog index.
+        etag: Optional ETag for conditional upload (optimistic locking
+            is handled by the caller before invoking this function).
+    """
+    json_bytes = json.dumps(index_data, ensure_ascii=False, indent=2).encode("utf-8")
+    s3_client.put_object(
+        key=CATALOG_INDEX_PATH,
+        data=json_bytes,
+        content_type="application/json",
+    )
+
+
+def reload_catalog() -> None:
+    """Invalidate the cached catalog and force a reload from S3."""
+    get_catalog(force_reload=True)
 
 
 def get_catalog(force_reload: bool = False) -> Catalog:

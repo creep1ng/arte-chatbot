@@ -1,0 +1,43 @@
+name: Admin Panel CI
+
+on:
+  push:
+    paths:
+      - "admin-panel/**"
+      - ".github/workflows/admin-panel.yml"
+  pull_request:
+    paths:
+      - "admin-panel/**"
+      - ".github/workflows/admin-panel.yml"
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: admin-panel/package-lock.json
+
+      - name: Install dependencies
+        working-directory: admin-panel
+        run: npm ci
+
+      - name: Lint
+        working-directory: admin-panel
+        run: npm run lint
+
+      - name: Typecheck
+        working-directory: admin-panel
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: admin-panel
+        run: npm run test:unit
+
+      # Build intentionally omitted: repository policy for this slice forbids build commands.

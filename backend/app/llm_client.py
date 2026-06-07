@@ -34,8 +34,6 @@ def expand_query_with_context(message: str, history: list) -> str:
     return message
 
 
-DEFAULT_MODEL = settings.llm_model
-
 ARTE_SYSTEM_PROMPT = (
     "Eres un asistente técnico de Arte Soluciones Energéticas, una empresa B2B "
     "de energía solar. Tu rol es ayudar a clientes con consultas sobre productos "
@@ -140,12 +138,12 @@ class LLMClient:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = DEFAULT_MODEL,
+        model: Optional[str] = None,
     ) -> None:
         self.api_key = (
             api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")
         )
-        self.model = model
+        self._model_override = model
 
         # Build system prompt: base + WhatsApp formatting when enabled
         whatsapp_enabled = os.getenv(
@@ -164,6 +162,16 @@ class LLMClient:
 
         # OpenAI SDK client
         self._openai_client: Optional[OpenAI] = None
+
+    @property
+    def model(self) -> str:
+        """Return the effective model, honoring runtime config reloads."""
+        return self._model_override or settings.llm_model
+
+    @model.setter
+    def model(self, value: str) -> None:
+        """Allow tests and explicit callers to pin a model on this client."""
+        self._model_override = value
 
     @property
     def openai_client(self) -> OpenAI:
