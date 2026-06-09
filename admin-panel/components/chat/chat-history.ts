@@ -43,6 +43,17 @@ export function assistantPartsFromResponse(response: ChatResponse): string[] {
     return splitParts;
   }
 
+  if ((response.delays_ms?.length ?? 0) > 0) {
+    const responseSplitParts = response.response
+      .split(/\n{2,}/)
+      .map((message) => message.trim())
+      .filter(Boolean);
+
+    if (responseSplitParts.length > 0) {
+      return responseSplitParts;
+    }
+  }
+
   return response.response.trim() ? [response.response] : [];
 }
 

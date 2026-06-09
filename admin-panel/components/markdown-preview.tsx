@@ -4,6 +4,7 @@ import { useMemo } from "react";
 
 interface MarkdownPreviewProps {
   content: string;
+  className?: string;
 }
 
 function escapeHtml(value: string): string {
@@ -18,16 +19,18 @@ function escapeHtml(value: string): string {
 function renderInline(value: string): string {
   return escapeHtml(value)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<strong>$1</strong>")
+    .replace(/(^|\s)_(.+?)_(?=\s|$|[.,;:!?])/g, "$1<em>$2</em>")
     .replace(/`(.+?)`/g, "<code>$1</code>");
 }
 
-function renderMarkdown(content: string): string {
+export function renderMarkdown(content: string): string {
   const lines = content.split("\n");
   const html: string[] = [];
   let listOpen = false;
 
   for (const line of lines) {
-    if (line.startsWith("- ")) {
+    if (line.startsWith("- ") || line.startsWith("• ")) {
       if (!listOpen) {
         html.push("<ul>");
         listOpen = true;
@@ -59,12 +62,15 @@ function renderMarkdown(content: string): string {
   return html.join("\n");
 }
 
-export function MarkdownPreview({ content }: MarkdownPreviewProps) {
+export function MarkdownPreview({ content, className }: MarkdownPreviewProps) {
   const html = useMemo(() => renderMarkdown(content), [content]);
 
   return (
     <article
-      className="prose prose-sm max-w-none rounded-2xl border bg-card p-4 text-foreground shadow-sm [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:text-2xl [&_h1]:font-black [&_h2]:text-xl [&_h2]:font-bold [&_h3]:text-lg [&_h3]:font-bold [&_li]:ml-5 [&_li]:list-disc [&_p]:my-2"
+      className={
+        className ??
+        "prose prose-sm max-w-none rounded-2xl border bg-card p-4 text-foreground shadow-sm [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:text-2xl [&_h1]:font-black [&_h2]:text-xl [&_h2]:font-bold [&_h3]:text-lg [&_h3]:font-bold [&_li]:ml-5 [&_li]:list-disc [&_p]:my-2"
+      }
       data-testid="markdown-preview"
       dangerouslySetInnerHTML={{ __html: html || "<p>Sin contenido.</p>" }}
     />

@@ -164,6 +164,35 @@ describe("Admin chat workbench", () => {
     expect(window.localStorage.getItem("CHAT_API_KEY")).toBeNull();
   });
 
+  it("renders markdown and preserves split responses when only delays metadata is present", async () => {
+    window.localStorage.setItem(STORAGE_KEY, "admin-key");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        response: "*Primera parte*\n• Punto técnico\n\nSistema _on grid_",
+        session_id: "session-split-fallback",
+        source_documents: [],
+        messages: [],
+        delays_ms: [100, 200],
+        escalate: false,
+      }),
+    );
+
+    const { container } = renderWithProviders(<AdminChatPage />);
+
+    await userEvent.type(
+      screen.getByLabelText(/mensaje para probar el chatbot/i),
+      "Compará paneles con markdown",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /enviar mensaje/i }));
+
+    expect(await screen.findByText("Primera parte")).toBeInTheDocument();
+    expect(screen.getByText("Punto técnico")).toBeInTheDocument();
+    expect(screen.getByText("Sistema", { exact: false })).toBeInTheDocument();
+    expect(container.querySelector("strong")?.textContent).toBe("Primera parte");
+    expect(container.querySelector("em")?.textContent).toBe("on grid");
+    expect(container.querySelector("li")?.textContent).toBe("Punto técnico");
+  });
+
   it("shows deduplicated datasheet sources in a modal with admin download flow", async () => {
     window.localStorage.setItem(STORAGE_KEY, "admin-key");
     const openMock = vi.spyOn(window, "open").mockImplementation(() => null);

@@ -200,6 +200,35 @@
     box-shadow: 0 12px 32px rgba(15, 15, 15, 0.08);
   }
 
+  .chat-plain-text {
+    white-space: pre-wrap;
+  }
+
+  .chat-markdown {
+    display: grid;
+    gap: 0.55rem;
+    white-space: normal;
+  }
+
+  .chat-markdown :where(p, ul, ol, h1, h2, h3) {
+    margin: 0;
+  }
+
+  .chat-markdown :where(ul, ol) {
+    padding-left: 1.15rem;
+  }
+
+  .chat-markdown li {
+    margin: 0.2rem 0;
+  }
+
+  .chat-markdown code {
+    border-radius: 0.35rem;
+    background: rgba(15, 15, 15, 0.08);
+    padding: 0.05rem 0.28rem;
+    font-size: 0.9em;
+  }
+
   .chat-message-user .chat-message-card {
     border-color: rgba(255, 194, 0, 0.76);
     background: linear-gradient(135deg, var(--chat-amber), #ffe28a);

@@ -1,3 +1,4 @@
+import { MarkdownPreview } from "@/components/markdown-preview";
 import type { AdminChatMessage, SourceDocument } from "@/lib/types";
 
 interface ChatMessageBubbleProps {
@@ -19,7 +20,11 @@ export function ChatMessageBubble({ message, onOpenSources }: ChatMessageBubbleP
       className={message.role === "user" ? "chat-message chat-message-user" : "chat-message"}
     >
       <div className="chat-message-card">
-        <p>{message.content}</p>
+        {message.role === "assistant" ? (
+          <MarkdownPreview content={message.content} className="chat-markdown" />
+        ) : (
+          <p className="chat-plain-text">{message.content}</p>
+        )}
         {hasTokenMetrics ? (
           <div className="chat-badge-row" aria-label="Métricas de tokens">
             {message.inputTokens != null ? <span>Entrada: {message.inputTokens}</span> : null}
