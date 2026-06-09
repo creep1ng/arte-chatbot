@@ -69,12 +69,6 @@ variable "backend_tunnel_secret" {
   sensitive   = true
 }
 
-variable "frontend_tunnel_secret" {
-  description = "Local-staging-only frontend tunnel secret. Do not reuse production tunnel material."
-  type        = string
-  sensitive   = true
-}
-
 variable "admin_tunnel_secret" {
   description = "Local-staging-only admin tunnel secret. Do not reuse production tunnel material."
   type        = string
@@ -86,11 +80,6 @@ variable "backend_ecr_repository_url" {
   type        = string
 }
 
-variable "frontend_ecr_repository_url" {
-  description = "Existing frontend ECR repository URL that contains the explicit candidate tag."
-  type        = string
-}
-
 variable "admin_ecr_repository_url" {
   description = "Existing admin ECR repository URL that contains the explicit candidate tag."
   type        = string
@@ -98,11 +87,6 @@ variable "admin_ecr_repository_url" {
 
 variable "backend_ecr_repository_arn" {
   description = "Backend ECR repository ARN allowed for task execution pulls."
-  type        = string
-}
-
-variable "frontend_ecr_repository_arn" {
-  description = "Frontend ECR repository ARN allowed for task execution pulls."
   type        = string
 }
 
@@ -118,16 +102,6 @@ variable "backend_image_tag" {
   validation {
     condition     = can(regex("^(sha-[0-9a-fA-F]{7,40}|pr-[0-9]+-sha-[0-9a-fA-F]{7,40}|local-[a-zA-Z0-9._-]+)$", var.backend_image_tag))
     error_message = "backend_image_tag must be an explicit immutable candidate tag."
-  }
-}
-
-variable "frontend_image_tag" {
-  description = "Explicit immutable frontend ECR tag for this local staging environment."
-  type        = string
-
-  validation {
-    condition     = can(regex("^(sha-[0-9a-fA-F]{7,40}|pr-[0-9]+-sha-[0-9a-fA-F]{7,40}|local-[a-zA-Z0-9._-]+)$", var.frontend_image_tag))
-    error_message = "frontend_image_tag must be an explicit immutable candidate tag."
   }
 }
 

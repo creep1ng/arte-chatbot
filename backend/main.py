@@ -1108,12 +1108,8 @@ async def _process_chat_message(
                         total_tokens=acc_total_tokens,
                     )
 
-                response_text = cleaned_content
-                if settings.whatsapp_formatter_enabled:
-                    response_text = format_for_whatsapp(cleaned_content)
-
                 split_messages, split_delays = process_split_messages(
-                    text=response_text,
+                    text=cleaned_content,
                     intent_type=intent_for_behavior,
                     llm_regenerate_fn=None,
                 )
@@ -1128,6 +1124,10 @@ async def _process_chat_message(
                     )
                     response_text = "\n\n".join(split_messages)
                 else:
+                    response_text = cleaned_content
+                    if settings.whatsapp_formatter_enabled:
+                        response_text = format_for_whatsapp(cleaned_content)
+
                     response_text = maybe_prepend_greeting(
                         session_id=session_id,
                         response_text=response_text,

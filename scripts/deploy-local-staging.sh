@@ -10,7 +10,6 @@ DESTROY=false
 AUTO_APPROVE=false
 STAGING_ID=""
 BACKEND_TAG=""
-FRONTEND_TAG=""
 ADMIN_TAG=""
 EXPIRES_AT=""
 
@@ -19,7 +18,6 @@ usage() {
 Usage: scripts/deploy-local-staging.sh \
   --staging-id <id> \
   --backend-tag <sha-or-pr-tag> \
-  --frontend-tag <sha-or-pr-tag> \
   --admin-tag <sha-or-pr-tag> \
   [--domain-name artesolutions.com.co] [--aws-region us-east-1] \
   [--expires-at 2026-06-05T12:00:00Z] [--plan-only] [--destroy] [--auto-approve]
@@ -38,7 +36,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --staging-id) STAGING_ID="${2:-}"; shift 2 ;;
     --backend-tag) BACKEND_TAG="${2:-}"; shift 2 ;;
-    --frontend-tag) FRONTEND_TAG="${2:-}"; shift 2 ;;
     --admin-tag) ADMIN_TAG="${2:-}"; shift 2 ;;
     --domain-name) DOMAIN_NAME="${2:-}"; shift 2 ;;
     --aws-region) AWS_REGION="${2:-}"; shift 2 ;;
@@ -57,7 +54,6 @@ fi
 
 [[ -n "$STAGING_ID" ]] || fail "--staging-id is required"
 [[ -n "$BACKEND_TAG" ]] || fail "--backend-tag is required"
-[[ -n "$FRONTEND_TAG" ]] || fail "--frontend-tag is required"
 [[ -n "$ADMIN_TAG" ]] || fail "--admin-tag is required"
 
 if ! [[ "$STAGING_ID" =~ ^[a-z0-9][a-z0-9-]{1,30}$ ]]; then
@@ -77,7 +73,6 @@ validate_tag() {
 }
 
 validate_tag "backend" "$BACKEND_TAG"
-validate_tag "frontend" "$FRONTEND_TAG"
 validate_tag "admin" "$ADMIN_TAG"
 
 if [[ "$DOMAIN_NAME" != "artesolutions.com.co" ]]; then
@@ -101,11 +96,10 @@ if expires_at <= now or expires_at > now + timedelta(days=3, minutes=1):
     raise SystemExit(1)
 PY
 
-FRONTEND_HOSTNAME="staging-chatbot-${STAGING_ID}.${DOMAIN_NAME}"
 BACKEND_HOSTNAME="staging-chatbot-api-${STAGING_ID}.${DOMAIN_NAME}"
 ADMIN_HOSTNAME="staging-chatbot-admin-${STAGING_ID}.${DOMAIN_NAME}"
 
-for hostname in "$FRONTEND_HOSTNAME" "$BACKEND_HOSTNAME" "$ADMIN_HOSTNAME"; do
+for hostname in "$BACKEND_HOSTNAME" "$ADMIN_HOSTNAME"; do
   case "$hostname" in
     "api.${DOMAIN_NAME}"|"app.${DOMAIN_NAME}"|"admin.${DOMAIN_NAME}")
       fail "production URL/name rejected for local staging: $hostname"
@@ -119,13 +113,10 @@ required_tf_vars=(
   TF_VAR_cloudflare_account_id
   TF_VAR_cloudflare_zone_id
   TF_VAR_backend_tunnel_secret
-  TF_VAR_frontend_tunnel_secret
   TF_VAR_admin_tunnel_secret
   TF_VAR_backend_ecr_repository_url
-  TF_VAR_frontend_ecr_repository_url
   TF_VAR_admin_ecr_repository_url
   TF_VAR_backend_ecr_repository_arn
-  TF_VAR_frontend_ecr_repository_arn
   TF_VAR_admin_ecr_repository_arn
   TF_VAR_aws_bucket_name
   TF_VAR_backend_runtime_secret_arns
@@ -147,12 +138,11 @@ export TF_VAR_staging_id="$STAGING_ID"
 export TF_VAR_domain_name="$DOMAIN_NAME"
 export TF_VAR_aws_region="$AWS_REGION"
 export TF_VAR_backend_image_tag="$BACKEND_TAG"
-export TF_VAR_frontend_image_tag="$FRONTEND_TAG"
 export TF_VAR_admin_image_tag="$ADMIN_TAG"
 export TF_VAR_expiration_at="$EXPIRES_AT"
 
 echo "Local staging: $STAGING_ID"
-echo "Hostnames: $BACKEND_HOSTNAME, $FRONTEND_HOSTNAME, $ADMIN_HOSTNAME"
+echo "Hostnames: $BACKEND_HOSTNAME, $ADMIN_HOSTNAME"
 echo "Expires at: $EXPIRES_AT"
 
 terraform -chdir="$TF_DIR" init -reconfigure -backend-config="path=$STATE_PATH"
