@@ -3,20 +3,16 @@ locals {
 
   hostname_labels = {
     api   = "chatbot"
-    app   = "app"
     admin = "admin"
   }
 
-  backend_hostname  = "${local.hostname_labels.api}.${var.domain_name}"
-  frontend_hostname = "${local.hostname_labels.app}.${var.domain_name}"
-  admin_hostname    = "${local.hostname_labels.admin}.${var.domain_name}"
+  backend_hostname = "${local.hostname_labels.api}.${var.domain_name}"
+  admin_hostname   = "${local.hostname_labels.admin}.${var.domain_name}"
 
-  public_api_url      = "https://${local.backend_hostname}"
-  public_frontend_url = "https://${local.frontend_hostname}"
-  public_admin_url    = "https://${local.admin_hostname}"
+  public_api_url   = "https://${local.backend_hostname}"
+  public_admin_url = "https://${local.admin_hostname}"
 
   allowed_cors_origins = join(",", [
-    local.public_frontend_url,
     local.public_admin_url,
   ])
 
@@ -45,13 +41,6 @@ module "backend_ecr" {
   tags            = local.common_tags
 }
 
-module "frontend_ecr" {
-  source = "../../modules/ecr"
-
-  repository_name = "${var.name_prefix}-frontend"
-  tags            = local.common_tags
-}
-
 module "admin_ecr" {
   source = "../../modules/ecr"
 
@@ -75,24 +64,6 @@ module "backend_cloudflare_tunnel" {
   ]
 
   tags = ["project:arte-chatbot", "environment:prod", "service:backend"]
-}
-
-module "frontend_cloudflare_tunnel" {
-  source = "../../modules/cloudflare_tunnel"
-
-  account_id    = var.cloudflare_account_id
-  zone_id       = var.cloudflare_zone_id
-  tunnel_name   = "${var.name_prefix}-frontend"
-  tunnel_secret = var.frontend_tunnel_secret
-
-  public_hostnames = [
-    {
-      hostname         = local.frontend_hostname
-      local_origin_url = "http://localhost:3000"
-    }
-  ]
-
-  tags = ["project:arte-chatbot", "environment:prod", "service:frontend"]
 }
 
 module "admin_cloudflare_tunnel" {
@@ -123,10 +94,6 @@ module "cloudflare_tunnel_secrets" {
     backend_cloudflare_tunnel_token = {
       description = "cloudflared connector token for backend production service"
       value       = module.backend_cloudflare_tunnel.tunnel_token
-    }
-    frontend_cloudflare_tunnel_token = {
-      description = "cloudflared connector token for frontend production service"
-      value       = module.frontend_cloudflare_tunnel.tunnel_token
     }
     admin_cloudflare_tunnel_token = {
       description = "cloudflared connector token for admin production service"
@@ -180,7 +147,6 @@ module "backend_service" {
     AWS_BUCKET_NAME      = var.aws_bucket_name
     AWS_REGION           = var.aws_region
     PUBLIC_API_URL       = local.public_api_url
-    PUBLIC_FRONTEND_URL  = local.public_frontend_url
     PUBLIC_ADMIN_URL     = local.public_admin_url
     ALLOWED_CORS_ORIGINS = local.allowed_cors_origins
     PORT                 = "8000"
@@ -207,48 +173,6 @@ module "backend_service" {
   task_role_policy_json = data.aws_iam_policy_document.backend_task_s3.json
   ecr_repository_arns   = [module.backend_ecr.repository_arn]
   tags                  = merge(local.common_tags, { Service = "backend" })
-}
-
-module "frontend_service" {
-  source = "../../modules/ecs_service"
-
-  name             = "${var.name_prefix}-frontend"
-  environment      = local.environment
-  cluster_arn      = aws_ecs_cluster.this.arn
-  cluster_name     = aws_ecs_cluster.this.name
-  vpc_id           = var.vpc_id
-  subnet_ids       = var.private_subnet_ids
-  assign_public_ip = var.assign_public_ip
-  desired_count    = var.desired_count
-  cpu              = var.task_cpu
-  memory           = var.task_memory
-
-  image_uri      = "${module.frontend_ecr.repository_url}:${var.frontend_image_tag}"
-  container_name = "frontend"
-  container_port = 3000
-
-  environment_variables = {
-    API_URL = local.public_api_url
-  }
-
-  sidecar_containers = [
-    {
-      name      = "cloudflared"
-      image     = var.cloudflared_image
-      essential = true
-      command   = ["tunnel", "--no-autoupdate", "run"]
-      environment = {
-        TUNNEL_ORIGIN_URL = "http://localhost:3000"
-      }
-      secrets = {
-        TUNNEL_TOKEN = local.tunnel_token_secret_arns["frontend_cloudflare_tunnel_token"]
-      }
-    }
-  ]
-
-  health_check_command = ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null || exit 1"]
-  ecr_repository_arns  = [module.frontend_ecr.repository_arn]
-  tags                 = merge(local.common_tags, { Service = "frontend" })
 }
 
 module "admin_service" {
@@ -304,20 +228,16 @@ module "github_oidc" {
 
   ecr_repository_arns = [
     module.backend_ecr.repository_arn,
-    module.frontend_ecr.repository_arn,
     module.admin_ecr.repository_arn,
   ]
   ecs_cluster_arn = aws_ecs_cluster.this.arn
   ecs_service_arns = [
     module.backend_service.service_arn,
-    module.frontend_service.service_arn,
     module.admin_service.service_arn,
   ]
   pass_role_arns = [
     module.backend_service.task_role_arn,
     module.backend_service.execution_role_arn,
-    module.frontend_service.task_role_arn,
-    module.frontend_service.execution_role_arn,
     module.admin_service.task_role_arn,
     module.admin_service.execution_role_arn,
   ]

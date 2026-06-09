@@ -56,12 +56,6 @@ variable "backend_tunnel_secret" {
   sensitive   = true
 }
 
-variable "frontend_tunnel_secret" {
-  description = "Secure base64 tunnel secret for the frontend Cloudflare tunnel."
-  type        = string
-  sensitive   = true
-}
-
 variable "admin_tunnel_secret" {
   description = "Secure base64 tunnel secret for the admin Cloudflare tunnel."
   type        = string
@@ -76,12 +70,6 @@ variable "aws_bucket_name" {
 
 variable "backend_image_tag" {
   description = "Immutable backend image tag to deploy."
-  type        = string
-  default     = "bootstrap"
-}
-
-variable "frontend_image_tag" {
-  description = "Immutable frontend image tag to deploy."
   type        = string
   default     = "bootstrap"
 }

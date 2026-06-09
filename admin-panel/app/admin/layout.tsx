@@ -11,6 +11,7 @@ import {
   FileText,
   GitBranch,
   LogOut,
+  MessageSquareText,
   Settings,
 } from "lucide-react";
 
@@ -19,6 +20,7 @@ import { useAdminAuth } from "@/providers/admin-auth-provider";
 
 const navItems = [
   { href: "/admin/dashboard", label: "Dashboard", icon: BarChart3 },
+  { href: "/admin/chat", label: "Chat", icon: MessageSquareText },
   { href: "/admin/config", label: "Config", icon: Settings },
   { href: "/admin/escalation", label: "Escalamiento", icon: GitBranch },
   { href: "/admin/s3-explorer", label: "S3 Explorer", icon: Cloud },
@@ -108,7 +110,9 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             </Button>
           </div>
         </header>
-        <main className="p-6">{children}</main>
+        <main className={pathname.startsWith("/admin/chat") ? "p-0" : "p-6"}>
+          {children}
+        </main>
       </div>
     </div>
   );

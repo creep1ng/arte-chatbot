@@ -3,7 +3,10 @@ import { toast } from "sonner";
 
 import { STORAGE_KEY } from "@/providers/admin-auth-provider";
 import type {
+  BufferResultResponse,
   CatalogIndex,
+  ChatRequest,
+  ChatResponse,
   ConversationLogEntry,
   ConversationLogsResponse,
   ConversationLogSummary,
@@ -376,6 +379,32 @@ export function useLogs(filters: LogFilterParams = {}) {
 
       return response;
     },
+    staleTime: 0,
+  });
+}
+
+export function useSendAdminChatMessage() {
+  return useMutation({
+    mutationFn: (data: ChatRequest) =>
+      adminFetch<ChatResponse>("/admin/chat", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Error inesperado";
+      toast.error(message);
+    },
+  });
+}
+
+export function useAdminChatBufferResult(sessionId: string | null) {
+  return useQuery({
+    queryKey: ["admin", "chat", "buffer", sessionId],
+    queryFn: () =>
+      adminFetch<BufferResultResponse>(
+        `/admin/chat/buffer-result/${encodeURIComponent(sessionId ?? "")}`,
+      ),
+    enabled: Boolean(sessionId),
     staleTime: 0,
   });
 }

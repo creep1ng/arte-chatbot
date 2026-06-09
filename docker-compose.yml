@@ -15,6 +15,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORT=8000
+      - ALLOWED_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173
       # Local Docker runs include the admin Logs screen, so persist chat turns
       # unless explicitly disabled in the shell/.env with CONVERSATION_LOGGING_ENABLED=false.
       - CONVERSATION_LOGGING_ENABLED=${CONVERSATION_LOGGING_ENABLED:-true}
@@ -24,24 +25,6 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
-    restart: unless-stopped
-
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-      args:
-        - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}
-    container_name: arte-chatbot-frontend
-    ports:
-      - "3000:3000"
-    env_file:
-      - .env
-    environment:
-      - API_URL=http://localhost:8000
-      - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-unknown}
-    depends_on:
-      - backend
     restart: unless-stopped
 
   admin-panel:

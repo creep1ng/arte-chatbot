@@ -147,3 +147,55 @@ export interface ConversationLogEntry {
   git_commit_hash: string;
   user_profile?: string | null;
 }
+
+export interface ChatRequest {
+  message: string;
+  session_id?: string;
+  is_final?: boolean;
+}
+
+export interface SourceDocument {
+  ruta: string;
+  contenido_relevante?: string | null;
+}
+
+export interface ChatResponse {
+  response: string;
+  session_id: string;
+  source_documents: SourceDocument[];
+  messages?: string[] | null;
+  delays_ms?: number[] | null;
+  escalate: boolean;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+}
+
+export interface BufferResultResponse {
+  status: "pending" | "ready" | "not_found";
+  session_id: string;
+  result?: string | null;
+}
+
+export type AdminChatRole = "user" | "assistant";
+
+export interface AdminChatMessage {
+  id: string;
+  role: AdminChatRole;
+  content: string;
+  sources?: SourceDocument[];
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
+  escalate?: boolean;
+  createdAt?: string;
+}
+
+export interface AdminChatConversation {
+  id: string;
+  sessionId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: AdminChatMessage[];
+}

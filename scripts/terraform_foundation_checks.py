@@ -30,24 +30,21 @@ def check_foundation(project_root: Path) -> list[str]:
         prod_main,
         [
             'module "backend_cloudflare_tunnel"',
-            'module "frontend_cloudflare_tunnel"',
             'module "admin_cloudflare_tunnel"',
         ],
     ):
-        findings.append("prod must declare backend, frontend, and admin scoped tunnels")
+        findings.append("prod must declare backend and admin scoped tunnels")
 
     if "localhost:8000" not in prod_main or "local.backend_hostname" not in prod_main:
         findings.append("backend tunnel must route api hostname to localhost:8000")
-    if "localhost:3000" not in prod_main or "local.frontend_hostname" not in prod_main:
-        findings.append("frontend tunnel must route app hostname to localhost:3000")
     if "localhost:3000" not in prod_main or "local.admin_hostname" not in prod_main:
         findings.append("admin tunnel must route admin hostname to localhost:3000")
 
     if "central_connector_mode" not in tunnel_variables or "distinct" not in tunnel_variables:
         findings.append("cloudflare tunnel module must reject mixed localhost origins")
 
-    if len(re.findall(r'module\s+"[^"]+_cloudflare_tunnel"', prod_main)) < 3:
-        findings.append("prod must not reuse one tunnel for backend, frontend, and admin")
+    if len(re.findall(r'module\s+"[^"]+_cloudflare_tunnel"', prod_main)) < 2:
+        findings.append("prod must not reuse one tunnel for backend and admin")
 
     if not _output_block_is_sensitive(tunnel_outputs, "tunnel_token"):
         findings.append("cloudflare tunnel token output must be sensitive")
@@ -64,11 +61,16 @@ def check_foundation(project_root: Path) -> list[str]:
 
     expected_hostname_labels = [
         r'api\s*=\s*"chatbot"',
-        r'app\s*=\s*"app"',
         r'admin\s*=\s*"admin"',
     ]
     if not all(re.search(pattern, prod_main) for pattern in expected_hostname_labels) or "var.domain_name" not in prod_main:
-        findings.append("prod hostnames must derive chatbot, app, and admin from domain_name")
+        findings.append("prod hostnames must derive chatbot and admin from domain_name")
+
+    if any(
+        needle in "\n".join([prod_main, prod_variables, prod_outputs])
+        for needle in ["frontend_cloudflare_tunnel", "frontend_service", "frontend_image_tag", "public_frontend_url"]
+    ):
+        findings.append("prod must not define standalone frontend runtime resources")
 
     if "staging" not in prod_variables or "strcontains" not in prod_variables:
         findings.append("prod name prefix must reject staging values")

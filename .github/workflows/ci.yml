@@ -60,16 +60,12 @@ jobs:
       - name: Build backend image
         run: docker build --build-arg GIT_COMMIT_HASH=${{ github.sha }} -t arte-chatbot-backend -f backend/Dockerfile .
 
-      - name: Build frontend image
-        run: docker build --build-arg GIT_COMMIT_HASH=${{ github.sha }} -t arte-chatbot-frontend -f frontend/Dockerfile .
-
       - name: Build admin image
-        run: docker build --build-arg GIT_COMMIT_HASH=${{ github.sha }} -t arte-chatbot-admin -f admin/Dockerfile .
+        run: docker build --build-arg GIT_COMMIT_HASH=${{ github.sha }} -t arte-chatbot-admin -f admin-panel/Dockerfile admin-panel
 
       - name: Export Docker images
         run: |
           docker save arte-chatbot-backend -o backend-image.tar
-          docker save arte-chatbot-frontend -o frontend-image.tar
           docker save arte-chatbot-admin -o admin-image.tar
 
       - name: Upload backend image artifact
@@ -77,13 +73,6 @@ jobs:
         with:
           name: backend-image
           path: backend-image.tar
-          retention-days: 1
-
-      - name: Upload frontend image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-image
-          path: frontend-image.tar
           retention-days: 1
 
       - name: Upload admin image artifact
@@ -267,12 +256,6 @@ jobs:
           name: backend-image
           path: ./artifact
 
-      - name: Download frontend image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-image
-          path: ./artifact
-
       - name: Download admin image artifact
         uses: actions/download-artifact@v4
         with:
@@ -282,7 +265,6 @@ jobs:
       - name: Load built images
         run: |
           docker load -i ./artifact/backend-image.tar
-          docker load -i ./artifact/frontend-image.tar
           docker load -i ./artifact/admin-image.tar
 
       - name: Configure AWS credentials through OIDC
@@ -311,10 +293,8 @@ jobs:
           }
 
           push_if_missing arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}" "${CANDIDATE_TAG}"
-          push_if_missing arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}" "${CANDIDATE_TAG}"
           push_if_missing arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}" "${CANDIDATE_TAG}"
           push_if_missing arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
-          push_if_missing arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
           push_if_missing arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
 
   publish-release-images:
@@ -334,12 +314,6 @@ jobs:
           name: backend-image
           path: ./artifact
 
-      - name: Download frontend image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-image
-          path: ./artifact
-
       - name: Download admin image artifact
         uses: actions/download-artifact@v4
         with:
@@ -349,7 +323,6 @@ jobs:
       - name: Load built images
         run: |
           docker load -i ./artifact/backend-image.tar
-          docker load -i ./artifact/frontend-image.tar
           docker load -i ./artifact/admin-image.tar
 
       - name: Configure AWS credentials through OIDC
@@ -378,7 +351,6 @@ jobs:
           }
 
           push_if_missing arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
-          push_if_missing arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
           push_if_missing arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
 
   deploy-production:
@@ -400,7 +372,6 @@ jobs:
       TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
       TF_VAR_backend_tunnel_secret: ${{ secrets.PROD_BACKEND_TUNNEL_SECRET }}
-      TF_VAR_frontend_tunnel_secret: ${{ secrets.PROD_FRONTEND_TUNNEL_SECRET }}
       TF_VAR_admin_tunnel_secret: ${{ secrets.PROD_ADMIN_TUNNEL_SECRET }}
       TF_VAR_backend_runtime_secret_arns: ${{ secrets.PROD_BACKEND_RUNTIME_SECRET_ARNS_JSON }}
       TF_VAR_aws_bucket_name: ${{ secrets.AWS_BUCKET_NAME }}
@@ -427,7 +398,6 @@ jobs:
         run: |
           terraform -chdir=infra/terraform/envs/prod apply -auto-approve \
             -var="backend_image_tag=${SHA_TAG}" \
-            -var="frontend_image_tag=${SHA_TAG}" \
             -var="admin_image_tag=${SHA_TAG}"
 
   cleanup:

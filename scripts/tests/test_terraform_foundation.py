@@ -19,9 +19,8 @@ def test_prod_uses_scoped_cloudflare_tunnels_and_local_origins() -> None:
     """Each public service must own a scoped tunnel reaching its same-task origin."""
     findings = _findings()
 
-    assert "prod must declare backend, frontend, and admin scoped tunnels" not in findings
+    assert "prod must declare backend and admin scoped tunnels" not in findings
     assert "backend tunnel must route api hostname to localhost:8000" not in findings
-    assert "frontend tunnel must route app hostname to localhost:3000" not in findings
     assert "admin tunnel must route admin hostname to localhost:3000" not in findings
 
 
@@ -30,7 +29,7 @@ def test_no_shared_unreachable_localhost_origins() -> None:
     findings = _findings()
 
     assert "cloudflare tunnel module must reject mixed localhost origins" not in findings
-    assert "prod must not reuse one tunnel for backend, frontend, and admin" not in findings
+    assert "prod must not reuse one tunnel for backend and admin" not in findings
 
 
 def test_tunnel_tokens_and_secret_outputs_are_sensitive() -> None:
@@ -47,8 +46,9 @@ def test_prod_names_and_domain_are_isolated_from_staging() -> None:
     findings = _findings()
 
     assert "prod domain must default to artesolutions.com.co" not in findings
-    assert "prod hostnames must derive chatbot, app, and admin from domain_name" not in findings
+    assert "prod hostnames must derive chatbot and admin from domain_name" not in findings
     assert "prod name prefix must reject staging values" not in findings
+    assert "prod must not define standalone frontend runtime resources" not in findings
 
 
 def test_admin_scaffold_is_a_separate_image() -> None:
