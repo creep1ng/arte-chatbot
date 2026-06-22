@@ -23,7 +23,13 @@ logging.basicConfig(
 # Load environment variables from .env file
 from dotenv import load_dotenv
 
-load_dotenv()
+if os.getenv("ARTE_CHATBOT_DISABLE_DOTENV", "").strip().lower() not in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
+    load_dotenv()
 
 from backend.app.logging_config import setup_logging
 
@@ -33,6 +39,7 @@ setup_logging()
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from mangum import Mangum
 from pydantic import BaseModel, Field
 
 from backend.app.auth import api_key_principal, verify_api_key
@@ -43,6 +50,7 @@ from backend.app.conversation_logger import (
     ConversationLogger,
     redact_text,
 )
+from backend.app.dynamodb_state_repository import DynamoDBStateRepository
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.greeting import maybe_prepend_greeting
 from backend.app.llm_client import (
@@ -58,10 +66,12 @@ from backend.app.message_buffer import (
     clear_processing,
     flush_buffer,
     get_buffer_count,
+    is_buffer_ready_to_flush,
     is_buffering,
     is_processing,
     pop_pending_chat_response,
     schedule_flush,
+    set_state_repository as set_buffer_state_repository,
     set_pending_chat_response,
     set_processing,
 )
@@ -75,6 +85,7 @@ from backend.app.security import (
     validate_session_id,
 )
 from backend.app.session import session_manager
+from backend.app.state_repository import ChatbotStateRepository
 from backend.app.tools import get_tool_definitions, validate_s3_path
 from backend.app.user_profiler import PROFILE_INSTRUCTIONS, infer_user_profile
 from backend.app.whatsapp_formatter import format_for_whatsapp
@@ -209,6 +220,30 @@ def _log_tool_definitions() -> None:
 
 
 _log_tool_definitions()
+
+
+def _build_state_repository() -> Optional[ChatbotStateRepository]:
+    """Create the configured durable state repository for Lambda runtimes."""
+    if settings.state_backend != "dynamodb":
+        return None
+    return DynamoDBStateRepository(
+        table_name=settings.dynamodb_state_table_name,
+        region_name=settings.aws_region,
+        key_prefix=settings.dynamodb_state_key_prefix,
+        session_ttl_seconds=settings.session_ttl_seconds,
+        buffer_ttl_seconds=settings.buffer_ttl_seconds,
+        rate_ttl_seconds=settings.rate_limit_ttl_seconds,
+    )
+
+
+state_repository = _build_state_repository()
+if state_repository is not None:
+    session_manager.set_state_repository(state_repository)
+    set_buffer_state_repository(state_repository)
+    from backend.app.rate_limit import rate_limiter
+
+    rate_limiter.set_state_repository(state_repository)
+
 
 # Module-level clients maintained for backward compatibility with existing tests.
 # New code should prefer dependency injection via FastAPI Depends().
@@ -1626,6 +1661,20 @@ async def get_buffer_result(
         )
 
     if is_buffering(session_id):
+        if is_buffer_ready_to_flush(
+            session_id,
+            settings.buffer_window_seconds,
+        ):
+            joined_message = await flush_buffer(session_id)
+            if joined_message:
+                await _on_buffer_window_expired(session_id, joined_message)
+                chat_response_json = pop_pending_chat_response(session_id)
+                if chat_response_json:
+                    return BufferResultResponse(
+                        status="ready",
+                        session_id=session_id,
+                        result=chat_response_json,
+                    )
         return BufferResultResponse(
             status="pending",
             session_id=session_id,
@@ -1641,6 +1690,28 @@ async def get_buffer_result(
         status="not_found",
         session_id=session_id,
     )
+
+
+def _ensure_current_event_loop() -> None:
+    """Ensure sync Lambda adapter calls have a current event loop."""
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+class _EventLoopSafeMangum:
+    """Mangum adapter wrapper resilient to tests that clear the event loop."""
+
+    def __init__(self, application: FastAPI) -> None:
+        self._adapter = Mangum(application)
+
+    def __call__(self, event: dict[str, Any], context: Any) -> dict[str, Any]:
+        _ensure_current_event_loop()
+        return self._adapter(event, context)
+
+
+handler = _EventLoopSafeMangum(app)
 
 
 if __name__ == "__main__":

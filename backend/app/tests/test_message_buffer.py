@@ -7,9 +7,12 @@ Strict TDD: tests written BEFORE implementation.
 """
 
 import asyncio
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from backend.tests.conftest import make_llm_response
 
 # ---------------------------------------------------------------------------
 # Imports — will fail until implementation exists
@@ -301,6 +304,67 @@ class TestDebounce:
         assert get_buffer_count("s1") == 0
 
 
+class TestLambdaSafeDebounce:
+    """Test repository-backed buffering does not depend on background tasks."""
+
+    @pytest.mark.asyncio
+    async def test_repository_mode_does_not_create_asyncio_task(self) -> None:
+        """Durable buffer mode leaves flushing to /buffer-result polling."""
+        from backend.app import message_buffer
+        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.tests.test_state_repository import FakeDynamoDBTable
+
+        repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+        message_buffer.set_state_repository(repository)
+        try:
+            await add_to_buffer("lambda-safe", "Hola")
+
+            async def _on_flush(sid: str, msg: str) -> None:
+                del sid, msg
+
+            with patch("backend.app.message_buffer.asyncio.create_task") as create_task:
+                schedule_flush("lambda-safe", window_seconds=1, callback=_on_flush)
+
+            create_task.assert_not_called()
+            assert get_buffer_count("lambda-safe") == 1
+        finally:
+            message_buffer.set_state_repository(None)
+
+    @pytest.mark.asyncio
+    async def test_buffer_ready_to_flush_uses_last_message_timestamp(self) -> None:
+        """The poller flushes only after the debounce window has elapsed."""
+        from backend.app import message_buffer
+        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.app.message_buffer import is_buffer_ready_to_flush
+        from backend.tests.test_state_repository import FakeDynamoDBTable
+
+        repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+        message_buffer.set_state_repository(repository)
+        try:
+            await add_to_buffer("lambda-ready", "Hola")
+            state = repository.get_buffer_state("lambda-ready")
+            last_message_at = state.messages[-1].timestamp
+
+            assert (
+                is_buffer_ready_to_flush(
+                    "lambda-ready",
+                    window_seconds=5,
+                    now=last_message_at + timedelta(seconds=4),
+                )
+                is False
+            )
+            assert (
+                is_buffer_ready_to_flush(
+                    "lambda-ready",
+                    window_seconds=5,
+                    now=last_message_at + timedelta(seconds=6),
+                )
+                is True
+            )
+        finally:
+            message_buffer.set_state_repository(None)
+
+
 # ===========================================================================
 # Task 5.5 — Overflow: max_messages triggers immediate flush
 # ===========================================================================
@@ -353,6 +417,39 @@ class TestOverflow:
             result = await add_to_buffer("s1", f"msg{i}", max_messages=5)
             assert result is None
         assert is_buffering("s1") is True
+
+
+class TestDurableBufferState:
+    """Tests for repository-backed buffer state required by Lambda."""
+
+    def test_repository_buffer_survives_new_instance(self) -> None:
+        """Buffered messages are restored across repository instances."""
+        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.tests.test_state_repository import FakeDynamoDBTable
+
+        table = FakeDynamoDBTable()
+        first_repo = DynamoDBStateRepository(table=table)
+        first_repo.append_buffer_message("s1", "Hola")
+        first_repo.append_buffer_message("s1", "paneles")
+
+        cold_repo = DynamoDBStateRepository(table=table)
+        state = cold_repo.get_buffer_state("s1")
+
+        assert [message.message for message in state.messages] == ["Hola", "paneles"]
+
+    def test_repository_pending_chat_response_is_consumed_once(self) -> None:
+        """Polling state stores and consumes pending chat responses once."""
+        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.tests.test_state_repository import FakeDynamoDBTable
+
+        repo = DynamoDBStateRepository(table=FakeDynamoDBTable())
+        repo.set_processing("s1")
+        repo.set_pending_chat_response("s1", '{"response":"ok"}')
+
+        assert repo.get_buffer_state("s1").processing_started_at is not None
+        assert repo.pop_pending_chat_response("s1") == '{"response":"ok"}'
+        assert repo.pop_pending_chat_response("s1") is None
+        assert repo.get_buffer_state("s1").processing_started_at is None
 
 
 # ===========================================================================
@@ -408,12 +505,12 @@ class TestEndpointBufferIntegration:
 
         response = client.post(
             "/chat",
-            json={"message": "Hola", "session_id": "test-buffer-1"},
+            json={"message": "Hola"},
         )
         assert response.status_code == 202
         data = response.json()
         assert data["status"] == "buffering"
-        assert data["session_id"] == "test-buffer-1"
+        assert data["session_id"]
 
         # Cleanup
         message_buffer._buffer.clear()
@@ -433,14 +530,15 @@ class TestEndpointBufferIntegration:
         # First message
         r1 = client.post(
             "/chat",
-            json={"message": "Hola", "session_id": "test-buffer-2"},
+            json={"message": "Hola"},
         )
         assert r1.status_code == 202
+        session_id = r1.json()["session_id"]
 
         # Second message — still buffering
         r2 = client.post(
             "/chat",
-            json={"message": "quisiera info", "session_id": "test-buffer-2"},
+            json={"message": "quisiera info", "session_id": session_id},
         )
         assert r2.status_code == 202
 
@@ -455,9 +553,9 @@ class TestEndpointBufferIntegration:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When is_final=True, message is processed immediately, not buffered."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: FAQ] Aquí tienes la información solicitada.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Aquí tienes la información solicitada."
+        )
 
         client, app = self._make_client(monkeypatch, enabled=True)
 
@@ -469,16 +567,17 @@ class TestEndpointBufferIntegration:
         # First message — starts buffering
         r1 = client.post(
             "/chat",
-            json={"message": "Hola", "session_id": "test-buffer-3"},
+            json={"message": "Hola"},
         )
         assert r1.status_code == 202
+        session_id = r1.json()["session_id"]
 
         # Second message with is_final — should process
         r2 = client.post(
             "/chat",
             json={
                 "message": "sobre paneles",
-                "session_id": "test-buffer-3",
+                "session_id": session_id,
                 "is_final": True,
             },
         )
@@ -486,7 +585,7 @@ class TestEndpointBufferIntegration:
         data = r2.json()
         # Should contain joined message (original + is_final)
         assert "response" in data
-        assert data["session_id"] == "test-buffer-3"
+        assert data["session_id"] == session_id
 
         # Cleanup
         message_buffer._buffer.clear()
@@ -500,9 +599,9 @@ class TestEndpointBufferIntegration:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When buffer reaches max (5), 6th message triggers flush + process."""
-        mock_llm.return_value = {
-            "output_text": "[INTENT: FAQ] Respuesta consolidada.",
-        }
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Respuesta consolidada."
+        )
 
         client, app = self._make_client(monkeypatch, enabled=True)
 
@@ -511,15 +610,19 @@ class TestEndpointBufferIntegration:
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
 
-        session_id = "test-buffer-overflow"
-
         # Send 4 messages — all should buffer
+        session_id = ""
         for i in range(4):
+            payload = {"message": f"msg{i}"}
+            if i > 0:
+                payload["session_id"] = session_id
             r = client.post(
                 "/chat",
-                json={"message": f"msg{i}", "session_id": session_id},
+                json=payload,
             )
             assert r.status_code == 202, f"Message {i} should return 202"
+            if i == 0:
+                session_id = r.json()["session_id"]
 
         # 5th message triggers overflow → processes
         r5 = client.post(

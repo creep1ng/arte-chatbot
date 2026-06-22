@@ -18,40 +18,8 @@ variable "name_prefix" {
   }
 }
 
-variable "vpc_id" {
-  description = "Production VPC id."
-  type        = string
-}
-
-variable "public_subnet_id" {
-  description = "Public subnet id for the low-cost EC2 Compose host. The host exposes no public app ports and uses Cloudflare Tunnel for ingress."
-  type        = string
-}
-
-variable "ec2_compose_instance_type" {
-  description = "EC2 instance type for the production Docker Compose host."
-  type        = string
-  default     = "t3.small"
-}
-
-variable "ami_id_override" {
-  description = "Optional emergency AMI id override. Leave null to use the latest Ubuntu LTS AMI data source."
-  type        = string
-  default     = null
-}
-
-variable "cloudflare_account_id" {
-  description = "Cloudflare account id."
-  type        = string
-}
-
-variable "cloudflare_zone_id" {
-  description = "Cloudflare zone id for production DNS records."
-  type        = string
-}
-
 variable "backend_hostname" {
-  description = "Externally supplied production backend/API hostname. DNS may become public, but source defaults must not expose it."
+  description = "Externally supplied production backend/API hostname. Terraform maps this host to API Gateway when enable_backend_custom_domain is true."
   type        = string
   sensitive   = true
 }
@@ -68,28 +36,28 @@ variable "admin_hostname" {
   sensitive   = true
 }
 
-variable "edge_tunnel_secret" {
-  description = "Secure base64 tunnel secret for the central production Cloudflare tunnel."
+variable "enable_backend_custom_domain" {
+  description = "Create the API Gateway custom domain and Cloudflare DNS records for backend_hostname."
+  type        = bool
+  default     = true
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone id used only for backend custom-domain DNS records. Required when enable_backend_custom_domain is true."
   type        = string
+  default     = ""
   sensitive   = true
+
+  validation {
+    condition     = !var.enable_backend_custom_domain || length(trimspace(var.cloudflare_zone_id)) > 0
+    error_message = "cloudflare_zone_id is required when enable_backend_custom_domain is true."
+  }
 }
 
 variable "aws_bucket_name" {
   description = "S3 bucket used by the backend catalog and technical PDFs."
   type        = string
   default     = "arte-chatbot-fichas-tecnicas"
-}
-
-variable "initial_image_tag" {
-  description = "Initial immutable image tag written before the first SSM deploy."
-  type        = string
-  default     = "bootstrap"
-}
-
-variable "cloudflared_image" {
-  description = "cloudflared connector image."
-  type        = string
-  default     = "cloudflare/cloudflared:latest"
 }
 
 variable "backend_runtime_environment_variables" {
@@ -111,8 +79,44 @@ variable "backend_runtime_secret_arns" {
   }
 }
 
+variable "lambda_package_path" {
+  description = "Path to the prebuilt production backend Lambda package."
+  type        = string
+  default     = "../../../../dist/lambda/backend.zip"
+}
+
+variable "lambda_memory_size" {
+  description = "Production Lambda memory size in MiB."
+  type        = number
+  default     = 1024
+}
+
+variable "lambda_timeout_seconds" {
+  description = "Production Lambda timeout in seconds."
+  type        = number
+  default     = 25
+}
+
+variable "lambda_session_ttl_seconds" {
+  description = "Production session TTL."
+  type        = number
+  default     = 2592000
+}
+
+variable "lambda_buffer_ttl_seconds" {
+  description = "Production buffer TTL."
+  type        = number
+  default     = 86400
+}
+
+variable "lambda_rate_limit_ttl_seconds" {
+  description = "Production rate-limit TTL."
+  type        = number
+  default     = 86400
+}
+
 variable "kms_key_arns" {
-  description = "Optional KMS keys needed by the EC2 host to decrypt runtime secrets."
+  description = "Optional KMS keys needed by the Lambda runtime to decrypt runtime secret references."
   type        = list(string)
   default     = []
 }

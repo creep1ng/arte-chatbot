@@ -20,20 +20,20 @@ curl http://localhost:8000/health
 | `admin/` | Separate admin static UI container. |
 | `rag/` | File-input retrieval orchestration. |
 | `evaluation/` | Evaluation harnesses and datasets. |
-| `infra/terraform/` | ECR, ECS Fargate, Cloudflare Tunnel, IAM/OIDC, SSM/Secrets IaC. |
+| `infra/terraform/` | ECR, Lambda/API Gateway, DynamoDB, EC2 fallback, Cloudflare Tunnel, IAM/OIDC, SSM/Secrets IaC. |
 | `scripts/` | Validation and local staging helper scripts. |
 | `docs/` | ADRs and deployment guides. |
 
 ## Runtime configuration
 
-Local development uses `.env`. Production ECS runtime uses AWS Secrets Manager or SSM for secrets and IAM roles/default credential chains for AWS access.
+Local development uses `.env`. Production Lambda runtime uses AWS Secrets Manager or SSM references for secrets and IAM roles/default credential chains for AWS access. `.env.deploy` is local/manual deploy input only and is never packaged as a Lambda runtime secret file.
 
 | Variable | Local | Production |
 |----------|-------|------------|
-| `OPENAI_API_KEY` | `.env` | Secrets Manager/SSM ECS secret ref |
-| `CHAT_API_KEY` | `.env` | Secrets Manager/SSM ECS secret ref |
-| `AWS_BUCKET_NAME` | `.env` | Terraform task environment |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Optional local credential-chain source | Not required; use ECS task role |
+| `OPENAI_API_KEY` | `.env` | Secrets Manager/SSM secret ref |
+| `CHAT_API_KEY` | `.env` | Secrets Manager/SSM secret ref |
+| `AWS_BUCKET_NAME` | `.env` | Lambda runtime environment |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Optional local credential-chain source | Not required; use Lambda execution role |
 | `DOMAIN_NAME` | Optional, defaults to `artesolutions.com.co` | `artesolutions.com.co` |
 | `ALLOWED_CORS_ORIGINS` | Localhost origins | Explicit Cloudflare origins; no wildcard in production |
 
@@ -56,13 +56,13 @@ The backend reads `index/catalog_index.json`, selects a product PDF, and sends t
 
 ## CI/CD and deployment
 
-GitHub Actions builds backend, frontend, and admin images. Tests, health checks, and evaluation must pass before ECR images are pushed.
+GitHub Actions builds backend Lambda packages plus frontend/admin images. Tests, package scans, staging smoke, health checks, and evaluation must pass before production promotion.
 
 | Flow | Behavior |
 |------|----------|
-| Pull request | Builds/evaluates and may push immutable candidate tags: `pr-<number>-sha-<commit>` and `sha-<commit>`. No production deploy. |
-| `main` push | Pushes `sha-<commit>` tags, assumes AWS through OIDC, and applies production Terraform. |
-| Local staging | Developer-run only through `scripts/deploy-local-staging.sh`; never created by CI. |
+| Pull request | Builds/evaluates and may push immutable candidate image tags. No production deploy. |
+| `main` push | When Lambda cutover is enabled, deploys staging, smokes `/health` and `/chat`, then promotes the same package SHA to the production Lambda alias. |
+| Local staging | Developer-run only through `scripts/deploy-local-staging.sh`; CI Lambda staging uses preconfigured serverless resources. |
 
 Deployment details: [docs/deployment.md](docs/deployment.md).
 
@@ -126,4 +126,5 @@ python scripts/generate_index.py --bucket arte-chatbot-fichas-tecnicas --prefix 
 
 - Never commit `.env`, Cloudflare tokens, AWS keys, OpenAI keys, or chat API keys.
 - Use IAM roles/OIDC/default credential chains for deployed AWS access.
+- Keep `.env.deploy` uncommitted and out of Lambda packages.
 - Keep local staging secrets, state, parameter paths, and hostnames isolated from production.

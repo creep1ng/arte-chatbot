@@ -4,9 +4,22 @@ Unit tests for the file_inputs.py module.
 Tests the File Inputs client for OpenAI Files API integration.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
 from backend.app.file_inputs import FileInputsClient, FileUploadError
+
+
+def _configure_openai_settings_mock(
+    mock_settings: MagicMock,
+    api_key: str | None,
+) -> None:
+    """Configure mocked settings for tests that do not use secret refs."""
+    mock_settings.openai_api_key = api_key
+    mock_settings.openai_api_key_secret_ref = None
+    mock_settings.aws_region = "us-east-1"
+    mock_settings.openai_timeout_seconds = 30.0
 
 
 class TestFileInputsClientInitialization:
@@ -17,7 +30,7 @@ class TestFileInputsClientInitialization:
         self, mock_settings: MagicMock
     ) -> None:
         """Test FileInputsClient initialization with default env vars."""
-        mock_settings.openai_api_key = "sk-test-key123"
+        _configure_openai_settings_mock(mock_settings, "sk-test-key123")
         client = FileInputsClient()
         assert client.api_key == "sk-test-key123"
 
@@ -31,7 +44,7 @@ class TestFileInputsClientInitialization:
         self, mock_settings: MagicMock
     ) -> None:
         """Test FileInputsClient raises error when no API key available."""
-        mock_settings.openai_api_key = None
+        _configure_openai_settings_mock(mock_settings, None)
         with pytest.raises(FileUploadError) as exc_info:
             FileInputsClient()
 
@@ -40,7 +53,7 @@ class TestFileInputsClientInitialization:
     @patch("backend.app.file_inputs.settings")
     def test_file_inputs_client_uses_env_var(self, mock_settings: MagicMock) -> None:
         """Test FileInputsClient uses settings when no explicit key."""
-        mock_settings.openai_api_key = "sk-env-key"
+        _configure_openai_settings_mock(mock_settings, "sk-env-key")
         client = FileInputsClient()
         assert client.api_key == "sk-env-key"
 

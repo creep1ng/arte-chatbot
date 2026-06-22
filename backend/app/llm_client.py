@@ -13,6 +13,7 @@ from openai import APIError, AuthenticationError, OpenAI
 from backend.app.config import settings
 from backend.app.conversation_logger import redact_text
 from backend.app.schemas import LLMResponse
+from backend.app.secret_resolver import configured_secret_value
 from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,6 @@ def expand_query_with_context(message: str, history: list) -> str:
     """
     return message
 
-
-DEFAULT_MODEL = settings.llm_model
 
 ARTE_SYSTEM_PROMPT = (
     "Eres un asistente técnico de Arte Soluciones Energéticas, una empresa B2B "
@@ -140,12 +139,19 @@ class LLMClient:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = DEFAULT_MODEL,
+        model: Optional[str] = None,
     ) -> None:
         self.api_key = (
-            api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")
+            api_key
+            if api_key is not None
+            else configured_secret_value(
+                settings.openai_api_key,
+                settings.openai_api_key_secret_ref,
+                region_name=settings.aws_region,
+            )
+            or ""
         )
-        self.model = model
+        self.model = model if model is not None else settings.llm_model
 
         # Build system prompt: base + WhatsApp formatting when enabled
         whatsapp_enabled = os.getenv(

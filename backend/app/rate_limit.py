@@ -1,9 +1,12 @@
-"""Small in-memory rate limiter for API-key scoped endpoints."""
+"""Rate limiters for API-key scoped endpoints."""
 
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from threading import Lock
+from typing import Optional
+
+from backend.app.state_repository import ChatbotStateRepository
 
 
 @dataclass(frozen=True)
@@ -24,11 +27,28 @@ class InMemoryRateLimiter:
 
     def __init__(self) -> None:
         self._requests: dict[str, deque[float]] = defaultdict(deque)
+        self.state_repository: Optional[ChatbotStateRepository] = None
         self._lock = Lock()
+
+    def set_state_repository(
+        self, state_repository: Optional[ChatbotStateRepository]
+    ) -> None:
+        """Configure a shared repository for Lambda-safe rate counters."""
+        with self._lock:
+            self.state_repository = state_repository
 
     def check(
         self, principal: str, *, limit: int, window_seconds: int
     ) -> RateLimitDecision:
+        if self.state_repository is not None:
+            decision = self.state_repository.check_rate_limit(
+                principal, limit=limit, window_seconds=window_seconds
+            )
+            return RateLimitDecision(
+                allowed=decision.allowed,
+                retry_after_seconds=decision.retry_after_seconds,
+            )
+
         now = time.monotonic()
         cutoff = now - window_seconds
 

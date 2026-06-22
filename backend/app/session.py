@@ -1,12 +1,19 @@
-"""
-Servicio de gestión de sesiones para el chatbot.
+"""Servicio de gestión de sesiones para el chatbot.
+
 Almacena el historial de conversaciones por session_id.
 """
 
-from typing import Dict, List, Optional
 from datetime import datetime
-from pydantic import BaseModel
 import threading
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel
+
+from backend.app.state_repository import (
+    ChatbotStateRepository,
+    ChatTurn as RepositoryChatTurn,
+    TokenTotals as RepositoryTokenTotals,
+)
 
 
 class ChatTurn(BaseModel):
@@ -35,26 +42,45 @@ class TokenTotals(BaseModel):
 class SessionManager:
     """Gestiona las sesiones de conversación."""
 
-    def __init__(self, max_turns: int = 20):
+    def __init__(
+        self,
+        max_turns: int = 20,
+        state_repository: Optional[ChatbotStateRepository] = None,
+    ):
         self.sessions: Dict[str, List[ChatTurn]] = {}
         self.profiles: Dict[str, str] = {}
         self.token_totals: Dict[str, TokenTotals] = {}
         self.session_owners: Dict[str, str] = {}
         self.max_turns = max_turns
+        self.state_repository = state_repository
         self._lock = threading.Lock()
+
+    def set_state_repository(
+        self, state_repository: Optional[ChatbotStateRepository]
+    ) -> None:
+        """Configure the durable state repository used outside local memory mode."""
+        with self._lock:
+            self.state_repository = state_repository
 
     def bind_session(self, session_id: str, owner: str) -> None:
         """Bind a session to an authenticated principal."""
+        if self.state_repository is not None:
+            self.state_repository.bind_owner(session_id, owner)
+            return
         with self._lock:
             self.session_owners[session_id] = owner
 
     def is_session_owner(self, session_id: str, owner: str) -> bool:
         """Return whether the session is owned by the given principal."""
+        if self.state_repository is not None:
+            return self.state_repository.get_owner(session_id) == owner
         with self._lock:
             return self.session_owners.get(session_id) == owner
 
     def has_session_owner(self, session_id: str) -> bool:
         """Return whether the backend has emitted/bound the session."""
+        if self.state_repository is not None:
+            return self.state_repository.get_owner(session_id) is not None
         with self._lock:
             return session_id in self.session_owners
 
@@ -74,16 +100,27 @@ class SessionManager:
             answer: Respuesta del asistente
             source_documents: Lista de documentos fuente utilizados (opcional)
         """
+        turn = ChatTurn(
+            question=question,
+            answer=answer,
+            timestamp=datetime.now(),
+            source_documents=source_documents or [],
+        )
+        if self.state_repository is not None:
+            self.state_repository.append_turn(
+                session_id,
+                RepositoryChatTurn(
+                    question=turn.question,
+                    answer=turn.answer,
+                    timestamp=turn.timestamp,
+                    source_documents=turn.source_documents,
+                ),
+            )
+            return
+
         with self._lock:
             if session_id not in self.sessions:
                 self.sessions[session_id] = []
-
-            turn = ChatTurn(
-                question=question,
-                answer=answer,
-                timestamp=datetime.now(),
-                source_documents=source_documents or [],
-            )
 
             self.sessions[session_id].append(turn)
 
@@ -101,6 +138,17 @@ class SessionManager:
         Returns:
             Lista de turnos de la sesión, ordenados cronológicamente
         """
+        if self.state_repository is not None:
+            state = self.state_repository.get_session(session_id)
+            return [
+                ChatTurn(
+                    question=turn.question,
+                    answer=turn.answer,
+                    timestamp=turn.timestamp,
+                    source_documents=turn.source_documents,
+                )
+                for turn in state.turns[-self.max_turns :]
+            ]
         return self.sessions.get(session_id, [])
 
     def get_context_string(self, session_id: str) -> str:
@@ -135,6 +183,10 @@ class SessionManager:
         Args:
             session_id: Identificador único de la sesión
         """
+        if self.state_repository is not None:
+            # DynamoDB-backed sessions expire via TTL. Keep this method non-destructive
+            # for compatibility with existing local tests and callers.
+            return
         with self._lock:
             if session_id in self.sessions:
                 del self.sessions[session_id]
@@ -153,6 +205,9 @@ class SessionManager:
             session_id: Identificador único de la sesión
             profile: Perfil de usuario (novato, intermedio, experto)
         """
+        if self.state_repository is not None:
+            self.state_repository.set_user_profile(session_id, profile)
+            return
         with self._lock:
             self.profiles[session_id] = profile
 
@@ -166,6 +221,8 @@ class SessionManager:
         Returns:
             El perfil de usuario si existe, None en caso contrario
         """
+        if self.state_repository is not None:
+            return self.state_repository.get_session(session_id).profile
         return self.profiles.get(session_id)
 
     def add_token_usage(
@@ -185,6 +242,16 @@ class SessionManager:
             output_tokens: Tokens de salida a acumular.
             total_tokens: Total de tokens a acumular.
         """
+        if self.state_repository is not None:
+            self.state_repository.add_token_usage(
+                session_id,
+                RepositoryTokenTotals(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                ),
+            )
+            return
         with self._lock:
             if session_id not in self.token_totals:
                 self.token_totals[session_id] = TokenTotals()
@@ -202,6 +269,13 @@ class SessionManager:
             TokenTotals con los valores acumulados, o TokenTotals() en ceros
             si la sesión no existe.
         """
+        if self.state_repository is not None:
+            totals = self.state_repository.get_token_totals(session_id)
+            return TokenTotals(
+                input_tokens=totals.input_tokens,
+                output_tokens=totals.output_tokens,
+                total_tokens=totals.total_tokens,
+            )
         return self.token_totals.get(session_id, TokenTotals())
 
     def get_session_count(self) -> int:

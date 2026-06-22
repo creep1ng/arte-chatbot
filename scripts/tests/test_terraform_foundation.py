@@ -15,22 +15,14 @@ def _findings() -> list[str]:
     return check_foundation(ROOT)
 
 
-def test_prod_uses_central_cloudflare_tunnel_and_compose_origins() -> None:
-    """Production must use one central tunnel reaching Compose DNS origins."""
+def test_prod_is_lambda_only_without_ec2_or_cloudflare_tunnel_wiring() -> None:
+    """Production must not require EC2, VPC/subnet, or Cloudflare Tunnel inputs."""
     findings = _findings()
 
-    assert "prod must declare one central edge tunnel" not in findings
-    assert "backend route must target Compose DNS origin backend:8000" not in findings
-    assert "frontend route must target Compose DNS origin frontend:3000" not in findings
-    assert "admin route must target Compose DNS origin admin:3000" not in findings
-
-
-def test_central_connector_mode_allows_reachable_mixed_origins() -> None:
-    """Mixed origins are allowed only for explicit central connector mode."""
-    findings = _findings()
-
-    assert "cloudflare tunnel module must reject mixed localhost origins" not in findings
-    assert "prod central tunnel must enable central connector mode" not in findings
+    assert (
+        "prod must be Lambda-only without EC2 or Cloudflare Tunnel wiring"
+        not in findings
+    )
 
 
 def test_tunnel_tokens_and_secret_outputs_are_sensitive() -> None:
@@ -46,8 +38,14 @@ def test_prod_hostnames_are_external_and_name_is_isolated_from_staging() -> None
     """Prod root must use external sensitive hostnames without staging names."""
     findings = _findings()
 
-    assert "prod hostname variables must be sensitive inputs without defaults" not in findings
-    assert "prod hostnames must not derive chatbot, app, and admin from domain_name" not in findings
+    assert (
+        "prod hostname variables must be sensitive inputs without defaults"
+        not in findings
+    )
+    assert (
+        "prod hostnames must not derive chatbot, app, and admin from domain_name"
+        not in findings
+    )
     assert "prod name prefix must reject staging values" not in findings
 
 
@@ -58,3 +56,65 @@ def test_admin_scaffold_is_a_separate_image() -> None:
     assert "admin Dockerfile must exist" not in findings
     assert "admin nginx config must listen on port 3000" not in findings
     assert "admin image must copy admin source, not frontend source" not in findings
+
+
+def test_lambda_backend_module_declares_serverless_runtime_foundation() -> None:
+    """Lambda backend module must own compute, API, state, logs, IAM, and outputs."""
+    findings = _findings()
+
+    assert (
+        "lambda_backend module must declare Lambda, alias, IAM, logs, DynamoDB, HTTP API, and invoke permission"
+        not in findings
+    )
+    assert (
+        "lambda_backend outputs must expose Lambda, alias, version, state table, and direct endpoint metadata"
+        not in findings
+    )
+
+
+def test_lambda_backend_uses_role_credentials_without_vpc_or_static_keys() -> None:
+    """Lambda module must use scoped IAM and avoid VPC/NAT/static credential wiring."""
+    findings = _findings()
+
+    assert (
+        "lambda_backend module must not attach Lambda to a VPC or require NAT"
+        not in findings
+    )
+    assert (
+        "lambda_backend IAM policy must allow scoped S3, DynamoDB, SSM, and Secrets Manager access"
+        not in findings
+    )
+    assert (
+        "lambda_backend must not wire static AWS credentials or .env.deploy"
+        not in findings
+    )
+    assert (
+        "lambda_backend runtime_secret_arns must reject plaintext secret values"
+        not in findings
+    )
+    assert (
+        "lambda_backend runtime must be python3.12 for package compatibility"
+        not in findings
+    )
+
+
+def test_local_staging_wires_isolated_lambda_backend() -> None:
+    """Local staging must add isolated serverless resources and direct endpoint output."""
+    findings = _findings()
+
+    assert (
+        "local staging must wire an isolated lambda_backend module with staging alias, state prefix, and secret namespace"
+        not in findings
+    )
+    assert "local staging must reject production S3 buckets by default" not in findings
+    assert (
+        "local staging secret ARNs must be staging/local-staging scoped" not in findings
+    )
+    assert (
+        "local staging must tag resources with expiration cleanup metadata"
+        not in findings
+    )
+    assert (
+        "local staging outputs must expose the direct Lambda HTTP API endpoint"
+        not in findings
+    )

@@ -1,6 +1,7 @@
 locals {
   environment = "local-staging"
   name_prefix = "arte-chatbot-local-staging-${var.staging_id}"
+  lambda_name = "${local.name_prefix}-backend-lambda"
 
   hostname_labels = {
     api   = "staging-chatbot-api-${var.staging_id}"
@@ -180,6 +181,44 @@ data "aws_iam_policy_document" "backend_task_s3" {
     actions   = ["s3:ListBucket"]
     resources = ["arn:aws:s3:::${var.aws_bucket_name}"]
   }
+}
+
+module "lambda_backend" {
+  source = "../../modules/lambda_backend"
+
+  name                = local.lambda_name
+  environment         = local.environment
+  lambda_package_path = var.lambda_package_path
+  aws_region          = var.aws_region
+  aws_bucket_name     = var.aws_bucket_name
+
+  state_key_prefix                           = "local-staging#${var.staging_id}"
+  state_table_deletion_protection_enabled    = false
+  state_table_point_in_time_recovery_enabled = false
+  session_ttl_seconds                        = var.lambda_session_ttl_seconds
+  buffer_ttl_seconds                         = var.lambda_buffer_ttl_seconds
+  rate_limit_ttl_seconds                     = var.lambda_rate_limit_ttl_seconds
+
+  public_api_url       = null
+  public_frontend_url  = local.public_frontend_url
+  public_admin_url     = local.public_admin_url
+  allowed_cors_origins = local.allowed_cors_origins
+  timeout_seconds      = var.lambda_timeout_seconds
+  memory_size          = var.lambda_memory_size
+  api_stage_name       = "$default"
+  alias_name           = "staging"
+
+  runtime_environment_variables = merge(
+    var.backend_runtime_environment_variables,
+    {
+      SECRET_NAMESPACE = "/arte-chatbot/local-staging/${var.staging_id}/"
+      CLEANUP_AFTER    = var.expiration_at
+    },
+  )
+  runtime_secret_arns = var.backend_runtime_secret_arns
+  kms_key_arns        = var.kms_key_arns
+
+  tags = merge(local.common_tags, { Service = "lambda-backend" })
 }
 
 module "backend_service" {

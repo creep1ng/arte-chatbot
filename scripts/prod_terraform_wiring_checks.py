@@ -1,7 +1,7 @@
-"""Static checks for production Terraform EC2 Compose wiring.
+"""Static checks for Lambda-only production Terraform wiring.
 
-These checks inspect repository files only. They keep the second chained PR slice
-verifiable without requiring AWS, Cloudflare, or Terraform credentials.
+These checks inspect repository files only. They keep the destructive Lambda
+cutover verifiable without requiring AWS, Cloudflare, or Terraform credentials.
 """
 
 from pathlib import Path
@@ -9,8 +9,26 @@ import re
 
 
 PROD_ROOT = Path("infra/terraform/envs/prod")
-CLOUDFLARE_TUNNEL_ROOT = Path("infra/terraform/modules/cloudflare_tunnel")
 GITHUB_OIDC_ROOT = Path("infra/terraform/modules/github_oidc")
+
+
+REMOVED_PROD_TOKENS = [
+    'variable "vpc_id"',
+    'variable "public_subnet_id"',
+    'variable "edge_tunnel_secret"',
+    'variable "cloudflare_account_id"',
+    'variable "ec2_compose_instance_type"',
+    'variable "ami_id_override"',
+    'module "compose_host"',
+    'module "edge_tunnel"',
+    'module "cloudflare_tunnel_secrets"',
+    'data "aws_ami" "ubuntu_lts"',
+    'output "ec2_compose_host"',
+    'output "edge_tunnel"',
+    "AWS-RunShellScript",
+    "ssm_instance_arns =",
+    "ssm_document_arns =",
+]
 
 
 def check_prod_terraform_wiring(project_root: Path) -> list[str]:
@@ -20,151 +38,215 @@ def check_prod_terraform_wiring(project_root: Path) -> list[str]:
     prod_main = _read(project_root / PROD_ROOT / "main.tf")
     prod_variables = _read(project_root / PROD_ROOT / "variables.tf")
     prod_outputs = _read(project_root / PROD_ROOT / "outputs.tf")
-    tunnel_outputs = _read(project_root / CLOUDFLARE_TUNNEL_ROOT / "outputs.tf")
-    tunnel_main = _read(project_root / CLOUDFLARE_TUNNEL_ROOT / "main.tf")
+    prod_providers = _read(project_root / PROD_ROOT / "providers.tf")
     github_main = _read(project_root / GITHUB_OIDC_ROOT / "main.tf")
     github_variables = _read(project_root / GITHUB_OIDC_ROOT / "variables.tf")
 
-    findings.extend(_check_ami_selection(prod_main, prod_variables))
-    findings.extend(_check_hostnames_and_tunnel(prod_main, prod_variables, tunnel_main, tunnel_outputs))
-    findings.extend(_check_ec2_outputs_and_ssm(prod_main, prod_variables, prod_outputs, github_main, github_variables))
+    findings.extend(
+        _check_removed_ec2_cloudflare_wiring(
+            prod_main,
+            prod_variables,
+            prod_outputs,
+            prod_providers,
+        )
+    )
+    findings.extend(_check_prod_hostnames(prod_main, prod_variables, prod_outputs))
+    findings.extend(_check_prod_lambda_wiring(prod_main, prod_variables, prod_outputs))
+    findings.extend(
+        _check_github_oidc_lambda_deploy(prod_main, github_main, github_variables)
+    )
 
     return findings
 
 
-def _check_ami_selection(prod_main: str, prod_variables: str) -> list[str]:
-    findings: list[str] = []
-    data_source = _block(prod_main, "data", "aws_ami", "ubuntu_lts")
-
-    if not data_source or not _contains_all(
-        data_source,
-        [
-            "most_recent = true",
-            'owners      = ["099720109477"]',
-            "ubuntu/images/hvm-ssd/ubuntu-*-amd64-server-*",
-            'name   = "virtualization-type"',
-            'values = ["hvm"]',
-            'name   = "root-device-type"',
-            'values = ["ebs"]',
-        ],
-    ):
-        findings.append("prod must declare a Canonical latest Ubuntu LTS aws_ami data source")
-
-    if "compose_host_ami_id = coalesce(var.ami_id_override, data.aws_ami.ubuntu_lts.id)" not in prod_main:
-        findings.append("prod must resolve compose host AMI from ami_id_override or the Ubuntu LTS data source")
-
-    ami_override = _block(prod_variables, "variable", "ami_id_override")
-    fixed_ami_default = re.search(r'default\s*=\s*"ami-[a-zA-Z0-9]+"', prod_variables)
-    if not ami_override or "default     = null" not in ami_override or fixed_ami_default:
-        findings.append("prod must not commit fixed AMI id defaults")
-
-    return findings
-
-
-def _check_hostnames_and_tunnel(prod_main: str, prod_variables: str, tunnel_main: str, tunnel_outputs: str) -> list[str]:
-    findings: list[str] = []
-    hostname_names = ["backend_hostname", "frontend_hostname", "admin_hostname"]
-    hostname_blocks = [_block(prod_variables, "variable", name) for name in hostname_names]
-
-    if any(not block or "sensitive   = true" not in block or re.search(r"(?m)^\s*default\s*=", block) for block in hostname_blocks):
-        findings.append("prod hostname variables must be sensitive inputs without defaults")
-
-    if "hostname_labels" in prod_main or any(label in prod_main for label in ['= "chatbot"', '= "app"', '= "admin"']):
-        findings.append("prod must not derive service hostnames from hardcoded chatbot/app/admin labels")
-
-    edge_tunnel = _block(prod_main, "module", "edge_tunnel")
-    if not edge_tunnel or not _contains_all(
-        edge_tunnel,
-        [
-            "central_connector_mode = true",
-            "hostname         = var.backend_hostname",
-            "hostname         = var.frontend_hostname",
-            "hostname         = var.admin_hostname",
-            'local_origin_url = "http://backend:8000"',
-            'local_origin_url = "http://frontend:3000"',
-            'local_origin_url = "http://admin:3000"',
-        ],
-    ):
-        findings.append("prod must configure one central Cloudflare tunnel with Compose DNS origins")
-
-    if any(name in prod_main for name in ["backend_cloudflare_tunnel", "frontend_cloudflare_tunnel", "admin_cloudflare_tunnel"]):
-        findings.append("prod must not keep per-service production Cloudflare tunnels")
-
-    if "ECS sidecar" in tunnel_outputs:
-        findings.append("cloudflare tunnel module output wording must not be ECS-sidecar specific")
-
-    if "nonsensitive(route.hostname) => route" not in tunnel_main:
-        findings.append("cloudflare tunnel DNS for_each keys must unwrap externally supplied sensitive hostnames")
-
-    return findings
-
-
-def _check_ec2_outputs_and_ssm(
+def _check_removed_ec2_cloudflare_wiring(
     prod_main: str,
     prod_variables: str,
     prod_outputs: str,
-    github_main: str,
-    github_variables: str,
+    prod_providers: str,
+) -> list[str]:
+    combined = "\n".join([prod_main, prod_variables, prod_outputs, prod_providers])
+    if any(token in combined for token in REMOVED_PROD_TOKENS):
+        return [
+            "prod must remove EC2 Compose, Cloudflare Tunnel, VPC/subnet inputs, and obsolete outputs"
+        ]
+
+    return []
+
+
+def _check_prod_hostnames(
+    prod_main: str, prod_variables: str, prod_outputs: str
+) -> list[str]:
+    findings: list[str] = []
+    hostname_names = ["backend_hostname", "frontend_hostname", "admin_hostname"]
+    hostname_blocks = [
+        _block(prod_variables, "variable", name) for name in hostname_names
+    ]
+
+    if any(
+        not block
+        or "sensitive   = true" not in block
+        or re.search(r"(?m)^\s*default\s*=", block)
+        for block in hostname_blocks
+    ):
+        findings.append(
+            "prod hostname variables must be sensitive inputs without defaults"
+        )
+
+    if "hostname_labels" in prod_main or any(
+        label in prod_main for label in ['= "chatbot"', '= "app"', '= "admin"']
+    ):
+        findings.append(
+            "prod must not derive service hostnames from hardcoded chatbot/app/admin labels"
+        )
+
+    if (
+        'output "public_urls"' not in prod_outputs
+        or "sensitive = true" not in prod_outputs
+    ):
+        findings.append("prod public URL outputs must remain sensitive")
+
+    return findings
+
+
+def _check_prod_lambda_wiring(
+    prod_main: str, prod_variables: str, prod_outputs: str
 ) -> list[str]:
     findings: list[str] = []
 
+    lambda_module = _block(prod_main, "module", "lambda_backend")
+    if not lambda_module or not _contains_all(
+        lambda_module,
+        [
+            'source = "../../modules/lambda_backend"',
+            "local.lambda_name",
+            'state_key_prefix                           = "prod"',
+            'alias_name           = "live"',
+            "public_api_url       = local.public_api_url",
+            "runtime_secret_arns           = var.backend_runtime_secret_arns",
+        ],
+    ):
+        findings.append(
+            "prod must wire Lambda/API Gateway/DynamoDB as the only backend target"
+        )
+
+    if any(
+        token in lambda_module
+        for token in ["vpc_id", "subnet", "security_group", "vpc_config", "nat_gateway"]
+    ):
+        findings.append(
+            "prod Lambda backend wiring must not pass VPC, subnet, security group, or NAT inputs"
+        )
+
     required_variables = [
-        'variable "public_subnet_id"',
-        'variable "ec2_compose_instance_type"',
-        'variable "edge_tunnel_secret"',
+        'variable "lambda_package_path"',
+        'variable "lambda_memory_size"',
+        'variable "lambda_timeout_seconds"',
+        'variable "lambda_session_ttl_seconds"',
         'variable "backend_runtime_environment_variables"',
         'variable "backend_runtime_secret_arns"',
         'variable "kms_key_arns"',
     ]
-    if not _contains_all(prod_variables, required_variables) or 'type        = map(string)' not in _block(
+    if not _contains_all(prod_variables, required_variables):
+        findings.append(
+            "prod variables must expose Lambda package, sizing, runtime env, secrets, and state TTL inputs"
+        )
+
+    runtime_env = _block(
         prod_variables,
         "variable",
         "backend_runtime_environment_variables",
-    ):
-        findings.append("prod variables must expose EC2 host inputs, one tunnel secret, runtime env map, and runtime secret refs")
+    )
+    if "type        = map(string)" not in runtime_env:
+        findings.append("prod runtime environment variables must stay a string map")
 
-    runtime_secret_arns = _block(prod_variables, "variable", "backend_runtime_secret_arns")
+    runtime_secret_arns = _block(
+        prod_variables, "variable", "backend_runtime_secret_arns"
+    )
     if 'startswith(value, "arn:")' not in runtime_secret_arns:
-        findings.append("prod must reject raw secret values in backend_runtime_secret_arns")
+        findings.append(
+            "prod must reject raw secret values in backend_runtime_secret_arns"
+        )
 
-    if 'module "compose_host"' not in prod_main or not _contains_all(
-        prod_main,
-        [
-            'source = "../../modules/ec2_compose_host"',
-            "ami_id            = local.compose_host_ami_id",
-            "backend_image_uri  = module.backend_ecr.repository_url",
-            "frontend_image_uri = module.frontend_ecr.repository_url",
-            "admin_image_uri    = module.admin_ecr.repository_url",
-            "backend_runtime_environment_variables = var.backend_runtime_environment_variables",
-            "backend_runtime_secret_arns           = var.backend_runtime_secret_arns",
-            "cloudflare_tunnel_token_secret_arn    = local.tunnel_token_secret_arns[\"edge_cloudflare_tunnel_token\"]",
-        ],
-    ):
-        findings.append("prod must call the ec2_compose_host module with ECR images, URLs, env, secrets, and tunnel token secret")
-
-    if not _contains_all(
+    if 'output "lambda_backend"' not in prod_outputs or not _contains_all(
         prod_outputs,
         [
-            'output "ec2_compose_host"',
-            "module.compose_host.instance_id",
-            "module.compose_host.deploy_script_path",
-            'output "public_urls"',
-            "sensitive = true",
+            "published_version",
+            "http_api_id",
+            "invoke_url",
+            "state_table_name",
+            "role_arn",
         ],
-    ) or "ecs_services" in prod_outputs or "cluster_name" in prod_outputs:
-        findings.append("prod outputs must expose EC2 deploy metadata and mark hostname-derived URLs sensitive")
+    ):
+        findings.append(
+            "prod outputs must expose Lambda version, API endpoint, state table, and role metadata"
+        )
 
-    if any(token in github_main + github_variables for token in ["ecs:", "iam:PassRole", "ecs_cluster_arn", "ecs_service_arns", "pass_role_arns"]):
-        findings.append("github OIDC module must use scoped SSM deploy permissions instead of ECS/pass-role permissions")
-    elif not _contains_all(github_main + github_variables, ["ssm:SendCommand", "ssm:GetCommandInvocation", "ssm_instance_arns", "ssm_document_arns"]):
-        findings.append("github OIDC module must use scoped SSM deploy permissions instead of ECS/pass-role permissions")
+    return findings
+
+
+def _check_github_oidc_lambda_deploy(
+    prod_main: str,
+    github_main: str,
+    github_variables: str,
+) -> list[str]:
+    findings: list[str] = []
+    combined_github = github_main + github_variables
+
+    if any(
+        token in combined_github
+        for token in [
+            "ecs:",
+            "ecs_cluster_arn",
+            "ecs_service_arns",
+            "pass_role_arns",
+        ]
+    ):
+        findings.append(
+            "github OIDC module must not require ECS permissions for Lambda-only deploys"
+        )
+
+    if "ssm_instance_arns =" in prod_main or "ssm_document_arns =" in prod_main:
+        findings.append(
+            "prod deploy role must not target EC2 instances or SSM Run Command"
+        )
+
+    if not _contains_all(
+        prod_main,
+        [
+            "lambda_function_arns = [module.lambda_backend.function_arn]",
+            "lambda_alias_arns    = [module.lambda_backend.alias_arn]",
+            "state_table_arns     = [module.lambda_backend.state_table_arn]",
+            "secret_arns          = values(var.backend_runtime_secret_arns)",
+        ],
+    ):
+        findings.append(
+            "prod deploy role must receive Lambda, DynamoDB state, and runtime secret scopes"
+        )
+
+    if not _contains_all(
+        combined_github,
+        [
+            'variable "lambda_function_arns"',
+            'variable "lambda_alias_arns"',
+            'variable "state_table_arns"',
+            "LambdaPackagePromotion",
+            "lambda:UpdateFunctionCode",
+            "lambda:UpdateAlias",
+            "ReadSmokeStateTable",
+            "dynamodb:Query",
+        ],
+    ):
+        findings.append(
+            "github OIDC module must allow scoped Lambda promotion and state smoke reads"
+        )
 
     return findings
 
 
 def _block(text: str, kind: str, *labels: str) -> str:
     quoted_labels = "".join(rf'\s+"{re.escape(label)}"' for label in labels)
-    pattern = re.compile(rf'{kind}{quoted_labels}\s+{{(?P<body>.*?)\n}}', re.DOTALL)
+    pattern = re.compile(rf"{kind}{quoted_labels}\s+{{(?P<body>.*?)\n}}", re.DOTALL)
     match = pattern.search(text)
     return match.group(0) if match else ""
 

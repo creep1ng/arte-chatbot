@@ -1,0 +1,36 @@
+change: low-cost-ec2-compose-exposure
+artifact_store: openspec
+execution_mode: cleanup_after_lambda_cutover
+delivery_strategy: feature-branch-chain
+status: archived
+superseded_by: migrate-backend-to-lambda-serverless
+phases:
+  explore:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/exploration.md
+  proposal:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/proposal.md
+  spec:
+    status: complete
+    artifacts:
+      - openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/specs/ec2-compose-cloudflare-exposure/spec.md
+      - openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/specs/fargate-cloudflare-ingress/spec.md
+      - openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/specs/ecs-runtime-configuration/spec.md
+      - openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/specs/ecr-cd-promotion/spec.md
+  design:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/design.md
+  tasks:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/tasks.md
+  apply:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/apply-progress.md
+  verify:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/verify-report.md
+  archive:
+    status: complete
+    artifact: openspec/changes/archive/2026-06-22-low-cost-ec2-compose-exposure/archive-report.md
+updated_at: "2026-06-22"

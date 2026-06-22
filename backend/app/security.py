@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from backend.app.config import settings
 from backend.app.rate_limit import rate_limiter
 from backend.app.session import session_manager
+from backend.app.state_repository import OwnershipConflictError
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
 
@@ -29,7 +30,12 @@ def check_rate_limit(principal: str) -> None:
 def bind_or_validate_session(session_id: str, principal: str, *, is_new: bool) -> None:
     """Bind new sessions and reject client-provided sessions not issued here."""
     if is_new:
-        session_manager.bind_session(session_id, principal)
+        try:
+            session_manager.bind_session(session_id, principal)
+        except OwnershipConflictError:
+            raise HTTPException(
+                status_code=403, detail="Forbidden session_id"
+            ) from None
         return
 
     if not session_manager.has_session_owner(session_id):

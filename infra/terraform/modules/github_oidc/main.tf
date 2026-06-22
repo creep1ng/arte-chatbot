@@ -1,5 +1,11 @@
 locals {
-  github_subject = "repo:${var.github_owner}/${var.github_repository}:ref:refs/heads/${var.branch}"
+  github_subject       = "repo:${var.github_owner}/${var.github_repository}:ref:refs/heads/${var.branch}"
+  ssm_deploy_resources = concat(var.ssm_instance_arns, var.ssm_document_arns)
+  lambda_deploy_arns = distinct(concat(
+    var.lambda_function_arns,
+    [for arn in var.lambda_function_arns : "${arn}:*"],
+    var.lambda_alias_arns,
+  ))
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -66,23 +72,61 @@ data "aws_iam_policy_document" "deploy" {
     resources = var.ecr_repository_arns
   }
 
-  statement {
-    sid = "SsmDeployCommand"
-    actions = [
-      "ssm:SendCommand",
-    ]
-    resources = concat(var.ssm_instance_arns, var.ssm_document_arns)
+  dynamic "statement" {
+    for_each = length(local.ssm_deploy_resources) > 0 ? [1] : []
+
+    content {
+      sid = "SsmDeployCommand"
+      actions = [
+        "ssm:SendCommand",
+      ]
+      resources = local.ssm_deploy_resources
+    }
   }
 
-  statement {
-    sid = "SsmDeployStatusReads"
-    actions = [
-      "ssm:GetCommandInvocation",
-      "ssm:DescribeInstanceInformation",
-      "ssm:ListCommandInvocations",
-      "ssm:ListCommands",
-    ]
-    resources = ["*"]
+  dynamic "statement" {
+    for_each = length(local.ssm_deploy_resources) > 0 ? [1] : []
+
+    content {
+      sid = "SsmDeployStatusReads"
+      actions = [
+        "ssm:GetCommandInvocation",
+        "ssm:DescribeInstanceInformation",
+        "ssm:ListCommandInvocations",
+        "ssm:ListCommands",
+      ]
+      resources = ["*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(local.lambda_deploy_arns) > 0 ? [1] : []
+
+    content {
+      sid = "LambdaPackagePromotion"
+      actions = [
+        "lambda:GetAlias",
+        "lambda:GetFunction",
+        "lambda:PublishVersion",
+        "lambda:UpdateAlias",
+        "lambda:UpdateFunctionCode",
+      ]
+      resources = local.lambda_deploy_arns
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(var.state_table_arns) > 0 ? [1] : []
+
+    content {
+      sid = "ReadSmokeStateTable"
+      actions = [
+        "dynamodb:DescribeTable",
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+      ]
+      resources = var.state_table_arns
+    }
   }
 
   dynamic "statement" {

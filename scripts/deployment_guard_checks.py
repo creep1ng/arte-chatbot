@@ -28,7 +28,9 @@ def check_cd_and_staging_guards(project_root: Path) -> list[str]:
     deploy_script = _read(project_root / DEPLOY_SCRIPT_PATH)
 
     findings.extend(_check_workflow(workflow))
-    findings.extend(_check_local_staging_root(staging_main, staging_variables, staging_providers))
+    findings.extend(
+        _check_local_staging_root(staging_main, staging_variables, staging_providers)
+    )
     findings.extend(_check_deploy_script(deploy_script))
 
     return findings
@@ -37,47 +39,90 @@ def check_cd_and_staging_guards(project_root: Path) -> list[str]:
 def _check_workflow(workflow: str) -> list[str]:
     findings: list[str] = []
 
-    build_mentions = [f"{service}_image" in workflow or f"{service}-image" in workflow for service in SERVICES]
+    build_mentions = [
+        f"{service}_image" in workflow or f"{service}-image" in workflow
+        for service in SERVICES
+    ]
     dockerfiles = [f"{service}/Dockerfile" in workflow for service in SERVICES]
     if not all(build_mentions) or not all(dockerfiles):
         findings.append("workflow must build backend, frontend, and admin images")
 
     publish_job = _job_block(workflow, "publish-candidate-images")
-    if not publish_job or not _contains_all(publish_job, ["needs: evaluation", "docker push"]):
-        findings.append("candidate image push must wait for test-health and evaluation gates")
-
-    if not _contains_all(workflow, ["pr-${{ github.event.pull_request.number }}-sha-${{ github.sha }}", "sha-${{ github.sha }}"]):
-        findings.append("candidate tags must include PR and SHA rollback identifiers")
-
-    deploy_job = _job_block(workflow, "deploy-production")
-    if not deploy_job or "github.event_name == 'push' && github.ref == 'refs/heads/main'" not in deploy_job:
-        findings.append("production deploy job must be gated to push events on refs/heads/main")
-
-    if not deploy_job or not _contains_all(
-        deploy_job,
-        ["permissions:", "id-token: write", "aws-actions/configure-aws-credentials@v4", "role-to-assume"],
+    if not publish_job or not _contains_all(
+        publish_job, ["needs: evaluation", "docker push"]
     ):
-        findings.append("production deploy job must configure AWS credentials through OIDC")
-    if not deploy_job or not _contains_all(
-        deploy_job,
+        findings.append(
+            "candidate image push must wait for test-health and evaluation gates"
+        )
+
+    if not _contains_all(
+        workflow,
         [
-            "CLOUDFLARE_API_TOKEN",
-            "TF_VAR_vpc_id",
-            "TF_VAR_public_subnet_id",
-            "TF_VAR_edge_tunnel_secret",
-            "TF_VAR_backend_runtime_secret_arns",
+            "pr-${{ github.event.pull_request.number }}-sha-${{ github.sha }}",
+            "sha-${{ github.sha }}",
         ],
     ):
-        findings.append("production deploy job must provide Terraform AWS and Cloudflare inputs")
+        findings.append("candidate tags must include PR and SHA rollback identifiers")
 
-    pr_guard = "github.event_name == 'pull_request'" in publish_job if publish_job else False
-    if not pr_guard or (deploy_job and "pull_request" in deploy_job):
+    promote_job = _job_block(workflow, "promote-lambda-production")
+    if (
+        not promote_job
+        or "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+        not in promote_job
+    ):
+        findings.append(
+            "production Lambda promotion must be gated to push events on refs/heads/main"
+        )
+
+    if not promote_job or not _contains_all(
+        promote_job,
+        [
+            "permissions:",
+            "id-token: write",
+            "aws-actions/configure-aws-credentials@v4",
+            "role-to-assume",
+        ],
+    ):
+        findings.append(
+            "production Lambda promotion must configure AWS credentials through OIDC"
+        )
+    if not promote_job or not _contains_all(
+        promote_job,
+        [
+            "LAMBDA_PROD_FUNCTION_NAME",
+            "LAMBDA_PROD_ALIAS_NAME",
+            "LAMBDA_PROD_API_URL",
+            "LAMBDA_PROD_STATE_TABLE_NAME",
+            "LAMBDA_PROD_STATE_KEY_PREFIX",
+        ],
+    ):
+        findings.append("production Lambda promotion must provide Lambda deploy inputs")
+
+    forbidden_prod_inputs = [
+        "TF_VAR_vpc_id",
+        "TF_VAR_public_subnet_id",
+        "TF_VAR_edge_tunnel_secret",
+        "CLOUDFLARE_API_TOKEN",
+        "deploy-production:",
+        "aws ssm send-command",
+    ]
+    if any(token in workflow for token in forbidden_prod_inputs):
+        findings.append(
+            "production workflow must not require EC2, VPC, or Cloudflare deploy inputs"
+        )
+
+    pr_guard = (
+        "github.event_name == 'pull_request'" in publish_job if publish_job else False
+    )
+    if not pr_guard or (promote_job and "pull_request" in promote_job):
         findings.append("pull requests must not contain a production deploy job path")
 
     return findings
 
 
-def _check_local_staging_root(main_tf: str, variables_tf: str, providers_tf: str) -> list[str]:
+def _check_local_staging_root(
+    main_tf: str, variables_tf: str, providers_tf: str
+) -> list[str]:
     findings: list[str] = []
 
     if not main_tf or not variables_tf or not providers_tf:
@@ -95,15 +140,26 @@ def _check_local_staging_root(main_tf: str, variables_tf: str, providers_tf: str
             "staging-chatbot-admin-${var.staging_id}",
         ],
     ):
-        findings.append("local-staging must derive unique staging hostnames from staging_id")
+        findings.append(
+            "local-staging must derive unique staging hostnames from staging_id"
+        )
 
-    if not _contains_all(variables_tf, ["api", "app", "admin", "prod", "production", "artesolutions.com.co"]):
+    if not _contains_all(
+        variables_tf,
+        ["api", "app", "admin", "prod", "production", "artesolutions.com.co"],
+    ):
         findings.append("local-staging must reject production hostnames and names")
 
-    if not _contains_all(main_tf, ["/local-staging/", "backend_runtime_secret_arns", "cloudflare_tunnel_secrets"]):
+    if not _contains_all(
+        main_tf,
+        ["/local-staging/", "backend_runtime_secret_arns", "cloudflare_tunnel_secrets"],
+    ):
         findings.append("local-staging must isolate secret and parameter namespaces")
 
-    if "timeadd(timestamp(), \"72h\")" not in main_tf and "expiration_at" not in variables_tf:
+    if (
+        'timeadd(timestamp(), "72h")' not in main_tf
+        and "expiration_at" not in variables_tf
+    ):
         findings.append("local-staging must record expiration metadata")
 
     return findings
@@ -112,20 +168,39 @@ def _check_local_staging_root(main_tf: str, variables_tf: str, providers_tf: str
 def _check_deploy_script(script: str) -> list[str]:
     findings: list[str] = []
 
-    if not _contains_all(script, ["CI", "GITHUB_ACTIONS", "local staging cannot run in CI"]):
+    if not _contains_all(
+        script, ["CI", "GITHUB_ACTIONS", "local staging cannot run in CI"]
+    ):
         findings.append("deploy script must reject CI execution")
-    if not _contains_all(script, ["--backend-tag", "--frontend-tag", "--admin-tag", "explicit immutable ECR tag"]):
+    if not _contains_all(
+        script,
+        [
+            "--backend-tag",
+            "--frontend-tag",
+            "--admin-tag",
+            "explicit immutable ECR tag",
+        ],
+    ):
         findings.append("deploy script must require explicit image tags")
-    if not _contains_all(script, ["staging-chatbot", "api|app|admin", "expiration must be no later than 3 days"]):
+    if not _contains_all(
+        script,
+        ["staging-chatbot", "api|app|admin", "expiration must be no later than 3 days"],
+    ):
         findings.append("deploy script must reject prod names and long expirations")
-    if not _contains_all(script, ["TF_VAR_vpc_id", "TF_VAR_private_subnet_ids", "CLOUDFLARE_API_TOKEN"]):
-        findings.append("deploy script must require local-only Terraform and Cloudflare inputs")
+    if not _contains_all(
+        script, ["TF_VAR_vpc_id", "TF_VAR_private_subnet_ids", "CLOUDFLARE_API_TOKEN"]
+    ):
+        findings.append(
+            "deploy script must require local-only Terraform and Cloudflare inputs"
+        )
 
     return findings
 
 
 def _job_block(workflow: str, job_name: str) -> str:
-    pattern = re.compile(rf"^  {re.escape(job_name)}:\n(?P<body>(?:    .+\n|\n)+)", re.MULTILINE)
+    pattern = re.compile(
+        rf"^  {re.escape(job_name)}:\n(?P<body>(?:    .+\n|\n)+)", re.MULTILINE
+    )
     match = pattern.search(workflow)
     return match.group(0) if match else ""
 

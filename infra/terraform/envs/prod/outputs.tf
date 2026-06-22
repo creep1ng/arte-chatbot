@@ -1,5 +1,5 @@
 output "public_urls" {
-  description = "Production Cloudflare public URLs derived from externally supplied hostnames."
+  description = "Production public URLs derived from externally supplied hostnames."
   value = {
     api   = local.public_api_url
     app   = local.public_frontend_url
@@ -17,24 +17,28 @@ output "ecr_repository_urls" {
   }
 }
 
-output "ec2_compose_host" {
-  description = "Production EC2 Compose host metadata for SSM deploys."
+output "lambda_backend" {
+  description = "Production Lambda backend metadata for direct smoke checks, promotion, and rollback."
   value = {
-    instance_id               = module.compose_host.instance_id
-    security_group_id         = module.compose_host.security_group_id
-    deploy_script_path        = module.compose_host.deploy_script_path
-    compose_project_directory = module.compose_host.compose_project_directory
+    function_name     = module.lambda_backend.function_name
+    alias_name        = module.lambda_backend.alias_name
+    published_version = module.lambda_backend.published_version
+    http_api_id       = module.lambda_backend.http_api_id
+    invoke_url        = module.lambda_backend.invoke_url
+    state_table_name  = module.lambda_backend.state_table_name
+    role_arn          = module.lambda_backend.role_arn
   }
 }
 
-output "edge_tunnel" {
-  description = "Central production Cloudflare tunnel metadata."
-  value = {
-    tunnel_id   = module.edge_tunnel.tunnel_id
-    tunnel_name = module.edge_tunnel.tunnel_name
-    hostnames   = module.edge_tunnel.hostnames
-  }
-  sensitive = true
+output "backend_custom_domain" {
+  description = "Production backend custom-domain metadata for DNS and smoke checks."
+  value = var.enable_backend_custom_domain ? {
+    hostname                    = nonsensitive(var.backend_hostname)
+    public_url                  = nonsensitive(local.public_api_url)
+    api_gateway_target_hostname = aws_apigatewayv2_domain_name.backend[0].domain_name_configuration[0].target_domain_name
+    cloudflare_record_name      = nonsensitive(cloudflare_dns_record.backend[0].name)
+    certificate_arn             = aws_acm_certificate.backend[0].arn
+  } : null
 }
 
 output "github_deploy_role_arn" {

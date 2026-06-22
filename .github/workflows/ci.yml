@@ -9,11 +9,28 @@ on:
     branches: [main, develop, "**"]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Manual Lambda action to run"
+        required: true
+        default: validate
+        type: choice
+        options:
+          - validate
+          - deploy-lambda
+          - rollback-lambda
+      rollback_target_version:
+        description: "Published Lambda version for manual rollback-lambda"
+        required: false
+        type: string
 
 env:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.12"
   KILO_MODEL: kilo/bytedance-seed/dola-seed-2.0-pro:free
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+  LAMBDA_PACKAGE_PATH: dist/lambda/backend.zip
+  LAMBDA_PACKAGE_ARTIFACT: lambda-backend-package
 
 jobs:
   lint:
@@ -92,6 +109,68 @@ jobs:
           name: admin-image
           path: admin-image.tar
           retention-days: 1
+
+  lambda-package:
+    name: Test and Package Lambda Backend
+    runs-on: ubuntu-latest
+    needs: lint
+    outputs:
+      package-sha256: ${{ steps.package.outputs.sha256 }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install test dependencies
+        run: uv sync --frozen --group dev --group lint
+
+      - name: Run Lambda and delivery tests
+        env:
+          CHAT_API_KEY: test-chat-key
+          OPENAI_API_KEY: test-openai-key
+        run: |
+          uv run pytest \
+            backend/tests/test_config.py \
+            backend/tests/test_lambda_runtime.py \
+            backend/tests/test_repository_wiring.py \
+            backend/tests/test_state_repository.py \
+            scripts/tests/test_workflow_deploy_checks.py \
+            scripts/tests/test_lambda_delivery_scripts.py
+
+      - name: Build Lambda package
+        id: package
+        run: |
+          uv run python scripts/build_lambda_package.py --output "${LAMBDA_PACKAGE_PATH}"
+          SHA256=$(uv run python - <<'PY'
+          from pathlib import Path
+          from scripts.build_lambda_package import sha256_file
+          print(sha256_file(Path("dist/lambda/backend.zip")))
+          PY
+          )
+          echo "sha256=${SHA256}" >> "${GITHUB_OUTPUT}"
+          printf '%s  %s\n' "${SHA256}" "${LAMBDA_PACKAGE_PATH}" > "${LAMBDA_PACKAGE_PATH}.sha256"
+
+      - name: Scan Lambda package for local secrets
+        run: |
+          uv run python scripts/build_lambda_package.py \
+            --scan-only "${LAMBDA_PACKAGE_PATH}" \
+            --assert-sha256 "${{ steps.package.outputs.sha256 }}"
+
+      - name: Upload Lambda package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.LAMBDA_PACKAGE_ARTIFACT }}
+          path: |
+            ${{ env.LAMBDA_PACKAGE_PATH }}
+            ${{ env.LAMBDA_PACKAGE_PATH }}.sha256
+          retention-days: 7
 
   test-health:
     name: Test /health Endpoint
@@ -249,6 +328,368 @@ jobs:
         if: failure()
         run: docker logs arte-chatbot-backend
 
+  deploy-lambda-staging:
+    name: Deploy Lambda Staging Package
+    runs-on: ubuntu-latest
+    needs: [lambda-package, evaluation]
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LAMBDA_CUTOVER_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy-lambda')
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      function-name: ${{ steps.deploy.outputs.function-name }}
+      alias-name: ${{ steps.deploy.outputs.alias-name }}
+      version: ${{ steps.deploy.outputs.version }}
+      api-url: ${{ steps.deploy.outputs.api-url }}
+      state-table-name: ${{ steps.deploy.outputs.state-table-name }}
+      state-key-prefix: ${{ steps.deploy.outputs.state-key-prefix }}
+    env:
+      LAMBDA_STAGING_FUNCTION_NAME: ${{ vars.LAMBDA_STAGING_FUNCTION_NAME }}
+      LAMBDA_STAGING_ALIAS_NAME: ${{ vars.LAMBDA_STAGING_ALIAS_NAME || 'staging' }}
+      LAMBDA_STAGING_API_URL: ${{ vars.LAMBDA_STAGING_API_URL }}
+      LAMBDA_STAGING_STATE_TABLE_NAME: ${{ vars.LAMBDA_STAGING_STATE_TABLE_NAME }}
+      LAMBDA_STAGING_STATE_KEY_PREFIX: ${{ vars.LAMBDA_STAGING_STATE_KEY_PREFIX }}
+      LAMBDA_STAGING_IAM_DENIED_DYNAMODB_TABLE_NAME: ${{ vars.LAMBDA_STAGING_IAM_DENIED_DYNAMODB_TABLE_NAME }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Lambda package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.LAMBDA_PACKAGE_ARTIFACT }}
+          path: dist/lambda
+
+      - name: Validate staging deploy configuration
+        env:
+          LAMBDA_STAGING_CHAT_API_KEY: ${{ secrets.LAMBDA_STAGING_CHAT_API_KEY }}
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          missing=()
+          for name in \
+            AWS_DEPLOY_ROLE_ARN \
+            LAMBDA_STAGING_FUNCTION_NAME \
+            LAMBDA_STAGING_ALIAS_NAME \
+            LAMBDA_STAGING_API_URL \
+            LAMBDA_STAGING_STATE_TABLE_NAME \
+            LAMBDA_STAGING_STATE_KEY_PREFIX \
+            LAMBDA_STAGING_CHAT_API_KEY \
+            LAMBDA_STAGING_IAM_DENIED_DYNAMODB_TABLE_NAME
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("${name}")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required Lambda staging deploy configuration:\n'
+            printf ' - %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+      - name: Verify downloaded package hash
+        run: |
+          python scripts/build_lambda_package.py \
+            --scan-only "${LAMBDA_PACKAGE_PATH}" \
+            --assert-sha256 "${{ needs.lambda-package.outputs.package-sha256 }}"
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy immutable package to staging alias
+        id: deploy
+        run: |
+          VERSION=$(aws lambda update-function-code \
+            --function-name "${LAMBDA_STAGING_FUNCTION_NAME}" \
+            --zip-file "fileb://${LAMBDA_PACKAGE_PATH}" \
+            --publish \
+            --query Version \
+            --output text)
+          aws lambda update-alias \
+            --function-name "${LAMBDA_STAGING_FUNCTION_NAME}" \
+            --name "${LAMBDA_STAGING_ALIAS_NAME}" \
+            --function-version "${VERSION}" \
+            --description "staging ${GITHUB_SHA} ${VERSION}"
+          echo "function-name=${LAMBDA_STAGING_FUNCTION_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "alias-name=${LAMBDA_STAGING_ALIAS_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "api-url=${LAMBDA_STAGING_API_URL}" >> "${GITHUB_OUTPUT}"
+          echo "state-table-name=${LAMBDA_STAGING_STATE_TABLE_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "state-key-prefix=${LAMBDA_STAGING_STATE_KEY_PREFIX}" >> "${GITHUB_OUTPUT}"
+
+  smoke-lambda-staging:
+    name: Smoke Lambda Staging
+    runs-on: ubuntu-latest
+    needs: [lambda-package, deploy-lambda-staging]
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install smoke dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run staging smoke checks
+        env:
+          CHAT_API_KEY: ${{ secrets.LAMBDA_STAGING_CHAT_API_KEY }}
+          STAGING_API_URL: ${{ needs.deploy-lambda-staging.outputs.api-url }}
+          STAGING_STATE_TABLE: ${{ needs.deploy-lambda-staging.outputs.state-table-name }}
+          STAGING_STATE_PREFIX: ${{ needs.deploy-lambda-staging.outputs.state-key-prefix }}
+          DENIED_TABLE: ${{ vars.LAMBDA_STAGING_IAM_DENIED_DYNAMODB_TABLE_NAME }}
+          PROD_BACKEND_URL: https://${{ secrets.PROD_BACKEND_HOSTNAME }}
+          PROD_LAMBDA_API_URL: ${{ vars.LAMBDA_PROD_API_URL }}
+          SMOKE_CHAT_MESSAGE: ${{ vars.LAMBDA_STAGING_SMOKE_CHAT_MESSAGE }}
+        run: |
+          uv run python scripts/lambda_smoke.py \
+            --base-url "${STAGING_API_URL}" \
+            --chat-api-key "${CHAT_API_KEY}" \
+            --chat-message "${SMOKE_CHAT_MESSAGE:-Validación staging: responde usando una ficha técnica de panel solar del catálogo.}" \
+            --environment staging \
+            --forbidden-url "${PROD_BACKEND_URL}" \
+            --forbidden-url "${PROD_LAMBDA_API_URL}" \
+            --require-source-docs \
+            --state-table-name "${STAGING_STATE_TABLE}" \
+            --state-key-prefix "${STAGING_STATE_PREFIX}" \
+            --aws-region "${AWS_REGION}" \
+            --expect-iam-denied-dynamodb-table "${DENIED_TABLE}"
+
+      - name: Run staging evaluation harness against same endpoint
+        env:
+          API_BASE_URL: ${{ needs.deploy-lambda-staging.outputs.api-url }}
+          CHAT_API_KEY: ${{ secrets.LAMBDA_STAGING_CHAT_API_KEY }}
+          EVAL_S3_UPLOAD_ENABLED: "false"
+        run: uv run python -m evaluation.harness.run --sprint lambda-staging --no-upload
+
+      - name: Upload staging evaluation results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lambda-staging-evaluation-results
+          path: evaluation/harness/output/
+          retention-days: 30
+
+  cutover-prerequisites:
+    name: Verify Lambda-Only Cutover Prerequisites
+    runs-on: ubuntu-latest
+    needs: smoke-lambda-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LAMBDA_CUTOVER_ENABLED == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Confirm destructive Lambda-only production cutover
+        run: |
+          if grep -R 'module "compose_host"\|module "edge_tunnel"\|variable "vpc_id"\|variable "public_subnet_id"\|variable "edge_tunnel_secret"' infra/terraform/envs/prod; then
+            echo "Lambda cutover blocked: production Terraform still contains EC2 Compose, Cloudflare Tunnel, or VPC/subnet inputs."
+            exit 1
+          fi
+          echo "Lambda-only production Terraform cutover confirmed."
+
+  promote-lambda-production:
+    name: Promote Same Lambda Package to Production
+    runs-on: ubuntu-latest
+    needs: [lambda-package, cutover-prerequisites]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LAMBDA_CUTOVER_ENABLED == 'true'
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      function-name: ${{ steps.promote.outputs.function-name }}
+      alias-name: ${{ steps.promote.outputs.alias-name }}
+      previous-version: ${{ steps.promote.outputs.previous-version }}
+      version: ${{ steps.promote.outputs.version }}
+      api-url: ${{ steps.promote.outputs.api-url }}
+      state-table-name: ${{ steps.promote.outputs.state-table-name }}
+      state-key-prefix: ${{ steps.promote.outputs.state-key-prefix }}
+    env:
+      LAMBDA_PROD_FUNCTION_NAME: ${{ vars.LAMBDA_PROD_FUNCTION_NAME }}
+      LAMBDA_PROD_ALIAS_NAME: ${{ vars.LAMBDA_PROD_ALIAS_NAME || 'live' }}
+      LAMBDA_PROD_API_URL: ${{ vars.LAMBDA_PROD_API_URL }}
+      LAMBDA_PROD_STATE_TABLE_NAME: ${{ vars.LAMBDA_PROD_STATE_TABLE_NAME }}
+      LAMBDA_PROD_STATE_KEY_PREFIX: ${{ vars.LAMBDA_PROD_STATE_KEY_PREFIX || 'prod' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download exact Lambda package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.LAMBDA_PACKAGE_ARTIFACT }}
+          path: dist/lambda
+
+      - name: Validate production deploy configuration
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          CHAT_API_KEY: ${{ secrets.CHAT_API_KEY }}
+        run: |
+          missing=()
+          for name in \
+            AWS_DEPLOY_ROLE_ARN \
+            CHAT_API_KEY \
+            LAMBDA_PROD_FUNCTION_NAME \
+            LAMBDA_PROD_ALIAS_NAME \
+            LAMBDA_PROD_API_URL \
+            LAMBDA_PROD_STATE_TABLE_NAME \
+            LAMBDA_PROD_STATE_KEY_PREFIX
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("${name}")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required Lambda production deploy configuration:\n'
+            printf ' - %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+      - name: Verify same package hash before production promotion
+        run: |
+          python scripts/build_lambda_package.py \
+            --scan-only "${LAMBDA_PACKAGE_PATH}" \
+            --assert-sha256 "${{ needs.lambda-package.outputs.package-sha256 }}"
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Promote exact package to production alias
+        id: promote
+        run: |
+          PREVIOUS_VERSION=$(aws lambda get-alias \
+            --function-name "${LAMBDA_PROD_FUNCTION_NAME}" \
+            --name "${LAMBDA_PROD_ALIAS_NAME}" \
+            --query FunctionVersion \
+            --output text)
+          VERSION=$(aws lambda update-function-code \
+            --function-name "${LAMBDA_PROD_FUNCTION_NAME}" \
+            --zip-file "fileb://${LAMBDA_PACKAGE_PATH}" \
+            --publish \
+            --query Version \
+            --output text)
+          aws lambda update-alias \
+            --function-name "${LAMBDA_PROD_FUNCTION_NAME}" \
+            --name "${LAMBDA_PROD_ALIAS_NAME}" \
+            --function-version "${VERSION}" \
+            --description "prod ${GITHUB_SHA} ${VERSION}; previous ${PREVIOUS_VERSION}"
+          echo "function-name=${LAMBDA_PROD_FUNCTION_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "alias-name=${LAMBDA_PROD_ALIAS_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "previous-version=${PREVIOUS_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "api-url=${LAMBDA_PROD_API_URL}" >> "${GITHUB_OUTPUT}"
+          echo "state-table-name=${LAMBDA_PROD_STATE_TABLE_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "state-key-prefix=${LAMBDA_PROD_STATE_KEY_PREFIX}" >> "${GITHUB_OUTPUT}"
+
+  verify-lambda-production:
+    name: Verify Lambda Production
+    runs-on: ubuntu-latest
+    needs: promote-lambda-production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LAMBDA_CUTOVER_ENABLED == 'true'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install smoke dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run production health and chat smoke
+        run: |
+          uv run python scripts/lambda_smoke.py \
+            --base-url "${{ needs.promote-lambda-production.outputs.api-url }}" \
+            --chat-api-key "${{ secrets.CHAT_API_KEY }}" \
+            --chat-message "Validación producción: responde de forma breve sobre el catálogo solar." \
+            --environment production \
+            --state-table-name "${{ needs.promote-lambda-production.outputs.state-table-name }}" \
+            --state-key-prefix "${{ needs.promote-lambda-production.outputs.state-key-prefix }}" \
+            --aws-region "${AWS_REGION}"
+
+  rollback-lambda-production:
+    name: Roll Back Lambda Production Alias
+    runs-on: ubuntu-latest
+    needs: [promote-lambda-production, verify-lambda-production]
+    if: |
+      always() && (
+        (failure() && github.ref == 'refs/heads/main' && vars.LAMBDA_CUTOVER_ENABLED == 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.action == 'rollback-lambda')
+      )
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      LAMBDA_PROD_FUNCTION_NAME: ${{ vars.LAMBDA_PROD_FUNCTION_NAME }}
+      LAMBDA_PROD_ALIAS_NAME: ${{ vars.LAMBDA_PROD_ALIAS_NAME || 'live' }}
+      LAMBDA_ROLLBACK_TARGET_VERSION: ${{ inputs.rollback_target_version || needs.promote-lambda-production.outputs.previous-version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install rollback dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Restore previous Lambda alias target
+        run: |
+          if [[ -z "${LAMBDA_ROLLBACK_TARGET_VERSION}" ]]; then
+            echo "No rollback target version was discovered. Provide workflow_dispatch rollback_target_version."
+            exit 1
+          fi
+          uv run python scripts/lambda_rollback.py rollback-alias \
+            --aws-region "${AWS_REGION}" \
+            --function-name "${LAMBDA_PROD_FUNCTION_NAME}" \
+            --alias-name "${LAMBDA_PROD_ALIAS_NAME}" \
+            --target-version "${LAMBDA_ROLLBACK_TARGET_VERSION}"
+
   publish-candidate-images:
     name: Publish PR Candidate Images
     runs-on: ubuntu-latest
@@ -380,120 +821,6 @@ jobs:
           push_if_missing arte-chatbot-backend "${{ vars.BACKEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
           push_if_missing arte-chatbot-frontend "${{ vars.FRONTEND_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
           push_if_missing arte-chatbot-admin "${{ vars.ADMIN_ECR_REPOSITORY_URL }}" "${SHA_TAG}"
-
-  deploy-production:
-    name: Deploy Production EC2 Compose
-    runs-on: ubuntu-latest
-    needs: publish-release-images
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      id-token: write
-      contents: read
-    env:
-      TF_IN_AUTOMATION: "true"
-      SHA_TAG: sha-${{ github.sha }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-2' }}
-      TF_VAR_vpc_id: ${{ vars.PROD_VPC_ID }}
-      TF_VAR_public_subnet_id: ${{ vars.PROD_PUBLIC_SUBNET_ID }}
-      TF_VAR_ec2_compose_instance_type: ${{ vars.PROD_EC2_COMPOSE_INSTANCE_TYPE || 't3.small' }}
-      TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
-      TF_VAR_backend_hostname: ${{ secrets.PROD_BACKEND_HOSTNAME }}
-      TF_VAR_frontend_hostname: ${{ secrets.PROD_FRONTEND_HOSTNAME }}
-      TF_VAR_admin_hostname: ${{ secrets.PROD_ADMIN_HOSTNAME }}
-      TF_VAR_edge_tunnel_secret: ${{ secrets.PROD_EDGE_TUNNEL_SECRET }}
-      TF_VAR_backend_runtime_environment_variables: ${{ vars.PROD_BACKEND_RUNTIME_ENV_JSON || '{}' }}
-      TF_VAR_backend_runtime_secret_arns: ${{ secrets.PROD_BACKEND_RUNTIME_SECRET_ARNS_JSON }}
-      TF_VAR_aws_bucket_name: ${{ secrets.AWS_BUCKET_NAME }}
-      TF_VAR_github_owner: ${{ github.repository_owner }}
-      TF_VAR_github_repository: ${{ github.event.repository.name }}
-      TF_VAR_create_github_oidc_role: "false"
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials through OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Mask externally supplied hostnames
-        run: |
-          echo "::add-mask::${TF_VAR_backend_hostname}"
-          echo "::add-mask::${TF_VAR_frontend_hostname}"
-          echo "::add-mask::${TF_VAR_admin_hostname}"
-
-      - name: Terraform init
-        run: terraform -chdir=infra/terraform/envs/prod init
-
-      - name: Terraform apply production EC2 Compose inputs
-        run: |
-          terraform -chdir=infra/terraform/envs/prod apply -auto-approve \
-            -var="initial_image_tag=${SHA_TAG}"
-
-      - name: Capture EC2 Compose host metadata
-        id: compose-host
-        run: |
-          INSTANCE_ID=$(terraform -chdir=infra/terraform/envs/prod output -json ec2_compose_host | python -c 'import json, sys; print(json.load(sys.stdin)["instance_id"])')
-          echo "instance-id=${INSTANCE_ID}" >> "${GITHUB_OUTPUT}"
-
-      - name: Deploy EC2 Compose stack through SSM
-        run: |
-          echo "Waiting for EC2 instance to become SSM-managed: ${{ steps.compose-host.outputs.instance-id }}"
-          for i in {1..40}; do
-            PING_STATUS=$(aws ssm describe-instance-information \
-              --filters "Key=InstanceIds,Values=${{ steps.compose-host.outputs.instance-id }}" \
-              --query "InstanceInformationList[0].PingStatus" \
-              --output text)
-
-            if [[ "${PING_STATUS}" == "Online" ]]; then
-              echo "EC2 instance is online in SSM"
-              break
-            fi
-
-            echo "Attempt $i/40: SSM status is ${PING_STATUS}; waiting..."
-            sleep 15
-          done
-
-          if [[ "${PING_STATUS}" != "Online" ]]; then
-            echo "EC2 instance did not become SSM-managed in time"
-            exit 1
-          fi
-
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "${{ steps.compose-host.outputs.instance-id }}" \
-            --document-name "AWS-RunShellScript" \
-            --comment "Deploy arte-chatbot ${SHA_TAG}" \
-            --parameters commands="/opt/arte-chatbot/deploy.sh ${SHA_TAG}" \
-            --query "Command.CommandId" \
-            --output text)
-
-          aws ssm wait command-executed \
-            --command-id "${COMMAND_ID}" \
-            --instance-id "${{ steps.compose-host.outputs.instance-id }}"
-
-          aws ssm get-command-invocation \
-            --command-id "${COMMAND_ID}" \
-            --instance-id "${{ steps.compose-host.outputs.instance-id }}" \
-            --query "{Status:Status,ResponseCode:ResponseCode}" \
-            --output table
-
-      - name: Verify backend health through Cloudflare
-        run: |
-          for i in {1..30}; do
-            if curl -fsS "https://${TF_VAR_backend_hostname}/health"; then
-              exit 0
-            fi
-            echo "Attempt $i/30: production backend health is not ready yet"
-            sleep 10
-          done
-          echo "Production backend health check failed"
-          exit 1
 
   cleanup:
     name: Cleanup Containers

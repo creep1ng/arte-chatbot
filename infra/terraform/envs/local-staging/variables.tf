@@ -174,6 +174,54 @@ variable "backend_runtime_secret_arns" {
   }
 }
 
+variable "backend_runtime_environment_variables" {
+  description = "Additional non-sensitive local-staging backend runtime environment variables."
+  type        = map(string)
+  default     = {}
+}
+
+variable "lambda_package_path" {
+  description = "Path to the prebuilt backend Lambda package for local staging."
+  type        = string
+  default     = "../../../../dist/lambda/backend.zip"
+}
+
+variable "lambda_memory_size" {
+  description = "Local staging Lambda memory size in MiB."
+  type        = number
+  default     = 1024
+}
+
+variable "lambda_timeout_seconds" {
+  description = "Local staging Lambda timeout in seconds."
+  type        = number
+  default     = 25
+}
+
+variable "lambda_session_ttl_seconds" {
+  description = "Local staging session TTL. Defaults to three days to bound cleanup."
+  type        = number
+  default     = 259200
+}
+
+variable "lambda_buffer_ttl_seconds" {
+  description = "Local staging buffer TTL. Defaults to one day."
+  type        = number
+  default     = 86400
+}
+
+variable "lambda_rate_limit_ttl_seconds" {
+  description = "Local staging rate-limit TTL. Defaults to one day."
+  type        = number
+  default     = 86400
+}
+
+variable "kms_key_arns" {
+  description = "Optional KMS keys needed by Lambda to decrypt local-staging runtime secret references."
+  type        = list(string)
+  default     = []
+}
+
 variable "cloudflared_image" {
   description = "cloudflared sidecar image."
   type        = string
