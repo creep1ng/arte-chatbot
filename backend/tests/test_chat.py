@@ -10,15 +10,25 @@ import requests
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
-from backend.main import app, llm_client, s3_client, file_inputs_client
-from backend.app.auth import verify_api_key
+from backend.main import app, llm_client, file_inputs_client
+from backend.app.auth import api_key_principal, verify_api_key
 from backend.app.schemas import SourceDocument
+from backend.app.session import session_manager
 from backend.tests.conftest import make_llm_response
 
 client = TestClient(app)
 
+TEST_API_KEY = "test_key"
+TEST_API_PRINCIPAL = api_key_principal(TEST_API_KEY)
+
+
+def _bind_test_session(session_id: str) -> None:
+    """Bind a legacy test session to the overridden test API principal."""
+    session_manager.bind_session(session_id, TEST_API_PRINCIPAL)
+
+
 # Override auth for unit tests
-app.dependency_overrides[verify_api_key] = lambda: "test_key"
+app.dependency_overrides[verify_api_key] = lambda: TEST_API_KEY
 
 
 class TestHealthEndpoint:
@@ -41,6 +51,49 @@ class TestHealthEndpoint:
         assert "docs" in data
 
 
+class TestToolErrorMessages:
+    """Tests for public tool error message handling."""
+
+    def test_public_value_error_message_returns_safe_catalog_error(self) -> None:
+        """Expected catalog failures keep their user-safe message."""
+        from backend.main import _public_value_error_message
+
+        error = (
+            "No se encontraron productos en el catálogo con los criterios "
+            "especificados. El archivo solicitado no está disponible."
+        )
+
+        assert _public_value_error_message(ValueError(error)) == error
+
+    def test_public_value_error_message_translates_safe_tool_errors(self) -> None:
+        """Expected tool validation errors return user-safe Spanish messages."""
+        from backend.main import _public_value_error_message
+
+        assert (
+            _public_value_error_message(
+                ValueError("Requested datasheet is not declared in the catalog")
+            )
+            == "La ficha técnica solicitada no está disponible en el catálogo."
+        )
+        assert (
+            _public_value_error_message(
+                ValueError("No products found in catalog for categoria='paneles'")
+            )
+            == "No se encontraron productos en el catálogo con esos criterios."
+        )
+
+    def test_public_value_error_message_hides_internal_error(self) -> None:
+        """Unexpected validation errors use the generic fallback."""
+        from backend.main import _public_value_error_message
+
+        assert _public_value_error_message(
+            ValueError("Invalid tool arguments JSON")
+        ) == (
+            "No pude procesar esa herramienta con los datos recibidos. "
+            "Probá reformular la consulta."
+        )
+
+
 class TestChatEndpointUnit:
     """Tests for /chat endpoint using TestClient."""
 
@@ -56,13 +109,18 @@ class TestChatEndpointUnit:
             text="[INTENT: escalate_quote] Un agente de ventas te contactará pronto.",
         )
         response = client.post(
-            "/chat", json={"message": "Necesito una cotización de paneles"}
+            "/chat",
+            json={
+                "message": "Necesito una cotización de paneles",
+                "is_final": True,
+            },
         )
         assert response.status_code == 200
         data = response.json()
         assert data["escalate"] is True
         assert data["intent_type"] == "escalate_quote"
         assert data["session_id"] is not None
+        assert "asistencia personalizada" in data["response"]
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_escalate_for_pedido(self, mock_llm) -> None:
@@ -94,7 +152,9 @@ class TestChatEndpointUnit:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_no_escalate_for_normal_message(self, mock_llm) -> None:
         """Test no escalation for normal messages."""
-        mock_llm.return_value = make_llm_response(text="[INTENT: FAQ] Mocked LLM Response")
+        mock_llm.return_value = make_llm_response(
+            text="[INTENT: FAQ] Mocked LLM Response"
+        )
         response = client.post(
             "/chat", json={"message": "¿Cuánta potencia tiene el panel de 400W?"}
         )
@@ -118,6 +178,7 @@ class TestChatEndpointUnit:
     def test_chat_accepts_custom_session_id(self, mock_llm) -> None:
         """Test that custom session_id can be provided."""
         mock_llm.return_value = make_llm_response(text="Mocked LLM Response")
+        _bind_test_session("my-session-123")
         response = client.post(
             "/chat", json={"message": "Hola", "session_id": "my-session-123"}
         )
@@ -134,6 +195,8 @@ class TestChatEndpointUnit:
         mock_session_manager.get_context_string.return_value = (
             "Turno 1:\nUsuario: Pregunta anterior\nAsistente: Respuesta anterior"
         )
+        mock_session_manager.get_user_profile.return_value = None
+        _bind_test_session("test-session-123")
 
         # Hacer la petición
         response = client.post(
@@ -195,9 +258,7 @@ class TestChatEndpointUnit:
         mock_llm.return_value = make_llm_response(
             text="[INTENT: escalate_quote] Te contactará un agente.",
         )
-        response = client.post(
-            "/chat", json={"message": "Necesito un presupuesto"}
-        )
+        response = client.post("/chat", json={"message": "Necesito un presupuesto"})
         assert response.status_code == 200
         data = response.json()
         assert data["intent_type"] == "escalate_quote"
@@ -209,9 +270,7 @@ class TestChatEndpointUnit:
         mock_llm.return_value = make_llm_response(
             text="[INTENT: escalate_order] Procesaremos tu pedido.",
         )
-        response = client.post(
-            "/chat", json={"message": "Quiero comprar paneles"}
-        )
+        response = client.post("/chat", json={"message": "Quiero comprar paneles"})
         assert response.status_code == 200
         data = response.json()
         assert data["intent_type"] == "escalate_order"
@@ -237,9 +296,7 @@ class TestChatEndpointUnit:
         mock_llm.return_value = make_llm_response(
             text="[INTENT: fuera_de_dominio] Pregunta sobre otro tema.",
         )
-        response = client.post(
-            "/chat", json={"message": "Cómo está el clima hoy?"}
-        )
+        response = client.post("/chat", json={"message": "Cómo está el clima hoy?"})
         assert response.status_code == 200
         data = response.json()
         assert data["intent_type"] == "fuera_de_dominio"
@@ -250,24 +307,34 @@ class TestChatEndpointUnit:
     def test_chat_intent_marker_stripped_from_response(self, mock_llm) -> None:
         """Test that [INTENT: ...] marker is stripped from response text."""
         mock_llm.return_value = make_llm_response(
-            text="[INTENT: FAQ] Los paneles monocristalinos son más eficientes.",
+            text=(
+                "[INTENT: FAQ][CONFIDENCE: 0.92] "
+                "Los paneles monocristalinos son más eficientes."
+            ),
         )
         response = client.post(
-            "/chat", json={"message": "¿Qué tipo de panel me conviene?"}
+            "/chat",
+            json={"message": "¿Qué tipo de panel me conviene?", "is_final": True},
         )
         data = response.json()
         assert "[INTENT:" not in data["response"]
+        assert "[CONFIDENCE:" not in data["response"]
+        assert data["intent_type"] == "FAQ"
+        assert data["confidence"] == 0.92
         assert "monocristalinos" in data["response"]
 
     def test_chat_response_schema_includes_intent_type(self) -> None:
-        """Test that ChatResponse schema includes intent_type field."""
+        """Test that ChatResponse schema includes optional intent fields."""
         from backend.main import ChatResponse
+
         schema = ChatResponse.model_json_schema()
         assert "intent_type" in schema["properties"]
+        assert "confidence" in schema["properties"]
 
     def test_chat_response_schema_includes_token_fields(self) -> None:
         """Test that ChatResponse schema includes optional token fields."""
         from backend.main import ChatResponse
+
         schema = ChatResponse.model_json_schema()
         props = schema["properties"]
         assert "input_tokens" in props
@@ -282,6 +349,8 @@ class TestChatEndpointUnit:
             response="test",
             session_id="s1",
         )
+        assert resp.intent_type is None
+        assert resp.confidence is None
         assert resp.input_tokens is None
         assert resp.output_tokens is None
         assert resp.total_tokens is None
@@ -293,10 +362,14 @@ class TestChatEndpointUnit:
         resp = ChatResponse(
             response="test",
             session_id="s1",
+            intent_type="FAQ",
+            confidence=0.87,
             input_tokens=100,
             output_tokens=50,
             total_tokens=150,
         )
+        assert resp.intent_type == "FAQ"
+        assert resp.confidence == 0.87
         assert resp.input_tokens == 100
         assert resp.output_tokens == 50
         assert resp.total_tokens == 150
@@ -398,16 +471,16 @@ class TestChatEndpointWithToolCall:
                     "type": "function",
                     "function": {
                         "name": "leer_ficha_tecnica",
-                        "arguments": '{"ruta_s3": "paneles/jinko-tiger-pro-460w.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger Pro 460W"}',
+                        "arguments": '{"ruta_s3": "raw/paneles/jinko-tiger-pro-460w.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger Pro 460W"}',
                     },
                 }
             ],
         )
-        
+
         normal_response = make_llm_response(
             text="El panel Jinko Tiger Pro 460W tiene una potencia de 460W.",
         )
-        
+
         mock_llm.side_effect = [tool_call_response, normal_response]
 
         # Mock S3 download
@@ -418,9 +491,13 @@ class TestChatEndpointWithToolCall:
         mock_file_inputs.delete_file.return_value = None
 
         # Mock second LLM call
-        with patch(
-            "backend.main.llm_client.get_llm_response_with_file"
-        ) as mock_llm_file:
+        with (
+            patch("backend.main.get_catalog") as mock_get_catalog,
+            patch(
+                "backend.main.llm_client.get_llm_response_with_file"
+            ) as mock_llm_file,
+        ):
+            mock_get_catalog.return_value.contains_ruta_s3.return_value = True
             mock_llm_file.return_value = make_llm_response(
                 text="El panel Jinko Tiger Pro 460W tiene una potencia de 460W."
             )
@@ -455,16 +532,16 @@ class TestChatEndpointWithToolCall:
                     "type": "function",
                     "function": {
                         "name": "leer_ficha_tecnica",
-                        "arguments": '{"ruta_s3": "paneles/nonexistent.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
+                        "arguments": '{"ruta_s3": "raw/paneles/nonexistent.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
                     },
                 }
             ],
         )
-        
+
         normal_response = make_llm_response(
             text="No pude acceder al archivo solicitado.",
         )
-        
+
         mock_llm.side_effect = [tool_call_response, normal_response]
 
         # Mock S3 download error
@@ -472,10 +549,12 @@ class TestChatEndpointWithToolCall:
             "File not found in S3: nonexistent.pdf"
         )
 
-        response = client.post(
-            "/chat",
-            json={"message": "Dime las especificaciones del panel Test"},
-        )
+        with patch("backend.main.get_catalog") as mock_get_catalog:
+            mock_get_catalog.return_value.contains_ruta_s3.return_value = True
+            response = client.post(
+                "/chat",
+                json={"message": "Dime las especificaciones del panel Test"},
+            )
 
         assert response.status_code == 200
         data = response.json()
@@ -504,7 +583,7 @@ class TestChatEndpointWithToolCall:
                     "type": "function",
                     "function": {
                         "name": "leer_ficha_tecnica",
-                        "arguments": '{"ruta_s3": "paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
+                        "arguments": '{"ruta_s3": "raw/paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
                     },
                 }
             ],
@@ -516,10 +595,12 @@ class TestChatEndpointWithToolCall:
         # Mock file upload error
         mock_file_inputs.upload_pdf.side_effect = FileUploadError("Invalid file format")
 
-        response = client.post(
-            "/chat",
-            json={"message": "Dime las especificaciones del panel Test"},
-        )
+        with patch("backend.main.get_catalog") as mock_get_catalog:
+            mock_get_catalog.return_value.contains_ruta_s3.return_value = True
+            response = client.post(
+                "/chat",
+                json={"message": "Dime las especificaciones del panel Test"},
+            )
 
         assert response.status_code == 200
         data = response.json()
@@ -542,14 +623,14 @@ class TestChatEndpointWithToolCall:
                     "type": "function",
                     "function": {
                         "name": "leer_ficha_tecnica",
-                        "arguments": '{"ruta_s3": "paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
+                        "arguments": '{"ruta_s3": "raw/paneles/test.pdf", "categoria": "paneles", "fabricante": "Test", "modelo": "Test"}',
                     },
                 }
             ],
         )
-        
+
         normal_response = make_llm_response(text="Test response")
-        
+
         mock_llm.side_effect = [tool_call_response, normal_response]
 
         # Mock S3 download
@@ -559,12 +640,16 @@ class TestChatEndpointWithToolCall:
         mock_file_inputs.upload_pdf.return_value = "file-abc123"
 
         # Mock second LLM call
-        with patch(
-            "backend.main.llm_client.get_llm_response_with_file"
-        ) as mock_llm_file:
+        with (
+            patch("backend.main.get_catalog") as mock_get_catalog,
+            patch(
+                "backend.main.llm_client.get_llm_response_with_file"
+            ) as mock_llm_file,
+        ):
+            mock_get_catalog.return_value.contains_ruta_s3.return_value = True
             mock_llm_file.return_value = make_llm_response(text="Test response")
 
-            response = client.post(
+            client.post(
                 "/chat",
                 json={"message": "Test message"},
             )
@@ -595,11 +680,9 @@ class TestChatEndpointWithToolCall:
         """Test chat endpoint passes session_id to LLM client."""
         mock_llm.return_value = make_llm_response(text="Test response")
 
-        custom_session = "custom-session-abc123"
-        response = client.post(
-            "/chat",
-            json={"message": "Test", "session_id": custom_session},
-        )
+        first_response = client.post("/chat", json={"message": "Start"})
+        custom_session = first_response.json()["session_id"]
+        client.post("/chat", json={"message": "Test", "session_id": custom_session})
 
         # Verify session_id was passed to LLM
         call_args = mock_llm.call_args
@@ -640,21 +723,27 @@ class TestSourceDocumentsBehavior:
             "type": "function",
             "function": {
                 "name": "leer_ficha_tecnica",
-                "arguments": json.dumps({"ruta_s3": "paneles/test.pdf"}),
+                "arguments": json.dumps({"ruta_s3": "raw/paneles/test.pdf"}),
             },
         }
 
         # First LLM call returns tool call, second returns normal response
         tool_call_response = make_llm_response(text="", tool_calls=[leer_tool_call])
         normal_response = make_llm_response(text="Contenido ficha")
-        
+
         mock_llm.side_effect = [tool_call_response, normal_response]
         mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
         mock_file_inputs.upload_pdf.return_value = "file-abc123"
 
-        with patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
+        with (
+            patch("backend.main.get_catalog") as mock_get_catalog,
+            patch(
+                "backend.main.llm_client.get_llm_response_with_file"
+            ) as mock_llm_file,
+        ):
+            mock_get_catalog.return_value.contains_ruta_s3.return_value = True
             mock_llm_file.return_value = make_llm_response(text="Contenido ficha")
-            
+
             response = client.post(
                 "/chat",
                 json={"message": "Necesito la ficha del panel Test"},
@@ -664,7 +753,7 @@ class TestSourceDocumentsBehavior:
         data = response.json()
         assert data["response"] == "Contenido ficha"
         assert data["source_documents"] == [
-            {"ruta": "paneles/test.pdf", "contenido_relevante": None}
+            {"ruta": "raw/paneles/test.pdf", "contenido_relevante": None}
         ]
 
     def test_source_documents_not_null_on_escalation(self) -> None:
@@ -691,15 +780,16 @@ class TestSourceDocumentSchema:
         doc = SourceDocument(ruta="paneles/test.pdf")
         assert doc.contenido_relevante is None
 
+
 class TestAgenticLoopBehavior:
     """Tests covering the iterative agentic loop inside /chat."""
 
-    @patch("backend.main.catalog_search.search")
+    @patch("backend.main.get_catalog")
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_agentic_loop_buscar_then_leer_then_respond(
         self,
         mock_llm: MagicMock,
-        mock_search: MagicMock,
+        mock_get_catalog: MagicMock,
     ) -> None:
         """Simulate buscar_producto followed by leer_ficha_tecnica within the loop."""
 
@@ -723,7 +813,7 @@ class TestAgenticLoopBehavior:
             "type": "function",
             "function": {
                 "name": "leer_ficha_tecnica",
-                "arguments": json.dumps({"ruta_s3": "paneles/jinko-tiger-pro.pdf"}),
+                "arguments": json.dumps({"ruta_s3": "raw/paneles/jinko-tiger-pro.pdf"}),
             },
         }
 
@@ -734,23 +824,31 @@ class TestAgenticLoopBehavior:
             make_llm_response(text="Ficha técnica procesada"),
         ]
 
-        mock_search.return_value = [
+        mock_catalog = MagicMock()
+        mock_catalog.contains_ruta_s3.return_value = True
+        mock_catalog.search.return_value = [
             MagicMock(
-                ruta_s3="paneles/jinko-tiger-pro.pdf",
+                ruta_s3="raw/paneles/jinko-tiger-pro.pdf",
                 nombre_comercial="Jinko Tiger Pro",
                 fabricante="Jinko",
                 descripcion=None,
                 variantes=[],
             )
         ]
+        mock_get_catalog.return_value = mock_catalog
 
-        with patch("backend.main.s3_client") as mock_s3, \
-             patch("backend.main.file_inputs_client") as mock_file_inputs, \
-             patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
-            
+        with (
+            patch("backend.main.s3_client") as mock_s3,
+            patch("backend.main.file_inputs_client") as mock_file_inputs,
+            patch(
+                "backend.main.llm_client.get_llm_response_with_file"
+            ) as mock_llm_file,
+        ):
             mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
             mock_file_inputs.upload_pdf.return_value = "file-abc123"
-            mock_llm_file.return_value = make_llm_response(text="Ficha técnica procesada")
+            mock_llm_file.return_value = make_llm_response(
+                text="Ficha técnica procesada"
+            )
 
             response = client.post(
                 "/chat",
@@ -761,7 +859,7 @@ class TestAgenticLoopBehavior:
         data = response.json()
         assert data["response"] == "Ficha técnica procesada"
         assert mock_llm.call_count == 3
-        mock_search.assert_called_once()
+        mock_catalog.search.assert_called_once()
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_agentic_loop_stops_when_no_tool_calls(self, mock_llm: MagicMock) -> None:
@@ -783,12 +881,12 @@ class TestAgenticLoopBehavior:
 
     @patch("backend.main.MAX_AGENTIC_ITERATIONS", 2)
     @patch("backend.main.logger.warning")
-    @patch("backend.main.catalog_search.search", return_value=[])
+    @patch("backend.main.get_catalog")
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_agentic_loop_respects_max_iterations(
         self,
         mock_llm: MagicMock,
-        mock_search: MagicMock,
+        mock_get_catalog: MagicMock,
         mock_warning: MagicMock,
     ) -> None:
         """Verify the loop stops after reaching MAX_AGENTIC_ITERATIONS."""
@@ -813,6 +911,9 @@ class TestAgenticLoopBehavior:
 
         # Mock returns the looping response multiple times (for 2+ iterations)
         mock_llm.side_effect = [looping_response, looping_response, looping_response]
+        mock_catalog = MagicMock()
+        mock_catalog.search.return_value = []
+        mock_get_catalog.return_value = mock_catalog
 
         response = client.post(
             "/chat",
@@ -825,7 +926,7 @@ class TestAgenticLoopBehavior:
         assert "límite de iteraciones" in data["response"].lower()
         # Should have called LLM at least twice (iteration 1 and 2)
         assert mock_llm.call_count >= 2
-        mock_search.assert_called()
+        mock_catalog.search.assert_called()
         mock_warning.assert_called_once()
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
@@ -840,23 +941,30 @@ class TestAgenticLoopBehavior:
             "type": "function",
             "function": {
                 "name": "leer_ficha_tecnica",
-                "arguments": json.dumps({"ruta_s3": "paneles/longi-500w.pdf"}),
+                "arguments": json.dumps({"ruta_s3": "raw/paneles/longi-500w.pdf"}),
             },
         }
 
         # First LLM call returns leer tool call, second call returns normal response
         tool_call_response = make_llm_response(text="", tool_calls=[leer_tool_call])
         normal_response = make_llm_response(text="Información obtenida directamente")
-        
+
         mock_llm.side_effect = [tool_call_response, normal_response]
 
-        with patch("backend.main.s3_client") as mock_s3, \
-             patch("backend.main.file_inputs_client") as mock_file_inputs, \
-             patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
-            
+        with (
+            patch("backend.main.get_catalog") as mock_get_catalog,
+            patch("backend.main.s3_client") as mock_s3,
+            patch("backend.main.file_inputs_client") as mock_file_inputs,
+            patch(
+                "backend.main.llm_client.get_llm_response_with_file"
+            ) as mock_llm_file,
+        ):
+            mock_get_catalog.return_value.contains_ruta_s3.return_value = True
             mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
             mock_file_inputs.upload_pdf.return_value = "file-abc123"
-            mock_llm_file.return_value = make_llm_response(text="Información obtenida directamente")
+            mock_llm_file.return_value = make_llm_response(
+                text="Información obtenida directamente"
+            )
 
             response = client.post(
                 "/chat",
@@ -883,7 +991,7 @@ class TestTokenAccumulation:
 
         response = client.post(
             "/chat",
-            json={"message": "¿Qué es un panel solar?", "session_id": "tok-s1"},
+            json={"message": "¿Qué es un panel solar?", "is_final": True},
         )
 
         assert response.status_code == 200
@@ -894,7 +1002,9 @@ class TestTokenAccumulation:
 
     @patch("backend.main.get_catalog")
     @patch("backend.main.llm_client.get_llm_response_with_tools")
-    def test_multi_iteration_tokens_accumulate(self, mock_llm: MagicMock, mock_get_catalog: MagicMock) -> None:
+    def test_multi_iteration_tokens_accumulate(
+        self, mock_llm: MagicMock, mock_get_catalog: MagicMock
+    ) -> None:
         """Test that tokens accumulate across multiple agentic loop iterations."""
         buscar_tool_call = {
             "id": "call_buscar",
@@ -908,12 +1018,24 @@ class TestTokenAccumulation:
         # First call: 100 in, 50 out (with tool call)
         # Second call: 200 in, 80 out (final response)
         mock_llm.side_effect = [
-            make_llm_response(text="", tool_calls=[buscar_tool_call], input_tokens=100, output_tokens=50, total_tokens=150),
-            make_llm_response(text="[INTENT: FAQ] Resultado de búsqueda", input_tokens=200, output_tokens=80, total_tokens=280),
+            make_llm_response(
+                text="",
+                tool_calls=[buscar_tool_call],
+                input_tokens=100,
+                output_tokens=50,
+                total_tokens=150,
+            ),
+            make_llm_response(
+                text="[INTENT: FAQ] Resultado de búsqueda",
+                input_tokens=200,
+                output_tokens=80,
+                total_tokens=280,
+            ),
         ]
         mock_catalog = MagicMock()
         mock_catalog.search.return_value = []
         mock_get_catalog.return_value = mock_catalog
+        _bind_test_session("tok-s2")
 
         response = client.post(
             "/chat",
@@ -941,31 +1063,45 @@ class TestTokenAccumulation:
             "type": "function",
             "function": {
                 "name": "leer_ficha_tecnica",
-                "arguments": json.dumps({"ruta_s3": "paneles/test.pdf"}),
+                "arguments": json.dumps({"ruta_s3": "raw/paneles/test.pdf"}),
             },
         }
 
         # First call: tool call, 100 in, 50 out
         tool_response = make_llm_response(
-            text="", tool_calls=[leer_tool_call],
-            input_tokens=100, output_tokens=50, total_tokens=150,
+            text="",
+            tool_calls=[leer_tool_call],
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
         )
         # Final call after tool: 200 in, 80 out
         final_response = make_llm_response(
             text="[INTENT: FAQ] Información del panel",
-            input_tokens=200, output_tokens=80, total_tokens=280,
+            input_tokens=200,
+            output_tokens=80,
+            total_tokens=280,
         )
 
         mock_llm.side_effect = [tool_response, final_response]
         mock_s3.download_pdf.return_value = b"%PDF-1.4 test"
         mock_file_inputs.upload_pdf.return_value = "file-abc"
         mock_file_inputs.delete_file.return_value = None
+        _bind_test_session("tok-s3")
 
         # File LLM call: 300 in, 120 out
-        with patch("backend.main.llm_client.get_llm_response_with_file") as mock_llm_file:
+        with (
+            patch("backend.main.get_catalog") as mock_get_catalog,
+            patch(
+                "backend.main.llm_client.get_llm_response_with_file"
+            ) as mock_llm_file,
+        ):
+            mock_get_catalog.return_value.contains_ruta_s3.return_value = True
             mock_llm_file.return_value = make_llm_response(
                 text="Contenido ficha",
-                input_tokens=300, output_tokens=120, total_tokens=420,
+                input_tokens=300,
+                output_tokens=120,
+                total_tokens=420,
             )
 
             response = client.post(
@@ -984,6 +1120,7 @@ class TestTokenAccumulation:
 
     def test_escalation_returns_zero_tokens(self) -> None:
         """Test that escalation (no LLM call) returns zero tokens."""
+        _bind_test_session("tok-s4")
         response = client.post(
             "/chat",
             json={"message": "Necesito una cotización", "session_id": "tok-s4"},
@@ -1008,6 +1145,7 @@ class TestTokenAccumulation:
         )
 
         session_id = "tok-s5"
+        _bind_test_session(session_id)
         response = client.post(
             "/chat",
             json={"message": "Test", "session_id": session_id},
@@ -1015,6 +1153,7 @@ class TestTokenAccumulation:
 
         assert response.status_code == 200
         from backend.main import session_manager as sm
+
         totals = sm.get_token_totals(session_id)
         assert totals.input_tokens == 100
         assert totals.output_tokens == 50
@@ -1024,10 +1163,15 @@ class TestTokenAccumulation:
 class TestProcessToolCall:
     """Tests for the _process_leer_ficha_tecnica function."""
 
+    @pytest.mark.asyncio
+    @patch("backend.main.get_catalog")
     @patch("backend.main.s3_client")
     @patch("backend.main.file_inputs_client")
-    def test_process_tool_call_success(
-        self, mock_file_inputs: MagicMock, mock_s3: MagicMock
+    async def test_process_tool_call_success(
+        self,
+        mock_file_inputs: MagicMock,
+        mock_s3: MagicMock,
+        mock_get_catalog: MagicMock,
     ) -> None:
         """Test _process_leer_ficha_tecnica handles successful execution."""
         from backend.main import _process_leer_ficha_tecnica
@@ -1037,22 +1181,27 @@ class TestProcessToolCall:
 
         # Mock file upload
         mock_file_inputs.upload_pdf.return_value = "file-xyz789"
+        mock_catalog = MagicMock()
+        mock_catalog.contains_ruta_s3.return_value = True
+        mock_get_catalog.return_value = mock_catalog
 
         # Mock second LLM call
         with patch(
             "backend.main.llm_client.get_llm_response_with_file"
         ) as mock_llm_file:
-            mock_llm_file.return_value = make_llm_response(text="El panel tiene 460W de potencia.")
+            mock_llm_file.return_value = make_llm_response(
+                text="El panel tiene 460W de potencia."
+            )
 
             tool_call = {
                 "id": "call_123",
                 "function": {
                     "name": "leer_ficha_tecnica",
-                    "arguments": '{"ruta_s3": "paneles/jinko.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger"}',
+                    "arguments": '{"ruta_s3": "raw/paneles/jinko.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger"}',
                 },
             }
 
-            result, source_docs = _process_leer_ficha_tecnica(
+            result, source_docs = await _process_leer_ficha_tecnica(
                 tool_call=tool_call,
                 user_message="Specs del panel",
                 session_id="test-session",
@@ -1062,11 +1211,12 @@ class TestProcessToolCall:
             )
 
         assert "460W" in result.text
-        assert source_docs == ["paneles/jinko.pdf"]
+        assert source_docs == ["raw/paneles/jinko.pdf"]
         mock_file_inputs.delete_file.assert_called_once_with("file-xyz789")
 
+    @pytest.mark.asyncio
     @patch("backend.main.s3_client")
-    def test_process_tool_call_s3_error(self, mock_s3: MagicMock) -> None:
+    async def test_process_tool_call_s3_error(self, mock_s3: MagicMock) -> None:
         """Test _process_leer_ficha_tecnica handles S3 errors with catalog fallback."""
         from backend.main import _process_leer_ficha_tecnica
         from backend.app.s3_client import S3DownloadError
@@ -1079,13 +1229,13 @@ class TestProcessToolCall:
             "id": "call_123",
             "function": {
                 "name": "leer_ficha_tecnica",
-                "arguments": '{"ruta_s3": "bad.pdf", "categoria": "paneles", "fabricante": "X", "modelo": "Y"}',
+                "arguments": '{"ruta_s3": "raw/paneles/bad.pdf", "categoria": "paneles", "fabricante": "X", "modelo": "Y"}',
             },
         }
 
         # Should raise ValueError when catalog fallback finds no results
         with pytest.raises(ValueError) as exc_info:
-            _process_leer_ficha_tecnica(
+            await _process_leer_ficha_tecnica(
                 tool_call=tool_call,
                 user_message="Test",
                 session_id="test",
@@ -1093,8 +1243,12 @@ class TestProcessToolCall:
                 s3_client=mock_s3,
                 file_inputs_client=file_inputs_client,
             )
-        
-        assert "catálogo" in str(exc_info.value).lower() or "no se encontraron" in str(exc_info.value).lower()
+
+        assert (
+            "catálogo" in str(exc_info.value).lower()
+            or "no se encontraron" in str(exc_info.value).lower()
+            or "catalog" in str(exc_info.value).lower()
+        )
 
     def test_process_tool_call_invalid_tool_name(self) -> None:
         """Test that unknown tool names are handled gracefully."""
@@ -1106,12 +1260,16 @@ class TestProcessToolCall:
 class TestBuscarProductoTool:
     """Unit tests for buscar_producto tool handler."""
 
-    @patch("backend.main.catalog_search.search", return_value=[])
+    @patch("backend.main.get_catalog_search")
     def test_buscar_producto_no_results_informs_user(
-        self, mock_search: MagicMock
+        self, mock_get_catalog_search: MagicMock
     ) -> None:
         """Ensure the handler informs the user when no products match."""
         from backend.main import _handle_buscar_producto_tool
+
+        mock_catalog = MagicMock()
+        mock_catalog.search.return_value = []
+        mock_get_catalog_search.return_value = mock_catalog
 
         tool_call = {
             "id": "call_buscar_empty",
@@ -1131,7 +1289,7 @@ class TestBuscarProductoTool:
 
         assert "No encontré productos" in output
         assert is_terminal is False
-        mock_search.assert_called_once_with(
+        mock_catalog.search.assert_called_once_with(
             categoria="paneles",
             fabricante="Trina",
             capacidad_min=None,
@@ -1163,9 +1321,7 @@ class TestConversationLoggingWiring:
         )
         mock_conv_logger.log_turn = AsyncMock()
 
-        response = client.post(
-            "/chat", json={"message": "¿Son buenos los paneles?"}
-        )
+        response = client.post("/chat", json={"message": "¿Son buenos los paneles?"})
         assert response.status_code == 200
 
         # log_turn should have been called
@@ -1295,9 +1451,7 @@ class TestConversationLoggingWiring:
 
     @patch("backend.main.conversation_logger", None)
     @patch("backend.main.llm_client.get_llm_response_with_tools")
-    def test_no_error_when_logger_is_none(
-        self, mock_llm: MagicMock
-    ) -> None:
+    def test_no_error_when_logger_is_none(self, mock_llm: MagicMock) -> None:
         """Chat endpoint works normally when conversation_logger is None."""
         mock_llm.return_value = make_llm_response(
             text="[INTENT: FAQ] Respuesta.",

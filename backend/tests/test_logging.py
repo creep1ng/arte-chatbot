@@ -3,7 +3,6 @@ Tests for the centralized logging configuration module.
 """
 
 import logging
-import os
 
 import pytest
 
@@ -11,8 +10,6 @@ from backend.app.config import settings
 from backend.app.logging_config import (
     LOG_FORMAT,
     DATE_FORMAT,
-    _DEFAULT_LOG_LEVEL,
-    _VALID_LOG_LEVELS,
     get_log_level,
     setup_logging,
 )

@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 _DELIMITER_LINE = "---"
 
 # Intents that should NOT trigger splitting
-_NO_SPLIT_INTENTS = {"escalate_quote", "escalate_technical", "escalate_order", "fuera_de_dominio"}
+_NO_SPLIT_INTENTS = {
+    "escalate_quote",
+    "escalate_technical",
+    "escalate_order",
+    "fuera_de_dominio",
+}
 
 # Per-intent character limits for split messages
 _INTENT_MAX_CHARS: dict[str, int] = {
@@ -165,8 +170,6 @@ def process_split_messages(
     # Generate random delays within configured range
     min_delay = settings.msg_delay_min_ms
     max_delay = settings.msg_delay_max_ms
-    delays = [
-        random.randint(min_delay, max_delay) for _ in range(len(segments) - 1)
-    ]
+    delays = [random.randint(min_delay, max_delay) for _ in range(len(segments) - 1)]
 
     return segments, delays

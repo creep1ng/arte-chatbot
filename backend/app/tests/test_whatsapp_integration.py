@@ -6,8 +6,6 @@ feature-flag-gated formatting behavior.
 
 import pytest
 
-from pydantic import ValidationError
-
 
 class TestChatResponseSchema:
     """Verify ChatResponse new fields have correct defaults and backward compat."""
@@ -227,9 +225,7 @@ class TestSplitterWiring:
         assert messages == []
         assert delays == []
 
-    def test_escalation_not_split(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_escalation_not_split(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Escalation intents should not be split even when enabled."""
         from backend.app.message_splitter import process_split_messages
 
@@ -244,9 +240,7 @@ class TestSplitterWiring:
         assert messages == []
         assert delays == []
 
-    def test_no_delimiters_no_split(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_delimiters_no_split(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Response without delimiters returns empty (no split needed)."""
         from backend.app.message_splitter import process_split_messages
 
@@ -289,7 +283,10 @@ class TestSystemPromptInjection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """When split_messages_enabled=True, system prompt has WhatsApp section."""
-        from backend.app.llm_client import ARTE_SYSTEM_PROMPT, _WHATSAPP_SPLIT_INSTRUCTIONS
+        from backend.app.llm_client import (
+            ARTE_SYSTEM_PROMPT,
+            _WHATSAPP_SPLIT_INSTRUCTIONS,
+        )
 
         monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "true")
         from backend.app.config import settings
@@ -308,7 +305,10 @@ class TestSystemPromptInjection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """When split_messages_enabled=False, system prompt has no WhatsApp section."""
-        from backend.app.llm_client import ARTE_SYSTEM_PROMPT, _WHATSAPP_SPLIT_INSTRUCTIONS
+        from backend.app.llm_client import (
+            ARTE_SYSTEM_PROMPT,
+            _WHATSAPP_SPLIT_INSTRUCTIONS,
+        )
 
         monkeypatch.setenv("SPLIT_MESSAGES_ENABLED", "false")
         from backend.app.config import settings

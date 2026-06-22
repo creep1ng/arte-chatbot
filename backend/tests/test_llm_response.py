@@ -10,7 +10,13 @@ class TestLLMResponseModel:
         """Test LLMResponse stores all fields correctly."""
         resp = LLMResponse(
             text="Hello world",
-            tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "test", "arguments": "{}"}}],
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "test", "arguments": "{}"},
+                }
+            ],
             input_tokens=100,
             output_tokens=50,
             total_tokens=150,

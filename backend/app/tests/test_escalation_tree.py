@@ -2,8 +2,6 @@
 Unit tests for the EscalationDecisionTree module.
 """
 
-import pytest
-
 from backend.app.escalation_tree import (
     EscalationAction,
     EscalationDecision,

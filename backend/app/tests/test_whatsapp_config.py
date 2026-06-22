@@ -5,8 +5,6 @@ that the model validator catches min > max delays, and that invalid timezones
 are rejected.
 """
 
-import zoneinfo
-
 import pytest
 
 
@@ -135,9 +133,7 @@ class TestWhatsAppConfigValidation:
         with pytest.raises(ValueError):
             Settings()
 
-    def test_valid_timezone_accepted(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_valid_timezone_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A valid IANA timezone should be accepted."""
         monkeypatch.setenv("GREETING_TIMEZONE", "America/Mexico_City")
         _reset_settings()

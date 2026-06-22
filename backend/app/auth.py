@@ -1,18 +1,24 @@
 import hashlib
 import hmac
+import time
 from typing import Optional
 
 from fastapi import Security, HTTPException, status
 from fastapi.security import APIKeyHeader
 
 from backend.app.config import settings
+from backend.app.secret_resolver import configured_secret_value
 
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 def _get_chat_api_key() -> Optional[str]:
-    """Get the CHAT_API_KEY from settings, returning None if not set."""
-    return settings.chat_api_key
+    """Get CHAT_API_KEY from plaintext config or a runtime secret reference."""
+    return configured_secret_value(
+        settings.chat_api_key,
+        settings.chat_api_key_secret_ref,
+        region_name=settings.aws_region,
+    )
 
 
 def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
@@ -41,39 +47,46 @@ def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
     return api_key
 
 
+def api_key_principal(api_key: str) -> str:
+    """Return a stable non-secret principal identifier for an API key."""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
 def verify_chatwoot_signature(
-    payload: Optional[bytes],
+    payload: bytes,
     signature: Optional[str],
     secret: Optional[str],
+    *,
     timestamp: Optional[str] = None,
+    tolerance_seconds: int = 300,
 ) -> bool:
-    """Verify a Chatwoot webhook HMAC-SHA256 signature.
+    """Verify Chatwoot webhook HMAC signatures.
 
-    Args:
-        payload: Raw request body bytes exactly as received.
-        signature: Signature header value. Supports raw hex and
-            ``sha256=<hex>`` values.
-        secret: Shared webhook secret configured in Chatwoot.
-        timestamp: Optional ``X-Chatwoot-Timestamp`` header. Real Chatwoot
-            AgentBot webhooks sign ``"{timestamp}.{body}"``.
-
-    Returns:
-        ``True`` when the signature matches, otherwise ``False``.
+    Chatwoot AgentBot webhooks sign ``{timestamp}.{payload}`` and prefix the
+    digest with ``sha256=``. Older/local tests may sign the raw payload only;
+    both forms are accepted when no timestamp is present.
     """
-    if payload is None or signature is None or not secret:
+    if not isinstance(payload, bytes) or not signature or not secret:
         return False
 
-    supplied_signature = signature.strip()
-    if supplied_signature.startswith("sha256="):
-        supplied_signature = supplied_signature.removeprefix("sha256=")
-
-    signed_payload = payload
+    received_digest = signature.removeprefix("sha256=")
+    candidates = [payload]
     if timestamp:
-        signed_payload = f"{timestamp}.".encode("utf-8") + payload
+        try:
+            timestamp_seconds = int(timestamp)
+        except ValueError:
+            return False
+        if abs(int(time.time()) - timestamp_seconds) > tolerance_seconds:
+            return False
+        candidates.insert(0, f"{timestamp}.".encode("utf-8") + payload)
 
-    expected_signature = hmac.new(
-        secret.encode("utf-8"),
-        signed_payload,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(supplied_signature, expected_signature)
+    secret_bytes = secret.encode("utf-8")
+    for signed_payload in candidates:
+        expected_digest = hmac.new(
+            secret_bytes,
+            signed_payload,
+            hashlib.sha256,
+        ).hexdigest()
+        if hmac.compare_digest(received_digest, expected_digest):
+            return True
+    return False

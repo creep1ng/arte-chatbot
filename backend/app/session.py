@@ -1,21 +1,20 @@
-"""
-Servicio de gestión de sesiones para el chatbot.
+"""Servicio de gestión de sesiones para el chatbot.
 
-Mantiene la API síncrona usada por ``/chat`` y añade métodos asíncronos
-Redis-backed para el flujo Chatwoot.
+Almacena el historial de conversaciones por session_id.
 """
 
-import logging
+from datetime import datetime
 import threading
 import uuid
-from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from backend.app.redis_cache import RedisCache
-
-logger = logging.getLogger(__name__)
+from backend.app.state_repository import (
+    ChatbotStateRepository,
+    ChatTurn as RepositoryChatTurn,
+    TokenTotals as RepositoryTokenTotals,
+)
 
 
 class ChatTurn(BaseModel):
@@ -24,7 +23,7 @@ class ChatTurn(BaseModel):
     question: str
     answer: str
     timestamp: datetime
-    source_documents: list[str] = Field(default_factory=list)
+    source_documents: List[str] = []
 
 
 class TokenTotals(BaseModel):
@@ -42,116 +41,197 @@ class TokenTotals(BaseModel):
 
 
 class SessionManager:
-    """Gestiona sesiones con memoria local y métodos Redis async opcionales.
-
-    Args:
-        max_turns: Máximo de turnos preservados por sesión.
-        redis_cache: Redis opcional para flujo Chatwoot.
-        chatwoot_client: Cliente opcional para hidratación futura desde Chatwoot.
-    """
-
-    _TTL_SECONDS = 86400
+    """Gestiona las sesiones de conversación."""
 
     def __init__(
         self,
         max_turns: int = 20,
-        redis_cache: Optional[RedisCache] = None,
+        state_repository: Optional[ChatbotStateRepository] = None,
         chatwoot_client: Optional[Any] = None,
-    ) -> None:
+    ):
+        self.sessions: Dict[str, List[ChatTurn]] = {}
+        self.profiles: Dict[str, str] = {}
+        self.token_totals: Dict[str, TokenTotals] = {}
+        self.session_owners: Dict[str, str] = {}
+        self._conversation_map: Dict[str, str] = {}
+        self._reverse_conversation_map: Dict[str, str] = {}
         self.max_turns = max_turns
-        self._redis = redis_cache
+        self.state_repository = state_repository
         self._chatwoot = chatwoot_client
         self._lock = threading.Lock()
-        self._sessions: dict[str, list[ChatTurn]] = {}
-        self._profiles: dict[str, str] = {}
-        self._token_totals: dict[str, TokenTotals] = {}
-        self._conversation_map: dict[str, str] = {}
-        self._reverse_map: dict[str, str] = {}
 
-    @property
-    def sessions(self) -> dict[str, list[ChatTurn]]:
-        """Expose legacy in-memory sessions for tests/debugging."""
-        return self._sessions
+    def set_state_repository(
+        self, state_repository: Optional[ChatbotStateRepository]
+    ) -> None:
+        """Configure the durable state repository used outside local memory mode."""
+        with self._lock:
+            self.state_repository = state_repository
 
-    @property
-    def profiles(self) -> dict[str, str]:
-        """Expose legacy in-memory profiles for tests/debugging."""
-        return self._profiles
+    def bind_session(self, session_id: str, owner: str) -> None:
+        """Bind a session to an authenticated principal."""
+        if self.state_repository is not None:
+            self.state_repository.bind_owner(session_id, owner)
+            return
+        with self._lock:
+            self.session_owners[session_id] = owner
 
-    @property
-    def token_totals(self) -> dict[str, TokenTotals]:
-        """Expose legacy in-memory token totals for tests/debugging."""
-        return self._token_totals
+    def is_session_owner(self, session_id: str, owner: str) -> bool:
+        """Return whether the session is owned by the given principal."""
+        if self.state_repository is not None:
+            return self.state_repository.get_owner(session_id) == owner
+        with self._lock:
+            return self.session_owners.get(session_id) == owner
 
-    def _history_key(self, session_id: str) -> str:
-        if self._redis is None:
-            return f"session:{session_id}:history"
-        return self._redis._build_key("session", session_id, "history")
-
-    def _conversation_metadata_key(self, conversation_id: str) -> str:
-        if self._redis is None:
-            return f"conversation:{conversation_id}:metadata"
-        return self._redis._build_key("conversation", conversation_id, "metadata")
-
-    def _session_conversation_key(self, session_id: str) -> str:
-        if self._redis is None:
-            return f"session:{session_id}:conversation_id"
-        return self._redis._build_key("session", session_id, "conversation_id")
-
-    def _profile_key(self, session_id: str) -> str:
-        if self._redis is None:
-            return f"profile:{session_id}"
-        return self._redis._build_key("profile", session_id)
-
-    def _tokens_key(self, session_id: str) -> str:
-        if self._redis is None:
-            return f"tokens:{session_id}"
-        return self._redis._build_key("tokens", session_id)
+    def has_session_owner(self, session_id: str) -> bool:
+        """Return whether the backend has emitted/bound the session."""
+        if self.state_repository is not None:
+            return self.state_repository.get_owner(session_id) is not None
+        with self._lock:
+            return session_id in self.session_owners
 
     def add_turn(
         self,
         session_id: str,
         question: str,
         answer: str,
-        source_documents: Optional[list[str]] = None,
+        source_documents: Optional[List[str]] = None,
     ) -> None:
-        """Añade un turno a la memoria local usada por ``/chat``."""
+        """
+        Añade un turno a la sesión.
+
+        Args:
+            session_id: Identificador único de la sesión
+            question: Pregunta del usuario
+            answer: Respuesta del asistente
+            source_documents: Lista de documentos fuente utilizados (opcional)
+        """
         turn = ChatTurn(
             question=question,
             answer=answer,
             timestamp=datetime.now(),
             source_documents=source_documents or [],
         )
-        self._append_memory_turn(session_id, turn)
+        if self.state_repository is not None:
+            self.state_repository.append_turn(
+                session_id,
+                RepositoryChatTurn(
+                    question=turn.question,
+                    answer=turn.answer,
+                    timestamp=turn.timestamp,
+                    source_documents=turn.source_documents,
+                ),
+            )
+            return
 
-    def get_history(self, session_id: str) -> list[ChatTurn]:
-        """Obtiene el historial local síncrono de una sesión."""
         with self._lock:
-            return list(self._sessions.get(session_id, []))
+            if session_id not in self.sessions:
+                self.sessions[session_id] = []
+
+            self.sessions[session_id].append(turn)
+
+            # Mantener solo los últimos max_turns turnos
+            if len(self.sessions[session_id]) > self.max_turns:
+                self.sessions[session_id] = self.sessions[session_id][-self.max_turns :]
+
+    def get_history(self, session_id: str) -> List[ChatTurn]:
+        """
+        Obtiene el historial de una sesión.
+
+        Args:
+            session_id: Identificador único de la sesión
+
+        Returns:
+            Lista de turnos de la sesión, ordenados cronológicamente
+        """
+        if self.state_repository is not None:
+            state = self.state_repository.get_session(session_id)
+            return [
+                ChatTurn(
+                    question=turn.question,
+                    answer=turn.answer,
+                    timestamp=turn.timestamp,
+                    source_documents=turn.source_documents,
+                )
+                for turn in state.turns[-self.max_turns :]
+            ]
+        return self.sessions.get(session_id, [])
 
     def get_context_string(self, session_id: str) -> str:
-        """Obtiene el historial local formateado para incluir en el prompt."""
-        return self._format_context(self.get_history(session_id))
+        """
+        Obtiene el historial formateado como string para incluir en el prompt.
+
+        Args:
+            session_id: Identificador único de la sesión
+
+        Returns:
+            String con el historial formateado
+        """
+        history = self.get_history(session_id)
+        if not history:
+            return ""
+
+        context_parts = []
+        for i, turn in enumerate(history, 1):
+            context_parts.append(f"Turno {i}:")
+            context_parts.append(f"Usuario: {turn.question}")
+            context_parts.append(f"Asistente: {turn.answer}")
+            if turn.source_documents:
+                context_parts.append(f"Fuentes: {', '.join(turn.source_documents)}")
+            context_parts.append("")  # Línea vacía entre turnos
+
+        return "\n".join(context_parts).strip()
 
     def clear_session(self, session_id: str) -> None:
-        """Elimina los datos locales de una sesión."""
+        """
+        Elimina una sesión.
+
+        Args:
+            session_id: Identificador único de la sesión
+        """
+        if self.state_repository is not None:
+            # DynamoDB-backed sessions expire via TTL. Keep this method non-destructive
+            # for compatibility with existing local tests and callers.
+            return
         with self._lock:
+            if session_id in self.sessions:
+                del self.sessions[session_id]
+            if session_id in self.profiles:
+                del self.profiles[session_id]
+            if session_id in self.token_totals:
+                del self.token_totals[session_id]
+            if session_id in self.session_owners:
+                del self.session_owners[session_id]
             conversation_id = self._conversation_map.pop(session_id, None)
             if conversation_id is not None:
-                self._reverse_map.pop(conversation_id, None)
-            self._sessions.pop(session_id, None)
-            self._profiles.pop(session_id, None)
-            self._token_totals.pop(session_id, None)
+                self._reverse_conversation_map.pop(conversation_id, None)
 
     def set_user_profile(self, session_id: str, profile: str) -> None:
-        """Almacena el perfil local de usuario para una sesión."""
+        """
+        Almacena el perfil de usuario para una sesión.
+
+        Args:
+            session_id: Identificador único de la sesión
+            profile: Perfil de usuario (novato, intermedio, experto)
+        """
+        if self.state_repository is not None:
+            self.state_repository.set_user_profile(session_id, profile)
+            return
         with self._lock:
-            self._profiles[session_id] = profile
+            self.profiles[session_id] = profile
 
     def get_user_profile(self, session_id: str) -> Optional[str]:
-        """Obtiene el perfil local de usuario de una sesión."""
-        with self._lock:
-            return self._profiles.get(session_id)
+        """
+        Obtiene el perfil de usuario de una sesión.
+
+        Args:
+            session_id: Identificador único de la sesión
+
+        Returns:
+            El perfil de usuario si existe, None en caso contrario
+        """
+        if self.state_repository is not None:
+            return self.state_repository.get_session(session_id).profile
+        return self.profiles.get(session_id)
 
     def add_token_usage(
         self,
@@ -160,63 +240,87 @@ class SessionManager:
         output_tokens: int,
         total_tokens: int,
     ) -> None:
-        """Acumula el uso local de tokens para una sesión."""
+        """Acumula el uso de tokens para una sesión.
+
+        Thread-safe: opera bajo el mismo ``_lock`` que el resto del gestor.
+
+        Args:
+            session_id: Identificador único de la sesión.
+            input_tokens: Tokens de entrada a acumular.
+            output_tokens: Tokens de salida a acumular.
+            total_tokens: Total de tokens a acumular.
+        """
+        if self.state_repository is not None:
+            self.state_repository.add_token_usage(
+                session_id,
+                RepositoryTokenTotals(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                ),
+            )
+            return
         with self._lock:
-            if session_id not in self._token_totals:
-                self._token_totals[session_id] = TokenTotals()
-            self._token_totals[session_id].input_tokens += input_tokens
-            self._token_totals[session_id].output_tokens += output_tokens
-            self._token_totals[session_id].total_tokens += total_tokens
+            if session_id not in self.token_totals:
+                self.token_totals[session_id] = TokenTotals()
+            self.token_totals[session_id].input_tokens += input_tokens
+            self.token_totals[session_id].output_tokens += output_tokens
+            self.token_totals[session_id].total_tokens += total_tokens
 
     def get_token_totals(self, session_id: str) -> TokenTotals:
-        """Obtiene los totales locales de tokens acumulados."""
-        with self._lock:
-            return self._token_totals.get(session_id, TokenTotals())
+        """Obtiene los totales de tokens acumulados de una sesión.
+
+        Args:
+            session_id: Identificador único de la sesión.
+
+        Returns:
+            TokenTotals con los valores acumulados, o TokenTotals() en ceros
+            si la sesión no existe.
+        """
+        if self.state_repository is not None:
+            totals = self.state_repository.get_token_totals(session_id)
+            return TokenTotals(
+                input_tokens=totals.input_tokens,
+                output_tokens=totals.output_tokens,
+                total_tokens=totals.total_tokens,
+            )
+        return self.token_totals.get(session_id, TokenTotals())
 
     def get_session_count(self) -> int:
-        """Obtiene el número de sesiones locales activas."""
-        with self._lock:
-            return len(self._sessions)
+        """
+        Obtiene el número de sesiones activas.
+
+        Returns:
+            Número de sesiones activas
+        """
+        return len(self.sessions)
 
     async def get_or_create_session_for_conversation(
         self, conversation_id: str, account_id: int = 1
     ) -> str:
-        """Get or create a session mapped to a Chatwoot conversation.
-
-        Args:
-            conversation_id: Chatwoot conversation identifier.
-            account_id: Chatwoot account identifier retained for future metadata.
-
-        Returns:
-            Internal session ID associated with the conversation.
-        """
-        if self._redis is not None:
-            try:
-                metadata_key = self._conversation_metadata_key(conversation_id)
-                existing = await self._redis.hget(metadata_key, "session_id")
-                if existing:
-                    return existing
-
-                session_id = str(uuid.uuid4())
-                await self._redis.hset(metadata_key, "session_id", session_id)
-                await self._redis.hset(metadata_key, "status", "open")
-                await self._redis.hset(metadata_key, "account_id", str(account_id))
-                await self._redis.expire(metadata_key, self._TTL_SECONDS)
-                reverse_key = self._session_conversation_key(session_id)
-                await self._redis.set(
-                    reverse_key, conversation_id, ttl=self._TTL_SECONDS
-                )
-                return session_id
-            except Exception as exc:
-                logger.warning("Redis session mapping failed, using memory: %s", exc)
+        """Return the session mapped to a Chatwoot conversation, creating it."""
+        if self.state_repository is not None:
+            existing = self.state_repository.get_chatwoot_session_id(
+                conversation_id,
+                account_id=account_id,
+            )
+            if existing is not None:
+                return existing
+            session_id = str(uuid.uuid4())
+            self.state_repository.map_chatwoot_conversation(
+                conversation_id,
+                session_id,
+                account_id=account_id,
+            )
+            return session_id
 
         with self._lock:
-            existing = self._reverse_map.get(conversation_id)
+            existing = self._reverse_conversation_map.get(conversation_id)
             if existing is not None:
                 return existing
             session_id = str(uuid.uuid4())
             self._conversation_map[session_id] = conversation_id
-            self._reverse_map[conversation_id] = session_id
+            self._reverse_conversation_map[conversation_id] = session_id
             return session_id
 
     async def get_conversation_for_session(
@@ -224,82 +328,61 @@ class SessionManager:
     ) -> Optional[str]:
         """Return the Chatwoot conversation ID for an internal session."""
         del account_id
-        if self._redis is not None:
-            try:
-                result = await self._redis.get(
-                    self._session_conversation_key(session_id)
-                )
-                if result is not None:
-                    return result
-            except Exception as exc:
-                logger.warning("Redis reverse mapping failed, using memory: %s", exc)
-
+        if self.state_repository is not None:
+            return self.state_repository.get_chatwoot_conversation_id(session_id)
         with self._lock:
             return self._conversation_map.get(session_id)
+
+    async def map_conversation(self, session_id: str, conversation_id: str) -> None:
+        """Backward-compatible async mapping helper."""
+        if self.state_repository is not None:
+            self.state_repository.map_chatwoot_conversation(conversation_id, session_id)
+            return
+        with self._lock:
+            self._conversation_map[session_id] = conversation_id
+            self._reverse_conversation_map[conversation_id] = session_id
+
+    async def get_conversation_id(self, session_id: str) -> Optional[str]:
+        """Backward-compatible alias for get_conversation_for_session."""
+        return await self.get_conversation_for_session(session_id)
+
+    async def get_session_id(self, conversation_id: str) -> Optional[str]:
+        """Return the session mapped to a Chatwoot conversation, if any."""
+        if self.state_repository is not None:
+            return self.state_repository.get_chatwoot_session_id(conversation_id)
+        with self._lock:
+            return self._reverse_conversation_map.get(conversation_id)
 
     async def add_turn_async(
         self,
         session_id: str,
         question: str,
         answer: str,
-        source_documents: list[str],
+        source_documents: List[str],
     ) -> None:
-        """Append a conversation turn to Redis history with local fallback."""
-        turn = ChatTurn(
-            question=question,
-            answer=answer,
-            timestamp=datetime.now(),
-            source_documents=source_documents,
-        )
-        if self._redis is not None:
-            try:
-                key = self._history_key(session_id)
-                await self._redis.lpush(key, turn.model_dump_json())
-                await self._redis.ltrim(key, 0, self.max_turns - 1)
-                await self._redis.expire(key, self._TTL_SECONDS)
-                return
-            except Exception as exc:
-                logger.warning("Redis add_turn_async failed, using memory: %s", exc)
-
-        self._append_memory_turn(session_id, turn)
+        """Async compatibility wrapper around the repository-aware sync API."""
+        self.add_turn(session_id, question, answer, source_documents)
 
     async def get_history_async(
         self, session_id: str, limit: int = 10
-    ) -> list[ChatTurn]:
-        """Get Redis-backed history with Chatwoot/cache-miss fallback hook."""
-        if self._redis is not None:
-            try:
-                raw_items = await self._redis.lrange(
-                    self._history_key(session_id), 0, limit - 1
-                )
-                if raw_items:
-                    return [
-                        ChatTurn.model_validate_json(raw)
-                        for raw in reversed(raw_items[-limit:])
-                    ]
+    ) -> List[ChatTurn]:
+        """Return recent history and optionally hydrate from Chatwoot on misses."""
+        history = self.get_history(session_id)[-limit:]
+        if history or self._chatwoot is None:
+            return history
 
-                if self._chatwoot is not None:
-                    conversation_id = await self.get_conversation_for_session(
-                        session_id
-                    )
-                    if conversation_id is not None:
-                        data = await self._chatwoot.fetch_messages(
-                            int(conversation_id), limit=limit * 2
-                        )
-                        await self.hydrate_history_from_chatwoot(
-                            session_id, data.get("payload", [])
-                        )
-                        return await self.get_history_async(session_id, limit=limit)
-            except Exception as exc:
-                logger.warning("Redis get_history_async failed, using memory: %s", exc)
+        conversation_id = await self.get_conversation_for_session(session_id)
+        if conversation_id is None:
+            return history
 
-        with self._lock:
-            return list(self._sessions.get(session_id, []))[-limit:]
+        data = await self._chatwoot.fetch_messages(int(conversation_id), limit=limit * 2)
+        await self.hydrate_history_from_chatwoot(session_id, data.get("payload", []))
+        return self.get_history(session_id)[-limit:]
 
     async def hydrate_history_from_chatwoot(
-        self, session_id: str, messages: list[dict[str, Any]]
+        self, session_id: str, messages: List[Dict[str, Any]]
     ) -> None:
-        """Transform Chatwoot messages into ChatTurn entries and cache them."""
+        """Transform Chatwoot messages into ChatTurn entries and persist them."""
         turns = self._parse_chatwoot_messages(messages)
         for turn in turns[-self.max_turns :]:
             await self.add_turn_async(
@@ -309,76 +392,9 @@ class SessionManager:
                 turn.source_documents,
             )
 
-    async def map_conversation(self, session_id: str, conversation_id: str) -> None:
-        """Backward-compatible async mapping helper."""
-        if self._redis is not None:
-            try:
-                metadata_key = self._conversation_metadata_key(conversation_id)
-                await self._redis.hset(metadata_key, "session_id", session_id)
-                await self._redis.expire(metadata_key, self._TTL_SECONDS)
-                await self._redis.set(
-                    self._session_conversation_key(session_id),
-                    conversation_id,
-                    ttl=self._TTL_SECONDS,
-                )
-                return
-            except Exception as exc:
-                logger.warning("Redis map_conversation failed, using memory: %s", exc)
-
-        with self._lock:
-            self._conversation_map[session_id] = conversation_id
-            self._reverse_map[conversation_id] = session_id
-
-    async def get_conversation_id(self, session_id: str) -> Optional[str]:
-        """Backward-compatible alias for get_conversation_for_session."""
-        return await self.get_conversation_for_session(session_id)
-
-    async def get_session_id(self, conversation_id: str) -> Optional[str]:
-        """Backward-compatible lookup from conversation ID to session ID."""
-        if self._redis is not None:
-            try:
-                result = await self._redis.hget(
-                    self._conversation_metadata_key(conversation_id), "session_id"
-                )
-                if result is not None:
-                    return result
-            except Exception as exc:
-                logger.warning("Redis get_session_id failed, using memory: %s", exc)
-
-        with self._lock:
-            return self._reverse_map.get(conversation_id)
-
-    def _append_memory_turn(self, session_id: str, turn: ChatTurn) -> None:
-        """Append a turn to the in-memory fallback store."""
-        with self._lock:
-            if session_id not in self._sessions:
-                self._sessions[session_id] = []
-            self._sessions[session_id].append(turn)
-            if len(self._sessions[session_id]) > self.max_turns:
-                self._sessions[session_id] = self._sessions[session_id][
-                    -self.max_turns :
-                ]
-
-    def _format_context(self, history: list[ChatTurn]) -> str:
-        """Format a list of turns for prompt context."""
-        if not history:
-            return ""
-
-        context_parts = []
-        for index, turn in enumerate(history, 1):
-            context_parts.append(f"Turno {index}:")
-            context_parts.append(f"Usuario: {turn.question}")
-            context_parts.append(f"Asistente: {turn.answer}")
-            if turn.source_documents:
-                context_parts.append(f"Fuentes: {', '.join(turn.source_documents)}")
-            context_parts.append("")
-        return "\n".join(context_parts).strip()
-
-    def _parse_chatwoot_messages(
-        self, messages: list[dict[str, Any]]
-    ) -> list[ChatTurn]:
-        """Parse Chatwoot incoming/outgoing messages into turns."""
-        turns: list[ChatTurn] = []
+    def _parse_chatwoot_messages(self, messages: List[Dict[str, Any]]) -> List[ChatTurn]:
+        """Parse Chatwoot incoming/outgoing messages into conversation turns."""
+        turns: List[ChatTurn] = []
         pending_question: Optional[str] = None
 
         for message in messages:
@@ -421,12 +437,13 @@ class SessionManager:
             )
         return turns
 
-    def _is_incoming_message(self, message: dict[str, Any]) -> bool:
-        """Return True for Chatwoot contact/incoming messages."""
+    def _is_incoming_message(self, message: Dict[str, Any]) -> bool:
+        """Return true for Chatwoot contact/incoming messages."""
         message_type = message.get("message_type")
-        sender_type = message.get("sender_type") or message.get("sender", {}).get(
-            "type"
-        )
+        sender = message.get("sender")
+        sender_type = message.get("sender_type")
+        if sender_type is None and isinstance(sender, dict):
+            sender_type = sender.get("type")
         return message_type in ("incoming", 0) or sender_type == "contact"
 
 

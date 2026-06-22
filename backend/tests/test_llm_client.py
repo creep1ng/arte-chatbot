@@ -4,17 +4,32 @@ Unit tests for the llm_client.py module.
 Tests the LLM client for OpenAI Responses API integration with tool calling support.
 """
 
+from collections.abc import Iterator
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
+from backend.app import llm_client as llm_client_module
+from backend.app.config import settings
 from backend.app.llm_client import (
-    LLMClient,
-    LLMServiceError,
     ARTE_SYSTEM_PROMPT,
     DATASHEET_SYSTEM_PROMPT,
+    LLMClient,
+    LLMServiceError,
 )
 from backend.app.schemas import LLMResponse
-from backend.app import llm_client as llm_client_module
+from backend.app.secret_resolver import clear_runtime_secret_cache
+
+
+@pytest.fixture(autouse=True)
+def reset_settings_cache() -> Iterator[None]:
+    """Keep lazy settings and secret-ref cache isolated between tests."""
+    settings.reset()
+    clear_runtime_secret_cache()
+    yield
+    settings.reset()
+    clear_runtime_secret_cache()
 
 
 class TestLLMClientInitialization:
@@ -23,6 +38,7 @@ class TestLLMClientInitialization:
     @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"}, clear=True)
     def test_llm_client_default_env_vars(self) -> None:
         """Test LLMClient initialization with default env vars."""
+        settings.reset()
         client = LLMClient()
         assert client.api_key == "sk-test-key"
 
@@ -32,14 +48,19 @@ class TestLLMClientInitialization:
         client = LLMClient(api_key="sk-explicit-key")
         assert client.api_key == "sk-explicit-key"
 
-    def test_llm_client_default_model(self) -> None:
-        """Test LLMClient uses default model."""
+    @patch("backend.app.llm_client.settings")
+    def test_llm_client_default_model(self, mock_settings: MagicMock) -> None:
+        """Test LLMClient uses the current settings default model."""
+        mock_settings.openai_api_key = "sk-test-key"
+        mock_settings.openai_api_key_secret_ref = None
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.llm_model = "gpt-5.4-nano"
         client = LLMClient()
         assert client.model == "gpt-5.4-nano"
 
     def test_llm_client_custom_model(self) -> None:
         """Test LLMClient accepts custom model."""
-        client = LLMClient(model="gpt-4")
+        client = LLMClient(api_key="sk-test-key", model="gpt-4")
         assert client.model == "gpt-4"
 
 
@@ -109,10 +130,7 @@ class TestLLMClientWithTools:
 
         assert isinstance(result, LLMResponse)
         assert result.tool_calls == []
-        assert (
-            result.text
-            == "Hola, soy el asistente de Arte Soluciones Energéticas."
-        )
+        assert result.text == "Hola, soy el asistente de Arte Soluciones Energéticas."
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_tools_uses_tools_parameter(
@@ -141,7 +159,7 @@ class TestLLMClientWithTools:
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "tools" in call_kwargs
         assert len(call_kwargs["tools"]) == 2
-        tool_names = [t["function"]["name"] for t in call_kwargs["tools"]]
+        tool_names = [t["name"] for t in call_kwargs["tools"]]
         assert "leer_ficha_tecnica" in tool_names
         assert "buscar_producto" in tool_names
 
@@ -225,9 +243,7 @@ class TestLLMClientWithToolsReturnsLLMResponse:
         assert result.total_tokens == 150
 
     @patch("backend.app.llm_client.OpenAI")
-    def test_usage_none_defaults_to_zero(
-        self, mock_openai_class: MagicMock
-    ) -> None:
+    def test_usage_none_defaults_to_zero(self, mock_openai_class: MagicMock) -> None:
         """Test LLMResponse defaults token fields to 0 when usage is None."""
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -388,9 +404,7 @@ class TestLLMClientWithFileReturnsLLMResponse:
         assert result.total_tokens == 300
 
     @patch("backend.app.llm_client.OpenAI")
-    def test_usage_none_defaults_to_zero(
-        self, mock_openai_class: MagicMock
-    ) -> None:
+    def test_usage_none_defaults_to_zero(self, mock_openai_class: MagicMock) -> None:
         """Test LLMResponse defaults to 0 tokens when usage is None."""
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -478,4 +492,4 @@ class TestLLMClientLazyInitialization:
 
         # Now it should be initialized
         assert client._openai_client is not None
-        mock_openai_class.assert_called_once_with(api_key="sk-test-key")
+        mock_openai_class.assert_called_once_with(api_key="sk-test-key", timeout=30.0)

@@ -3,6 +3,8 @@ ARTE Chatbot Backend
 FastAPI server with /health and /chat endpoints.
 """
 
+# ruff: noqa: E402
+
 import asyncio
 import json
 import logging
@@ -13,19 +15,49 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+# Load environment variables from .env file
 from dotenv import load_dotenv
+
+if os.getenv("ARTE_CHATBOT_DISABLE_DOTENV", "").strip().lower() not in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
+    load_dotenv()
+
+from backend.app.logging_config import setup_logging
+
+# Configure logging before anything else (reads LOG_LEVEL from centralized settings)
+setup_logging()
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from mangum import Mangum
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.app.auth import verify_api_key, verify_chatwoot_signature
+from backend.app.auth import (
+    api_key_principal,
+    verify_api_key,
+    verify_chatwoot_signature,
+)
 from backend.app.catalog import CatalogError, get_catalog
 from backend.app.chatwoot_client import ChatwootClient
 from backend.app.chatwoot_handler import ChatwootHandler
 from backend.app.config import settings
 from backend.app.config_provider import EnvConfigProvider
-from backend.app.conversation_logger import ConversationLogEntry, ConversationLogger
+from backend.app.conversation_logger import (
+    ConversationLogEntry,
+    ConversationLogger,
+    redact_text,
+)
+from backend.app.dynamodb_state_repository import DynamoDBStateRepository
 from backend.app.escalation_handler import EscalationHandler
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.greeting import maybe_prepend_greeting
@@ -36,23 +68,24 @@ from backend.app.llm_client import (
     LLMServiceError,
     expand_query_with_context,
 )
-from backend.app.logging_config import setup_logging
 from backend.app.message_buffer import (
-    RedisMessageBuffer,
+    ChatwootMessageBuffer,
     add_to_buffer,
     clear_pending_chat_response,
     clear_processing,
     flush_buffer,
     get_buffer_count,
+    is_buffer_ready_to_flush,
     is_buffering,
     is_processing,
     pop_pending_chat_response,
     schedule_flush,
+    set_state_repository as set_buffer_state_repository,
     set_pending_chat_response,
     set_processing,
 )
+
 from backend.app.message_splitter import process_split_messages
-from backend.app.redis_cache import RedisCache
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.schemas import (
     ChatwootWebhookPayload,
@@ -62,7 +95,14 @@ from backend.app.schemas import (
     MessageCreatedPayload,
     SourceDocument,
 )
+from backend.app.secret_resolver import configured_secret_value
+from backend.app.security import (
+    bind_or_validate_session,
+    check_rate_limit,
+    validate_session_id,
+)
 from backend.app.session import session_manager
+from backend.app.state_repository import ChatbotStateRepository
 from backend.app.tools import get_tool_definitions, validate_s3_path
 from backend.app.user_profiler import PROFILE_INSTRUCTIONS, infer_user_profile
 from backend.app.whatsapp_formatter import format_for_whatsapp
@@ -70,16 +110,6 @@ from rag import (
     DEFAULT_ESCALATION_MESSAGE,
     default_detector,
 )
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-
-load_dotenv()
-
-# Configure logging before anything else (reads LOG_LEVEL from centralized settings)
-setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -100,38 +130,64 @@ OUT_OF_DOMAIN_MESSAGE = (
     "¿Hay algo relacionado con energía solar en lo que pueda ayudarte?"
 )
 
+
 INTENT_MARKER_RE = re.compile(r"\[INTENT:\s*(\w+)\]")
+CONFIDENCE_MARKER_RE = re.compile(r"\[CONFIDENCE:\s*([0-9]+(?:\.[0-9]+)?)\]")
 
 
-def _extract_intent_type(text: str) -> tuple[str, str]:
-    """Extract intent_type from LLM output text.
+def _extract_intent_type(text: str) -> tuple[Optional[str], Optional[float], str]:
+    """Extract intent_type and confidence from LLM output text.
 
-    The LLM is instructed to prefix responses with [INTENT: <type>].
-    This function parses the marker and returns the cleaned response.
+    The LLM is instructed to prefix responses with [INTENT: <type>] and
+    [CONFIDENCE: <score>]. This function parses both markers and returns
+    the cleaned response.
 
     Args:
         text: Raw LLM output text.
 
     Returns:
-        Tuple of (intent_type, cleaned_response_text).
+        Tuple of (intent_type, confidence, cleaned_response_text). intent_type is
+        None when the LLM does not provide a valid [INTENT] marker.
     """
-    match = INTENT_MARKER_RE.search(text)
-    if match:
-        intent = match.group(1)
+    intent_type: Optional[str] = None
+    intent_match = INTENT_MARKER_RE.search(text)
+    if intent_match:
+        intent = intent_match.group(1)
         if intent in INTENT_TYPES:
-            cleaned = INTENT_MARKER_RE.sub("", text).strip()
-            return intent, cleaned
-    return "FAQ", text
+            intent_type = intent
+
+    confidence: Optional[float] = None
+    confidence_match = CONFIDENCE_MARKER_RE.search(text)
+    if confidence_match:
+        confidence_value = float(confidence_match.group(1))
+        if 0.0 <= confidence_value <= 1.0:
+            confidence = confidence_value
+
+    cleaned = INTENT_MARKER_RE.sub("", text)
+    cleaned = CONFIDENCE_MARKER_RE.sub("", cleaned).strip()
+    return intent_type, confidence, cleaned
 
 
 ESCALATE_INTENTS = {"escalate_quote", "escalate_technical", "escalate_order"}
+QUOTE_ESCALATION_KEYWORDS = {"cotización", "presupuesto"}
+
+
+def _intent_type_for_escalation_keyword(matched_keyword: Optional[str]) -> str:
+    """Map rule-based escalation keywords to public intent types."""
+    if matched_keyword is None:
+        return "escalate_technical"
+    if matched_keyword.lower() in QUOTE_ESCALATION_KEYWORDS:
+        return "escalate_quote"
+    if matched_keyword.lower() == "pedido":
+        return "escalate_order"
+    return "escalate_technical"
 
 
 app = FastAPI(title="ARTE Chatbot Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=settings.allowed_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -143,13 +199,24 @@ def _log_environment_configuration() -> None:
     required_env_vars = [
         "CHAT_API_KEY",
         "OPENAI_API_KEY",
+        "AWS_BUCKET_NAME",
+    ]
+    optional_env_vars = [
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
-        "AWS_BUCKET_NAME",
+        "AWS_SESSION_TOKEN",
+        "APP_ENV",
+        "PUBLIC_API_URL",
+        "PUBLIC_FRONTEND_URL",
+        "PUBLIC_ADMIN_URL",
+        "ALLOWED_CORS_ORIGINS",
     ]
     for env_var in required_env_vars:
         status = "set" if os.getenv(env_var) else "missing"
         logger.info("Environment check: %s is %s", env_var, status)
+    for env_var in optional_env_vars:
+        status = "set" if os.getenv(env_var) else "not set"
+        logger.info("Optional environment check: %s is %s", env_var, status)
 
 
 _log_environment_configuration()
@@ -158,10 +225,9 @@ _log_environment_configuration()
 def _log_tool_definitions() -> None:
     tools = get_tool_definitions()
     for tool in tools:
-        function_block = tool.get("function", {})
-        name = function_block.get("name")
+        name = tool.get("name")
         tool_type = tool.get("type")
-        has_parameters = isinstance(function_block.get("parameters"), dict)
+        has_parameters = isinstance(tool.get("parameters"), dict)
         logger.info(
             "Tool configuration: name=%s, type=%s, has_parameters=%s",
             name,
@@ -171,6 +237,30 @@ def _log_tool_definitions() -> None:
 
 
 _log_tool_definitions()
+
+
+def _build_state_repository() -> Optional[ChatbotStateRepository]:
+    """Create the configured durable state repository for Lambda runtimes."""
+    if settings.state_backend != "dynamodb":
+        return None
+    return DynamoDBStateRepository(
+        table_name=settings.dynamodb_state_table_name,
+        region_name=settings.aws_region,
+        key_prefix=settings.dynamodb_state_key_prefix,
+        session_ttl_seconds=settings.session_ttl_seconds,
+        buffer_ttl_seconds=settings.buffer_ttl_seconds,
+        rate_ttl_seconds=settings.rate_limit_ttl_seconds,
+    )
+
+
+state_repository = _build_state_repository()
+if state_repository is not None:
+    session_manager.set_state_repository(state_repository)
+    set_buffer_state_repository(state_repository)
+    from backend.app.rate_limit import rate_limiter
+
+    rate_limiter.set_state_repository(state_repository)
+
 
 # Module-level clients maintained for backward compatibility with existing tests.
 # New code should prefer dependency injection via FastAPI Depends().
@@ -204,43 +294,57 @@ def get_file_inputs_client() -> FileInputsClient:
 
 
 def get_config_provider() -> EnvConfigProvider:
-    """Dependency that provides a ConfigProvider instance."""
+    """Dependency that provides the runtime configuration provider."""
     return EnvConfigProvider()
 
 
-def get_redis_cache() -> RedisCache:
-    """Dependency that provides a RedisCache instance for Chatwoot state."""
-    account_id = settings.chatwoot_account_id or "unconfigured"
-    return RedisCache(
-        redis_url=settings.redis_url,
-        password=settings.redis_password,
-        account_id=account_id,
+def _get_chatwoot_agent_bot_token() -> Optional[str]:
+    """Return the Chatwoot AgentBot token from plaintext or secret refs."""
+    return configured_secret_value(
+        settings.chatwoot_agent_bot_token,
+        settings.chatwoot_agent_bot_token_secret_ref,
+        region_name=settings.aws_region,
     )
+
+
+def _get_chatwoot_webhook_secret() -> Optional[str]:
+    """Return the Chatwoot webhook secret from plaintext or secret refs."""
+    return configured_secret_value(
+        settings.chatwoot_webhook_secret,
+        settings.chatwoot_webhook_secret_ref,
+        region_name=settings.aws_region,
+    )
+
+
+def _ensure_chatwoot_state_is_safe() -> None:
+    """Reject unsafe production Chatwoot state configuration."""
+    if settings.app_env in {"prod", "production"} and state_repository is None:
+        raise RuntimeError("Chatwoot requires STATE_BACKEND=dynamodb in production")
 
 
 def get_chatwoot_client() -> ChatwootClient:
     """Dependency that provides a configured Chatwoot API client."""
+    agent_bot_token = _get_chatwoot_agent_bot_token()
     if (
         not settings.chatwoot_api_url
-        or not settings.chatwoot_agent_bot_token
+        or not agent_bot_token
         or settings.chatwoot_account_id is None
     ):
         raise RuntimeError("Chatwoot API client is not configured")
 
     return ChatwootClient(
         base_url=settings.chatwoot_api_url,
-        agent_bot_token=settings.chatwoot_agent_bot_token,
+        agent_bot_token=agent_bot_token,
         account_id=settings.chatwoot_account_id,
-        redis_cache=get_redis_cache(),
     )
 
 
 def get_chatwoot_handler() -> ChatwootHandler:
     """Dependency that wires Chatwoot webhook handling services."""
-    redis_cache = get_redis_cache()
+    _ensure_chatwoot_state_is_safe()
     config_provider = get_config_provider()
     chatwoot_client = get_chatwoot_client()
-    message_buffer = RedisMessageBuffer(redis_cache, config_provider)
+    message_buffer = ChatwootMessageBuffer(state_repository)
     escalation_handler = EscalationHandler(
         chatwoot_client=chatwoot_client,
         config_provider=config_provider,
@@ -248,8 +352,8 @@ def get_chatwoot_handler() -> ChatwootHandler:
     )
     return ChatwootHandler(
         chatwoot_client=chatwoot_client,
-        redis_cache=redis_cache,
         config_provider=config_provider,
+        state_repository=state_repository,
         message_buffer=message_buffer,
         session_manager=session_manager,
         escalation_handler=escalation_handler,
@@ -267,6 +371,17 @@ def get_catalog_search() -> Any:
     if _catalog_search is None:
         _catalog_search = get_catalog()
     return _catalog_search
+
+
+class _CatalogSearchProxy:
+    """Lazy proxy kept for tests that patch ``backend.main.catalog_search``."""
+
+    def search(self, *args: Any, **kwargs: Any) -> Any:
+        """Delegate search to the lazily loaded catalog."""
+        return get_catalog_search().search(*args, **kwargs)
+
+
+catalog_search = _CatalogSearchProxy()
 
 
 MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
@@ -312,8 +427,12 @@ def _fire_conversation_log(
 class ChatRequest(BaseModel):
     """Request model for /chat endpoint."""
 
-    message: str = Field(..., min_length=1)
-    session_id: Optional[str] = None
+    message: str = Field(..., min_length=1, max_length=4000)
+    session_id: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
     is_final: Optional[bool] = Field(
         default=None,
         description="Hint to flush multi-message buffer immediately",
@@ -325,7 +444,8 @@ class ChatResponse(BaseModel):
 
     response: str
     escalate: bool = False
-    intent_type: str = "FAQ"
+    intent_type: Optional[str] = None
+    confidence: Optional[float] = None
     reason: Optional[str] = None
     session_id: str
     source_documents: list[SourceDocument] = Field(default_factory=list)
@@ -363,40 +483,6 @@ class BufferResultResponse(BaseModel):
     )
 
 
-@app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
-async def get_buffer_result(session_id: str) -> BufferResultResponse:
-    """Poll for buffered message processing result.
-
-    After a 202 response from /chat, the client should poll this endpoint.
-    When the buffer window expires, the backend processes the joined message
-    with the chatbot and stores the response for pickup.
-    """
-    chat_response_json = pop_pending_chat_response(session_id)
-    if chat_response_json:
-        return BufferResultResponse(
-            status="ready",
-            session_id=session_id,
-            result=chat_response_json,
-        )
-
-    if is_buffering(session_id):
-        return BufferResultResponse(
-            status="pending",
-            session_id=session_id,
-        )
-
-    if is_processing(session_id):
-        return BufferResultResponse(
-            status="pending",
-            session_id=session_id,
-        )
-
-    return BufferResultResponse(
-        status="not_found",
-        session_id=session_id,
-    )
-
-
 @app.get("/health")
 async def health_check() -> JSONResponse:
     """Health check endpoint for CI/CD pipeline."""
@@ -426,9 +512,7 @@ def _parse_chatwoot_payload(raw_payload: bytes) -> ChatwootWebhookPayload:
         raise HTTPException(status_code=422, detail="Invalid Chatwoot payload")
 
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(
-            "chatwoot_payload_received %s", _summarize_chatwoot_payload(payload)
-        )
+        logger.debug("chatwoot_payload_received %s", _summarize_chatwoot_payload(payload))
 
     event = payload.get("event")
     schema_by_event = {
@@ -554,12 +638,7 @@ async def chatwoot_webhook(
     x_chatwoot_timestamp: Annotated[Optional[str], Header()] = None,
     x_hub_signature_256: Annotated[Optional[str], Header()] = None,
 ) -> JSONResponse:
-    """Receive, verify, validate, and dispatch Chatwoot webhooks.
-
-    The handler is intentionally awaited instead of scheduled with
-    ``BackgroundTasks`` so processing failures return HTTP 500. Chatwoot can
-    then retry the webhook instead of receiving a false-positive 200 ack.
-    """
+    """Receive, verify, validate, and dispatch Chatwoot webhooks."""
     if not settings.chatwoot_enabled:
         return JSONResponse(
             status_code=503,
@@ -571,7 +650,7 @@ async def chatwoot_webhook(
     if not verify_chatwoot_signature(
         raw_payload,
         signature,
-        settings.chatwoot_webhook_secret,
+        _get_chatwoot_webhook_secret(),
         timestamp=x_chatwoot_timestamp,
     ):
         raise HTTPException(status_code=401, detail="Invalid Chatwoot signature")
@@ -592,9 +671,7 @@ async def chatwoot_webhook(
 
 
 @app.get("/health/chatwoot")
-async def chatwoot_health(
-    redis_cache: Annotated[RedisCache, Depends(get_redis_cache)],
-) -> JSONResponse:
+async def chatwoot_health() -> JSONResponse:
     """Report Chatwoot integration health without external API calls."""
     if not settings.chatwoot_enabled:
         return JSONResponse(
@@ -602,21 +679,26 @@ async def chatwoot_health(
             content={
                 "status": "disabled",
                 "chatwoot_enabled": False,
-                "redis": "not_configured",
                 "chatwoot_api": "not_configured",
+                "state_backend": settings.state_backend,
+                "durable_state": "configured" if state_repository is not None else "memory",
             },
         )
 
     has_chatwoot_config = bool(
         settings.chatwoot_api_url
-        and settings.chatwoot_agent_bot_token
+        and _get_chatwoot_agent_bot_token()
         and settings.chatwoot_account_id is not None
     )
-    redis_status = "healthy" if await redis_cache.health_check() else "unavailable"
+    has_webhook_secret = bool(_get_chatwoot_webhook_secret())
+    durable_state = "configured" if state_repository is not None else "memory"
     chatwoot_api_status = "configured" if has_chatwoot_config else "not_configured"
+    webhook_status = "configured" if has_webhook_secret else "not_configured"
     status_value = (
         "healthy"
-        if redis_status == "healthy" and chatwoot_api_status == "configured"
+        if has_chatwoot_config
+        and has_webhook_secret
+        and (state_repository is not None or settings.app_env not in {"prod", "production"})
         else "degraded"
     )
 
@@ -625,8 +707,10 @@ async def chatwoot_health(
         content={
             "status": status_value,
             "chatwoot_enabled": True,
-            "redis": redis_status,
             "chatwoot_api": chatwoot_api_status,
+            "webhook_secret": webhook_status,
+            "state_backend": settings.state_backend,
+            "durable_state": durable_state,
         },
     )
 
@@ -654,6 +738,41 @@ def _parse_tool_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
         return json.loads(arguments_str)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid tool arguments JSON: {e}") from e
+
+
+def _public_value_error_message(error: ValueError) -> str:
+    """Return a user-safe message for expected tool validation failures."""
+    message = str(error)
+    safe_messages = {
+        "No pude validar la ficha técnica en el catálogo": (
+            "No pude validar la ficha técnica en el catálogo. "
+            "Por favor, intenta más tarde o contacta al equipo de ventas."
+        ),
+        "Requested datasheet is not declared in the catalog": (
+            "La ficha técnica solicitada no está disponible en el catálogo."
+        ),
+        "Missing ruta_s3 in tool arguments. When ruta_s3 is not provided, "
+        "categoria is required to search the catalog.": (
+            "Necesito la categoría del producto para buscar la ficha técnica "
+            "en el catálogo."
+        ),
+        "No se encontraron productos en el catálogo con los criterios especificados. "
+        "El archivo solicitado no está disponible.": (
+            "No se encontraron productos en el catálogo con los criterios "
+            "especificados. El archivo solicitado no está disponible."
+        ),
+    }
+
+    if message in safe_messages:
+        return safe_messages[message]
+
+    if message.startswith("No products found in catalog for"):
+        return "No se encontraron productos en el catálogo con esos criterios."
+
+    return (
+        "No pude procesar esa herramienta con los datos recibidos. "
+        "Probá reformular la consulta."
+    )
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -729,8 +848,8 @@ def _handle_buscar_producto_tool(
                 lines.append(f"Descripción: {product.descripcion}")
             lines.append("Modelos disponibles:")
             for variante in product.variantes:
-                modelo = variante.get("modelo", "Sin nombre")
-                params = variante.get("parametros_clave", {})
+                modelo = getattr(variante, "modelo", None) or "Sin nombre"
+                params = getattr(variante, "parametros_clave", None) or {}
                 params_str = ", ".join(f"{k}: {v}" for k, v in params.items())
                 lines.append(f"  - {modelo} ({params_str})")
             lines.append(
@@ -812,8 +931,8 @@ def _process_buscar_producto(
                 lines.append(f"Descripción: {product.descripcion}")
             lines.append("Modelos disponibles:")
             for variante in product.variantes:
-                modelo = variante.get("modelo", "Sin nombre")
-                params = variante.get("parametros_clave", {})
+                modelo = getattr(variante, "modelo", None) or "Sin nombre"
+                params = getattr(variante, "parametros_clave", None) or {}
                 params_str = ", ".join(f"{k}: {v}" for k, v in params.items())
                 lines.append(f"  - {modelo} ({params_str})")
             lines.append(
@@ -872,6 +991,18 @@ async def _process_leer_ficha_tecnica(
     # Validate ruta_s3 for path traversal attacks (OWASP LLM07)
     if ruta_s3:
         validate_s3_path(ruta_s3)
+        try:
+            catalog = get_catalog()
+        except CatalogError as e:
+            logger.error(
+                "Catalog unavailable while validating ruta_s3: session_id=%s, error=%s",
+                session_id,
+                e,
+            )
+            raise ValueError("No pude validar la ficha técnica en el catálogo") from e
+
+        if not catalog.contains_ruta_s3(ruta_s3):
+            raise ValueError("Requested datasheet is not declared in the catalog")
 
     logger.debug(
         "Tool call parameters: function=%s, ruta_s3=%s, categoria=%s, "
@@ -1053,7 +1184,7 @@ async def _process_chat_message(
         "Incoming request: request_id=%s, session_id=%s, message_preview=%s",
         request_id,
         session_id,
-        message[:100],
+        redact_text(message)[:100],
     )
 
     # Infer user profile if not already inferred for this session
@@ -1086,6 +1217,15 @@ async def _process_chat_message(
     escalation_result = default_detector.detect(message)
 
     if escalation_result.escalate:
+        intent_type = _intent_type_for_escalation_keyword(
+            escalation_result.matched_keyword
+        )
+        response_text = maybe_prepend_greeting(
+            session_id=session_id,
+            response_text=DEFAULT_ESCALATION_MESSAGE,
+            intent_type=intent_type,
+            escalate=True,
+        )
         logger.info(
             "Escalation detected: request_id=%s, session_id=%s, reason=%s",
             request_id,
@@ -1095,15 +1235,15 @@ async def _process_chat_message(
         session_manager.add_turn(
             session_id=session_id,
             question=message,
-            answer=DEFAULT_ESCALATION_MESSAGE,
+            answer=response_text,
             source_documents=[],
         )
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
             session_id=session_id,
             user_message=message,
-            bot_response=DEFAULT_ESCALATION_MESSAGE,
-            intent_type="escalate_technical",
+            bot_response=response_text,
+            intent_type=intent_type,
             escalate=True,
             source_documents=[],
             input_tokens=0,
@@ -1113,9 +1253,9 @@ async def _process_chat_message(
             user_profile=inferred_profile,
         )
         return ChatResponse(
-            response=DEFAULT_ESCALATION_MESSAGE,
+            response=response_text,
             escalate=True,
-            intent_type="escalate_technical",
+            intent_type=intent_type,
             reason=escalation_result.reason,
             session_id=session_id,
             source_documents=[],
@@ -1132,8 +1272,8 @@ async def _process_chat_message(
 
     logger.debug(
         "Query expandida: original='%s', expandida='%s', session_id=%s",
-        message[:100],
-        expanded_query[:100],
+        redact_text(message)[:100],
+        redact_text(expanded_query)[:100],
         session_id,
     )
 
@@ -1198,13 +1338,20 @@ async def _process_chat_message(
 
             if not tool_calls:
                 content = llm_response.text
-                intent_type, cleaned_content = _extract_intent_type(content)
+                intent_type, confidence, cleaned_content = _extract_intent_type(content)
+                intent_for_behavior = intent_type or "FAQ"
 
-                if intent_type in ESCALATE_INTENTS:
+                if intent_for_behavior in ESCALATE_INTENTS:
+                    response_text = maybe_prepend_greeting(
+                        session_id=session_id,
+                        response_text=DEFAULT_ESCALATION_MESSAGE,
+                        intent_type=intent_for_behavior,
+                        escalate=True,
+                    )
                     session_manager.add_turn(
                         session_id=session_id,
                         question=message,
-                        answer=DEFAULT_ESCALATION_MESSAGE,
+                        answer=response_text,
                         source_documents=[],
                     )
                     session_manager.add_token_usage(
@@ -1217,8 +1364,8 @@ async def _process_chat_message(
                     _fire_conversation_log(
                         session_id=session_id,
                         user_message=message,
-                        bot_response=DEFAULT_ESCALATION_MESSAGE,
-                        intent_type=intent_type,
+                        bot_response=response_text,
+                        intent_type=intent_for_behavior,
                         escalate=True,
                         source_documents=[s.ruta for s in source_docs],
                         input_tokens=acc_input_tokens,
@@ -1228,10 +1375,11 @@ async def _process_chat_message(
                         user_profile=inferred_profile,
                     )
                     return ChatResponse(
-                        response=DEFAULT_ESCALATION_MESSAGE,
+                        response=response_text,
                         escalate=True,
                         intent_type=intent_type,
-                        reason=f"Intent classified as {intent_type}",
+                        confidence=confidence,
+                        reason=f"Intent classified as {intent_for_behavior}",
                         session_id=session_id,
                         source_documents=source_docs,
                         num_sources=len(source_docs),
@@ -1240,7 +1388,7 @@ async def _process_chat_message(
                         total_tokens=acc_total_tokens,
                     )
 
-                if intent_type == "fuera_de_dominio":
+                if intent_for_behavior == "fuera_de_dominio":
                     session_manager.add_turn(
                         session_id=session_id,
                         question=message,
@@ -1258,7 +1406,7 @@ async def _process_chat_message(
                         session_id=session_id,
                         user_message=message,
                         bot_response=OUT_OF_DOMAIN_MESSAGE,
-                        intent_type=intent_type,
+                        intent_type=intent_for_behavior,
                         escalate=False,
                         source_documents=[],
                         input_tokens=acc_input_tokens,
@@ -1271,6 +1419,7 @@ async def _process_chat_message(
                         response=OUT_OF_DOMAIN_MESSAGE,
                         escalate=False,
                         intent_type=intent_type,
+                        confidence=confidence,
                         session_id=session_id,
                         source_documents=source_docs,
                         num_sources=len(source_docs),
@@ -1286,16 +1435,16 @@ async def _process_chat_message(
 
                 split_messages, split_delays = process_split_messages(
                     text=response_text,
-                    intent_type=intent_type,
+                    intent_type=intent_for_behavior,
                     llm_regenerate_fn=None,
                 )
 
-                escalate = intent_type in ESCALATE_INTENTS
+                escalate = intent_for_behavior in ESCALATE_INTENTS
                 if split_messages:
                     split_messages[0] = maybe_prepend_greeting(
                         session_id=session_id,
                         response_text=split_messages[0],
-                        intent_type=intent_type,
+                        intent_type=intent_for_behavior,
                         escalate=escalate,
                     )
                     response_text = "\n\n".join(split_messages)
@@ -1303,7 +1452,7 @@ async def _process_chat_message(
                     response_text = maybe_prepend_greeting(
                         session_id=session_id,
                         response_text=response_text,
-                        intent_type=intent_type,
+                        intent_type=intent_for_behavior,
                         escalate=escalate,
                     )
 
@@ -1321,7 +1470,7 @@ async def _process_chat_message(
                     session_id=session_id,
                     user_message=message,
                     bot_response=response_text,
-                    intent_type=intent_type,
+                    intent_type=intent_for_behavior,
                     escalate=False,
                     source_documents=[s.ruta for s in source_docs],
                     input_tokens=acc_input_tokens,
@@ -1334,6 +1483,7 @@ async def _process_chat_message(
                     response=response_text,
                     escalate=False,
                     intent_type=intent_type,
+                    confidence=confidence,
                     session_id=session_id,
                     source_documents=source_docs,
                     num_sources=len(source_docs),
@@ -1475,7 +1625,7 @@ async def _process_chat_message(
                         {
                             "tool_call_id": tool_call_id,
                             "function_name": function_name,
-                            "content": str(e),
+                            "content": _public_value_error_message(e),
                             "success": False,
                         }
                     )
@@ -1556,13 +1706,20 @@ async def _process_chat_message(
             session_id,
             iteration,
         )
-        intent_type, cleaned_text = _extract_intent_type(last_output_text)
+        intent_type, confidence, cleaned_text = _extract_intent_type(last_output_text)
+        intent_for_behavior = intent_type or "FAQ"
 
-        if intent_type in ESCALATE_INTENTS:
+        if intent_for_behavior in ESCALATE_INTENTS:
+            response_text = maybe_prepend_greeting(
+                session_id=session_id,
+                response_text=DEFAULT_ESCALATION_MESSAGE,
+                intent_type=intent_for_behavior,
+                escalate=True,
+            )
             session_manager.add_turn(
                 session_id=session_id,
                 question=message,
-                answer=DEFAULT_ESCALATION_MESSAGE,
+                answer=response_text,
                 source_documents=[],
             )
             session_manager.add_token_usage(
@@ -1572,8 +1729,8 @@ async def _process_chat_message(
             _fire_conversation_log(
                 session_id=session_id,
                 user_message=message,
-                bot_response=DEFAULT_ESCALATION_MESSAGE,
-                intent_type=intent_type,
+                bot_response=response_text,
+                intent_type=intent_for_behavior,
                 escalate=True,
                 source_documents=[s.ruta for s in source_docs],
                 input_tokens=acc_input_tokens,
@@ -1583,10 +1740,11 @@ async def _process_chat_message(
                 user_profile=inferred_profile,
             )
             return ChatResponse(
-                response=DEFAULT_ESCALATION_MESSAGE,
+                response=response_text,
                 escalate=True,
                 intent_type=intent_type,
-                reason=f"Intent classified as {intent_type}",
+                confidence=confidence,
+                reason=f"Intent classified as {intent_for_behavior}",
                 session_id=session_id,
                 source_documents=source_docs,
                 num_sources=len(source_docs),
@@ -1606,7 +1764,7 @@ async def _process_chat_message(
                 "Se alcanzó el límite de iteraciones. Por favor, reformula "
                 "tu pregunta o contacta al equipo de ventas."
             ),
-            intent_type=intent_type,
+            intent_type=intent_for_behavior,
             escalate=False,
             source_documents=[s.ruta for s in source_docs],
             input_tokens=acc_input_tokens,
@@ -1622,6 +1780,7 @@ async def _process_chat_message(
             ),
             escalate=False,
             intent_type=intent_type,
+            confidence=confidence,
             session_id=session_id,
             source_documents=source_docs,
             num_sources=len(source_docs),
@@ -1652,8 +1811,8 @@ async def _process_chat_message(
 async def _process_chatwoot_message(
     session_id: str, message: str, history: list[Any]
 ) -> str:
-    """Process a Chatwoot buffered message and return response text."""
-    _ = history
+    """Process a Chatwoot message through the standard chatbot pipeline."""
+    del history
     response = await _process_chat_message(
         session_id=session_id,
         message=message,
@@ -1735,7 +1894,13 @@ async def chat_endpoint(
     3. Loop back to LLM with tool results until no more tools called
     4. Return final response
     """
+    principal = api_key_principal(api_key)
+    check_rate_limit(principal)
+
+    is_new_session = request.session_id is None
     session_id = request.session_id or str(uuid.uuid4())
+    validate_session_id(session_id)
+    bind_or_validate_session(session_id, principal, is_new=is_new_session)
     request_id = str(uuid.uuid4())
 
     # P4: Multi-message buffer — intercept before normal processing
@@ -1746,6 +1911,10 @@ async def chat_endpoint(
             overflow_result = await add_to_buffer(session_id, request.message)
             joined = overflow_result or await flush_buffer(session_id)
             if joined:
+                if len(joined) > settings.max_chat_message_chars:
+                    raise HTTPException(
+                        status_code=413, detail="Buffered message too large"
+                    )
                 request = ChatRequest(
                     message=joined,
                     session_id=session_id,
@@ -1785,7 +1954,7 @@ async def chat_endpoint(
             session_id,
             e,
         )
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail="LLM service unavailable")
     except Exception as e:
         logger.exception(
             "Unexpected error in chat endpoint: request_id=%s, session_id=%s, error=%s",
@@ -1794,6 +1963,85 @@ async def chat_endpoint(
             e,
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
+async def get_buffer_result(
+    session_id: str,
+    api_key: Annotated[str, Depends(verify_api_key)],
+) -> BufferResultResponse:
+    """Poll for buffered message processing result.
+
+    After a 202 response from /chat, the client should poll this endpoint.
+    When the buffer window expires, the backend processes the joined message
+    with the chatbot and stores the response for pickup.
+    """
+    validate_session_id(session_id)
+
+    principal = api_key_principal(api_key)
+    check_rate_limit(principal)
+    bind_or_validate_session(session_id, principal, is_new=False)
+
+    chat_response_json = pop_pending_chat_response(session_id)
+    if chat_response_json:
+        return BufferResultResponse(
+            status="ready",
+            session_id=session_id,
+            result=chat_response_json,
+        )
+
+    if is_buffering(session_id):
+        if is_buffer_ready_to_flush(
+            session_id,
+            settings.buffer_window_seconds,
+        ):
+            joined_message = await flush_buffer(session_id)
+            if joined_message:
+                await _on_buffer_window_expired(session_id, joined_message)
+                chat_response_json = pop_pending_chat_response(session_id)
+                if chat_response_json:
+                    return BufferResultResponse(
+                        status="ready",
+                        session_id=session_id,
+                        result=chat_response_json,
+                    )
+        return BufferResultResponse(
+            status="pending",
+            session_id=session_id,
+        )
+
+    if is_processing(session_id):
+        return BufferResultResponse(
+            status="pending",
+            session_id=session_id,
+        )
+
+    return BufferResultResponse(
+        status="not_found",
+        session_id=session_id,
+    )
+
+
+def _ensure_current_event_loop() -> None:
+    """Ensure sync Lambda adapter calls have a current event loop."""
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+class _EventLoopSafeMangum:
+    """Mangum adapter wrapper resilient to tests that clear the event loop."""
+
+    def __init__(self, application: FastAPI) -> None:
+        self._adapter = Mangum(application)
+
+    def __call__(self, event: dict[str, Any], context: Any) -> dict[str, Any]:
+        _ensure_current_event_loop()
+        return self._adapter(event, context)
+
+
+handler = _EventLoopSafeMangum(app)
 
 
 if __name__ == "__main__":

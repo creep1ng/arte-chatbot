@@ -6,8 +6,7 @@ that writes structured JSON conversation logs to S3 asynchronously.
 
 import asyncio
 import json
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -67,6 +66,31 @@ class TestConversationLogEntry:
             git_commit_hash="",
         )
         assert entry.user_profile is None
+
+    def test_redacts_sensitive_text_fields(self) -> None:
+        """Sensitive values are redacted before conversation logs are persisted."""
+        entry = ConversationLogEntry(
+            session_id="s1",
+            turn_number=1,
+            timestamp="2026-05-07T20:39:00Z",
+            user_message="Mi email es user@example.com y token=abc123",
+            bot_response="La clave sk-testsecret123456 no debe verse",
+            intent_type="FAQ",
+            escalate=False,
+            source_documents=[],
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+            response_time_ms=100.0,
+            model="gpt-5.4-nano",
+            git_commit_hash="",
+        )
+
+        assert "user@example.com" not in entry.user_message
+        assert "token=abc123" not in entry.user_message
+        assert "sk-testsecret123456" not in entry.bot_response
+        assert "[REDACTED]" in entry.user_message
+        assert "[REDACTED]" in entry.bot_response
 
     def test_source_documents_defaults_to_empty_list(self) -> None:
         """source_documents defaults to empty list."""

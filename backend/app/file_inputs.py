@@ -12,6 +12,7 @@ from openai import OpenAI
 from openai import APIError, AuthenticationError, BadRequestError
 
 from backend.app.config import settings
+from backend.app.secret_resolver import configured_secret_value
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,17 @@ class FileInputsClient:
             api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
                      If provided explicitly, takes precedence over settings.
         """
-        # Use explicit parameter if provided, otherwise fallback to settings
-        self.api_key = api_key if api_key is not None else settings.openai_api_key
+        # Use explicit parameter if provided, otherwise fallback to plaintext env
+        # or Lambda runtime secret references resolved through AWS IAM.
+        self.api_key = (
+            api_key
+            if api_key is not None
+            else configured_secret_value(
+                settings.openai_api_key,
+                settings.openai_api_key_secret_ref,
+                region_name=settings.aws_region,
+            )
+        )
         if not self.api_key:
             raise FileUploadError("OpenAI API key not configured")
 
@@ -43,7 +53,10 @@ class FileInputsClient:
     def client(self) -> OpenAI:
         """Lazy initialization of the OpenAI client."""
         if self._client is None:
-            self._client = OpenAI(api_key=self.api_key)
+            self._client = OpenAI(
+                api_key=self.api_key,
+                timeout=settings.openai_timeout_seconds,
+            )
         return self._client
 
     def upload_pdf(self, pdf_bytes: bytes, filename: str) -> str:
@@ -61,6 +74,13 @@ class FileInputsClient:
         """
         if not self.api_key:
             raise FileUploadError("OpenAI API key not configured")
+
+        if not filename.lower().endswith(".pdf"):
+            raise FileUploadError("Only PDF files can be uploaded")
+        if len(pdf_bytes) > settings.max_pdf_bytes:
+            raise FileUploadError("PDF exceeds maximum allowed size")
+        if not pdf_bytes.startswith(b"%PDF"):
+            raise FileUploadError("Invalid PDF content")
 
         try:
             logger.debug(

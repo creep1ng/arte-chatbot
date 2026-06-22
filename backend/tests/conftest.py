@@ -6,7 +6,6 @@ and will raise FileUploadError without OPENAI_API_KEY.
 """
 
 import os
-import warnings
 from typing import Any, Optional
 
 import pytest

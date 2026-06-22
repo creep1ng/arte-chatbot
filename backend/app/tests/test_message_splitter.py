@@ -5,7 +5,6 @@ on those delimiters, validates per-message character limits by intent,
 and optionally regenerates overflow segments via LLM.
 """
 
-import pytest
 from unittest.mock import patch, MagicMock
 
 from backend.app.message_splitter import (
@@ -191,9 +190,7 @@ class TestProcessSplitMessages:
         mock_settings.msg_delay_max_ms = 5000
 
         text = "Mensaje 1\n---\nMensaje 2\n---\nMensaje 3"
-        messages, delays = process_split_messages(
-            text, "FAQ", llm_regenerate_fn=None
-        )
+        messages, delays = process_split_messages(text, "FAQ", llm_regenerate_fn=None)
         assert len(messages) == 3
         assert len(delays) == 2
         assert all(3000 <= d <= 5000 for d in delays)
@@ -224,9 +221,7 @@ class TestProcessSplitMessages:
         mock_settings.msg_delay_max_ms = 5000
 
         text = "**Bold text**\n---\n**More bold**"
-        messages, delays = process_split_messages(
-            text, "FAQ", llm_regenerate_fn=None
-        )
+        messages, delays = process_split_messages(text, "FAQ", llm_regenerate_fn=None)
         # WhatsApp formatter converts ** → *
         assert all("*Bold" in m or "*More" in m for m in messages)
 
@@ -238,7 +233,5 @@ class TestProcessSplitMessages:
         mock_settings.msg_delay_max_ms = 6000
 
         text = "A\n---\nB\n---\nC"
-        messages, delays = process_split_messages(
-            text, "FAQ", llm_regenerate_fn=None
-        )
+        messages, delays = process_split_messages(text, "FAQ", llm_regenerate_fn=None)
         assert all(4000 <= d <= 6000 for d in delays)

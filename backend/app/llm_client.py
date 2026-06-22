@@ -6,12 +6,14 @@ for generating chatbot responses with tool calling support.
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from openai import APIError, AuthenticationError, OpenAI
 
 from backend.app.config import settings
+from backend.app.conversation_logger import redact_text
 from backend.app.schemas import LLMResponse
+from backend.app.secret_resolver import configured_secret_value
 from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
@@ -32,8 +34,6 @@ def expand_query_with_context(message: str, history: list) -> str:
     """
     return message
 
-
-DEFAULT_MODEL = settings.llm_model
 
 ARTE_SYSTEM_PROMPT = (
     "Eres un asistente técnico de Arte Soluciones Energéticas, una empresa B2B "
@@ -60,10 +60,10 @@ ARTE_SYSTEM_PROMPT = (
     "la búsqueda con datos parciales que pedir todos los campos al usuario.\n\n"
     "## Convención para rutas S3\n"
     "- Cuando llames a leer_ficha_tecnica, construye la ruta S3 usando: "
-    "{categoria}/{fabricante}-{modelo}.pdf (todo en minúsculas, espacios "
+    "raw/{categoria}/{fabricante}-{modelo}.pdf (todo en minúsculas, espacios "
     "reemplazados por guiones).\n"
     "- Ejemplo: para un panel Jinko Tiger Pro 460W, la ruta sería: "
-    "paneles/jinko-tiger-pro-460w.pdf\n\n"
+    "raw/paneles/jinko-tiger-pro-460w.pdf\n\n"
     "## Cuando uses datos de una ficha técnica\n"
     "- Cita los valores exactos del documento (potencia, voltaje, eficiencia, "
     "dimensiones, peso, etc.).\n"
@@ -139,12 +139,19 @@ class LLMClient:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = DEFAULT_MODEL,
+        model: Optional[str] = None,
     ) -> None:
         self.api_key = (
-            api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")
+            api_key
+            if api_key is not None
+            else configured_secret_value(
+                settings.openai_api_key,
+                settings.openai_api_key_secret_ref,
+                region_name=settings.aws_region,
+            )
+            or ""
         )
-        self.model = model
+        self.model = model if model is not None else settings.llm_model
 
         # Build system prompt: base + WhatsApp formatting when enabled
         whatsapp_enabled = os.getenv(
@@ -168,7 +175,10 @@ class LLMClient:
     def openai_client(self) -> OpenAI:
         """Lazy initialization of the OpenAI SDK client."""
         if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=self.api_key)
+            self._openai_client = OpenAI(
+                api_key=self.api_key,
+                timeout=settings.openai_timeout_seconds,
+            )
         return self._openai_client
 
     def get_llm_response_with_tools(
@@ -210,7 +220,7 @@ class LLMClient:
             "num_tools=%d",
             self.model,
             session_id,
-            message[:100],
+            redact_text(message)[:100],
             len(tools),
         )
 
@@ -298,7 +308,7 @@ class LLMClient:
             self.model,
             session_id,
             file_id,
-            message[:100],
+            redact_text(message)[:100],
         )
 
         try:
