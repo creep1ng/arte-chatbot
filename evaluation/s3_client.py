@@ -6,7 +6,6 @@ Handles uploading and downloading evaluation results from S3.
 import json
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import boto3
@@ -20,23 +19,20 @@ class S3ReportsClient:
     REPORTS_PREFIX = "evaluation/reports"
 
     def __init__(self) -> None:
-        """Initialize S3 client with credentials from environment variables."""
+        """Initialize S3 client with local keys or boto3 default credentials."""
         access_key = os.getenv("AWS_ACCESS_KEY_ID")
         secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+        session_token = os.getenv("AWS_SESSION_TOKEN")
         region = os.getenv("AWS_REGION", "us-east-1")
 
-        if not access_key or not secret_key:
-            raise ValueError(
-                "AWS credentials not found. "
-                "Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables."
-            )
+        client_kwargs: dict[str, Any] = {"region_name": region}
+        if access_key and secret_key:
+            client_kwargs["aws_access_key_id"] = access_key
+            client_kwargs["aws_secret_access_key"] = secret_key
+            if session_token:
+                client_kwargs["aws_session_token"] = session_token
 
-        self._s3 = boto3.client(
-            "s3",
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            region_name=region,
-        )
+        self._s3 = boto3.client("s3", **client_kwargs)
 
     def upload_json(
         self, data: dict[str, Any], s3_key: str, content_type: str = "application/json"

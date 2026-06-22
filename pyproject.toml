@@ -3,8 +3,7 @@ dev = [
   "pytest",
   "httpx",
   "pytest-asyncio>=1.3.0",
-  "fakeredis>=2.35.1",
-  "respx>=0.23.1",
+  "respx>=0.22.0",
 ]
 lint = [
   "ruff"
@@ -22,18 +21,29 @@ requires-python = ">=3.11"
 dependencies = [
     "boto3>=1.42.75",
     "fastapi>=0.109.0",
-    "httpx>=0.27",
+    "httpx>=0.26.0",
     "ipywidgets>=8.1.8",
     "jsonschema>=4.21.0",
+    "mangum>=0.19.0",
     "numpy>=2.4.4",
     "openai>=1.68.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
     "python-dotenv>=1.2.2",
-    "redis[hiredis]>=5.0",
     "requests>=2.32.5",
     "uvicorn>=0.27.0",
 ]
 
 [tool.pytest.ini_options]
 markers = ["integration: marks tests as integration tests"]
+
+[tool.arte_chatbot.lambda_package]
+build_command = "uv export --no-dev --format requirements-txt --output-file requirements.txt"
+exclude = [
+  ".env",
+  ".env.*",
+  ".env.deploy",
+  "**/.aws/**",
+  "**/credentials",
+  "**/*credentials*",
+]

@@ -5,22 +5,38 @@ Provides functionality to upload evaluation results (JSON/CSV) to S3
 with metadata for trazability.
 """
 
-import getpass
 import hashlib
 import json
 import logging
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import boto3
-from boto3.exceptions import Boto3Error
+from botocore.exceptions import BotoCoreError, ClientError
 
 logger = logging.getLogger(__name__)
 
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "arte-chatbot-data")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+
+def _build_s3_client_kwargs() -> dict[str, str]:
+    """Build boto3 S3 kwargs while preserving default credential-chain auth."""
+    access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    session_token = os.getenv("AWS_SESSION_TOKEN")
+    region = os.getenv("AWS_REGION", AWS_REGION)
+
+    kwargs = {"region_name": region}
+    if access_key and secret_key:
+        kwargs["aws_access_key_id"] = access_key
+        kwargs["aws_secret_access_key"] = secret_key
+        if session_token:
+            kwargs["aws_session_token"] = session_token
+    return kwargs
 
 
 def get_harness_version() -> str:
@@ -45,8 +61,6 @@ def generate_metadata(trigger: str, runner: str) -> dict[str, Any]:
     Returns:
         Dictionary with metadata fields.
     """
-    import subprocess
-
     git_commit = "unknown"
     git_branch = "unknown"
 
@@ -92,23 +106,8 @@ def upload_results(output_dir: Path, prefix: str) -> list[str]:
     Returns:
         List of S3 keys that were uploaded. Empty list on failure.
     """
-    access_key = os.getenv("AWS_ACCESS_KEY_ID")
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-    session_token = os.getenv("AWS_SESSION_TOKEN")
-
-    if not access_key or not secret_key:
-        logger.warning("AWS credentials not found, skipping S3 upload")
-        return None
-
-    s3_client = boto3.client(
-        "s3",
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        aws_session_token=session_token,
-        region_name=AWS_REGION,
-    )
+    s3_client = boto3.client("s3", **_build_s3_client_kwargs())
     uploaded: list[str] = []
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     json_files = list(output_dir.glob("*.json"))
     csv_files = list(output_dir.glob("*.csv"))
@@ -117,9 +116,14 @@ def upload_results(output_dir: Path, prefix: str) -> list[str]:
         s3_key = f"{prefix.rstrip('/')}/{file_path.name}"
         try:
             s3_client.upload_file(str(file_path), AWS_BUCKET_NAME, s3_key)
-            logger.info("Uploaded %s to s3://%s/%s", file_path.name, AWS_BUCKET_NAME, s3_key)
+            logger.info(
+                "Uploaded %s to s3://%s/%s",
+                file_path.name,
+                AWS_BUCKET_NAME,
+                s3_key,
+            )
             uploaded.append(s3_key)
-        except Boto3Error as e:
+        except (BotoCoreError, ClientError) as e:
             logger.error("Failed to upload %s: %s", file_path.name, e)
 
     return uploaded
@@ -140,37 +144,23 @@ def upload_results_with_metadata(
         runner: Runner identifier.
 
     Returns:
-        List of S3 keys uploaded (including metadata.json), or None on failure.
+        List of S3 keys uploaded, including metadata.json when upload succeeds.
     """
-    result = upload_results(output_dir, prefix)
-    if result is None:
-        return None
-    uploaded = result
+    uploaded = upload_results(output_dir, prefix)
 
     metadata = generate_metadata(trigger, runner)
     metadata_path = output_dir / "metadata.json"
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-    access_key = os.getenv("AWS_ACCESS_KEY_ID")
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-    session_token = os.getenv("AWS_SESSION_TOKEN")
-
-    if access_key and secret_key:
-        s3_client = boto3.client(
-            "s3",
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            aws_session_token=session_token,
-            region_name=AWS_REGION,
-        )
-        s3_key = f"{prefix.rstrip('/')}/metadata.json"
-        try:
-            s3_client.upload_file(str(metadata_path), AWS_BUCKET_NAME, s3_key)
-            logger.info("Uploaded metadata.json to s3://%s/%s", AWS_BUCKET_NAME, s3_key)
-            uploaded.append(s3_key)
-        except Boto3Error as e:
-            logger.error("Failed to upload metadata.json: %s", e)
+    s3_client = boto3.client("s3", **_build_s3_client_kwargs())
+    s3_key = f"{prefix.rstrip('/')}/metadata.json"
+    try:
+        s3_client.upload_file(str(metadata_path), AWS_BUCKET_NAME, s3_key)
+        logger.info("Uploaded metadata.json to s3://%s/%s", AWS_BUCKET_NAME, s3_key)
+        uploaded.append(s3_key)
+    except (BotoCoreError, ClientError) as e:
+        logger.error("Failed to upload metadata.json: %s", e)
 
     return uploaded
 

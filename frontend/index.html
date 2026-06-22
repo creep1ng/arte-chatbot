@@ -185,6 +185,20 @@
       background: var(--text-secondary);
     }
 
+    .message-meta-tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 7px;
+      border: 1px solid var(--border-color);
+      border-radius: 999px;
+      background: #f8fafc;
+      color: var(--text-secondary);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
     /* Typing indicator */
     .typing-indicator {
       display: none;
@@ -667,6 +681,11 @@
         return `${(ms / 1000).toFixed(1)}s`;
       }
 
+      function formatConfidence(value) {
+        if (typeof value !== "number" || Number.isNaN(value)) return null;
+        return `${Math.round(value * 100)}%`;
+      }
+
       function scrollToBottom() {
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
@@ -694,6 +713,17 @@
           if (meta.time) parts.push(escapeHtml(meta.time));
           if (meta.duration) parts.push(escapeHtml(meta.duration));
           if (meta.model) parts.push(escapeHtml(meta.model));
+          if (meta.intentType) {
+            parts.push(
+              `<span class="message-meta-tag">Intención: ${escapeHtml(meta.intentType)}</span>`
+            );
+          }
+          const confidence = formatConfidence(meta.confidence);
+          if (confidence) {
+            parts.push(
+              `<span class="message-meta-tag">Confianza: ${escapeHtml(confidence)}</span>`
+            );
+          }
           if (meta.inputTokens != null && meta.outputTokens != null) {
             parts.push(`${meta.inputTokens}\u2192${meta.outputTokens} tok`);
           }
@@ -791,6 +821,8 @@
               addMessage(chatResponse.response, "bot", {
                 time: responseTimeStr,
                 model: MODEL,
+                intentType: chatResponse.intent_type,
+                confidence: chatResponse.confidence,
                 escalate: chatResponse.escalate,
                 reason: chatResponse.reason,
                 inputTokens: chatResponse.input_tokens,
@@ -924,6 +956,8 @@
             time: responseTimeStr,
             duration: formatTime(elapsed),
             model: MODEL,
+            intentType: data.intent_type,
+            confidence: data.confidence,
             escalate: data.escalate,
             reason: data.reason,
             inputTokens: data.input_tokens,

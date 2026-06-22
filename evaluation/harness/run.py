@@ -18,6 +18,7 @@ import logging
 import getpass
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -149,7 +150,7 @@ async def run_single_query(
     }
 
     try:
-        start_time = datetime.now(timezone.utc)
+        start_time = time.perf_counter()
         headers = {}
         if CHAT_API_KEY:
             headers["X-API-Key"] = CHAT_API_KEY
@@ -159,14 +160,14 @@ async def run_single_query(
             headers=headers,
             timeout=30.0,
         )
-        end_time = datetime.now(timezone.utc)
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         if response.status_code == 200:
             data = response.json()
             result["response"] = data.get("response", "")
             result["session_id"] = data.get("session_id", "")
-            result["latency_ms"] = data.get("latency_ms", 0.0)
-            result["escalated"] = data.get("escalated", False)
+            result["latency_ms"] = data.get("latency_ms") or elapsed_ms
+            result["escalated"] = data.get("escalated", data.get("escalate", False))
             result["source_documents"] = data.get("source_documents", [])
             result["num_sources"] = data.get("num_sources", 0)
         else:

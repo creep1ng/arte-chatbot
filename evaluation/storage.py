@@ -19,6 +19,22 @@ AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "arte-chatbot-data")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 
 
+def _build_s3_client_kwargs() -> dict[str, str]:
+    """Build boto3 S3 kwargs while preserving default credential-chain auth."""
+    access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    session_token = os.getenv("AWS_SESSION_TOKEN")
+    region = os.getenv("AWS_REGION", AWS_REGION)
+
+    kwargs = {"region_name": region}
+    if access_key and secret_key:
+        kwargs["aws_access_key_id"] = access_key
+        kwargs["aws_secret_access_key"] = secret_key
+        if session_token:
+            kwargs["aws_session_token"] = session_token
+    return kwargs
+
+
 def get_commit_hash() -> str:
     """Get current git commit hash or return 'unknown'."""
     try:
@@ -35,22 +51,8 @@ def get_commit_hash() -> str:
 
 def upload_to_s3(file_path: Path, s3_key: str) -> bool:
     """Upload file to S3 bucket. Returns True on success."""
-    access_key = os.getenv("AWS_ACCESS_KEY_ID")
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-    session_token = os.getenv("AWS_SESSION_TOKEN")
-
-    if not access_key or not secret_key:
-        print("Warning: AWS credentials not found, skipping S3 upload")
-        return False
-
     try:
-        s3_client = boto3.client(
-            "s3",
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            aws_session_token=session_token,
-            region_name=AWS_REGION,
-        )
+        s3_client = boto3.client("s3", **_build_s3_client_kwargs())
         s3_client.upload_file(str(file_path), AWS_BUCKET_NAME, s3_key)
         print(f"Uploaded to s3://{AWS_BUCKET_NAME}/{s3_key}")
         return True
