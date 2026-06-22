@@ -23,6 +23,7 @@ dependencies = [
     "httpx>=0.26.0",
     "ipywidgets>=8.1.8",
     "jsonschema>=4.21.0",
+    "mangum>=0.19.0",
     "numpy>=2.4.4",
     "openai>=1.68.0",
     "pydantic>=2.5.0",
@@ -34,3 +35,14 @@ dependencies = [
 
 [tool.pytest.ini_options]
 markers = ["integration: marks tests as integration tests"]
+
+[tool.arte_chatbot.lambda_package]
+build_command = "uv export --no-dev --format requirements-txt --output-file requirements.txt"
+exclude = [
+  ".env",
+  ".env.*",
+  ".env.deploy",
+  "**/.aws/**",
+  "**/credentials",
+  "**/*credentials*",
+]

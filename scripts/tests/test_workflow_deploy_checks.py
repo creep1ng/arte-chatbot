@@ -1,4 +1,4 @@
-"""Static checks for the EC2 Compose production deploy workflow."""
+"""Static checks for Lambda-only production deploy workflows."""
 
 from pathlib import Path
 import sys
@@ -15,36 +15,88 @@ def _findings() -> list[str]:
     return check_workflow_deploy(ROOT)
 
 
-def test_workflow_keeps_production_deploys_on_main_after_ci_health_and_evaluation() -> None:
-    """PRs must not deploy; main deploy waits for successful CI, health, and evaluation."""
+def test_workflow_keeps_production_lambda_deploys_on_main_after_gates() -> None:
+    """PRs must not deploy; production Lambda waits for package and cutover gates."""
     findings = _findings()
 
-    assert "production deploy job must run only on push events to refs/heads/main" not in findings
-    assert "production deploy job must depend on release image promotion after evaluation gates" not in findings
+    assert (
+        "production Lambda promotion job must run only on push events to refs/heads/main"
+        not in findings
+    )
+    assert (
+        "production Lambda smoke job must run only on push events to refs/heads/main"
+        not in findings
+    )
+    assert (
+        "production Lambda promotion must depend on package and cutover gates"
+        not in findings
+    )
+    assert (
+        "release image promotion must still wait for evaluation gates" not in findings
+    )
     assert "pull requests must not have any production deploy path" not in findings
 
 
-def test_workflow_passes_external_hostnames_and_runtime_env_without_hardcoding() -> None:
-    """Deploy inputs must come from Secrets/Variables, not committed hostname defaults."""
+def test_workflow_uses_lambda_production_config_without_ec2_compose_path() -> None:
+    """Production deploy config must be Lambda-only and avoid legacy EC2 inputs."""
     findings = _findings()
 
-    assert "production deploy must pass backend/frontend/admin hostnames from secrets" not in findings
-    assert "production deploy must not hardcode service hostnames in workflow source" not in findings
-    assert "production deploy must pass backend runtime env from vars with {} fallback" not in findings
-    assert "production deploy must keep backend secrets in runtime secret ARNs" not in findings
+    assert (
+        "production Lambda promotion must use Lambda function, alias, API, and state variables"
+        not in findings
+    )
+    assert "production Lambda promotion must use AWS deploy role secret" not in findings
+    assert (
+        "production Lambda verification must smoke the API Gateway endpoint and DynamoDB state"
+        not in findings
+    )
+    assert "legacy EC2 deploy-production job must be removed" not in findings
+    assert (
+        "workflow must not keep EC2 Compose, Cloudflare Tunnel, VPC/subnet, or revert-confirmation deploy paths"
+        not in findings
+    )
 
 
-def test_workflow_uses_sha_ecr_tags_and_ssm_compose_deploy_instead_of_ecs() -> None:
-    """Main deploy must invoke the EC2 Compose host deploy script through SSM."""
+def test_lambda_package_job_tests_scans_and_uploads_same_package_artifact() -> None:
+    """Lambda package promotion must start from one tested and scanned artifact."""
     findings = _findings()
 
-    assert "production deploy must keep SHA-tagged ECR release images" not in findings
-    assert "production deploy must invoke /opt/arte-chatbot/deploy.sh through SSM" not in findings
-    assert "production deploy must not keep ECS service update paths" not in findings
+    assert (
+        "lambda package job must test, build, scan, and upload one zip artifact"
+        not in findings
+    )
+    assert (
+        "lambda package Python version must match Terraform Lambda runtime"
+        not in findings
+    )
 
 
-def test_workflow_runs_cloudflare_backend_health_check_after_ssm_deploy() -> None:
-    """The deploy job must prove the public backend URL is healthy after SSM completes."""
+def test_lambda_staging_deploy_and_smoke_validate_isolated_serverless_runtime() -> None:
+    """Staging must deploy through OIDC and validate direct endpoint behavior."""
     findings = _findings()
 
-    assert "production deploy must verify backend health through the Cloudflare hostname" not in findings
+    assert (
+        "lambda staging deploy must use OIDC and the scanned package artifact"
+        not in findings
+    )
+    assert (
+        "lambda staging smoke must validate chat, File Inputs, DynamoDB, IAM denial, and URL isolation"
+        not in findings
+    )
+
+
+def test_lambda_production_cutover_is_lambda_only_and_promotes_same_package() -> None:
+    """Production Lambda cutover must remove EC2 fallback and keep rollback target discovery."""
+    findings = _findings()
+
+    assert (
+        "lambda cutover must verify production Terraform is Lambda-only" not in findings
+    )
+    assert (
+        "lambda production promotion must use the same package and capture rollback target"
+        not in findings
+    )
+    assert (
+        "lambda rollback job must restore a discovered previous alias version"
+        not in findings
+    )

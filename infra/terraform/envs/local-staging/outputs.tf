@@ -25,3 +25,14 @@ output "ecs_services" {
     admin    = module.admin_service.service_name
   }
 }
+
+output "lambda_backend" {
+  description = "Isolated local staging Lambda backend metadata and direct endpoint."
+  value = {
+    function_name    = module.lambda_backend.function_name
+    alias_name       = module.lambda_backend.alias_name
+    state_table_name = module.lambda_backend.state_table_name
+    invoke_url       = module.lambda_backend.invoke_url
+    log_group_name   = module.lambda_backend.log_group_name
+  }
+}

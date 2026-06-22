@@ -4,7 +4,11 @@ Unit tests for the session management service.
 
 import threading
 from datetime import datetime
+
+from backend.app.dynamodb_state_repository import DynamoDBStateRepository
 from backend.app.session import SessionManager
+from backend.app.state_repository import ChatTurn, TokenTotals
+from backend.tests.test_state_repository import FakeDynamoDBTable
 
 
 def test_session_manager_initialization():
@@ -277,3 +281,34 @@ class TestClearSessionTokenTotals:
         totals = sm.get_token_totals("s1")
         assert totals.input_tokens == 0
         assert totals.total_tokens == 0
+
+
+class TestDurableSessionState:
+    """Tests for the state repository used by Lambda cold starts."""
+
+    def test_repository_restores_session_after_cold_start(self) -> None:
+        """A new repository instance restores persisted conversation state."""
+        table = FakeDynamoDBTable()
+        first_repo = DynamoDBStateRepository(table=table)
+        first_repo.bind_owner("cold-session", "client-a")
+        first_repo.append_turn(
+            "cold-session",
+            ChatTurn(
+                question="Pregunta",
+                answer="Respuesta",
+                timestamp=datetime.now(),
+                source_documents=["doc.pdf"],
+            ),
+        )
+        first_repo.add_token_usage(
+            "cold-session",
+            TokenTotals(input_tokens=10, output_tokens=5, total_tokens=15),
+        )
+
+        cold_repo = DynamoDBStateRepository(table=table)
+        state = cold_repo.get_session("cold-session")
+
+        assert state.owner == "client-a"
+        assert len(state.turns) == 1
+        assert state.turns[0].question == "Pregunta"
+        assert state.token_totals.total_tokens == 15

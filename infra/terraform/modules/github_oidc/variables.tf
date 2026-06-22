@@ -27,11 +27,31 @@ variable "ecr_repository_arns" {
 variable "ssm_instance_arns" {
   description = "EC2 instance ARNs that Actions can target with SSM Run Command."
   type        = list(string)
+  default     = []
 }
 
 variable "ssm_document_arns" {
   description = "SSM document ARNs Actions can invoke for deployment commands."
   type        = list(string)
+  default     = []
+}
+
+variable "lambda_function_arns" {
+  description = "Lambda function ARNs Actions can update and publish during deployment."
+  type        = list(string)
+  default     = []
+}
+
+variable "lambda_alias_arns" {
+  description = "Lambda alias ARNs Actions can inspect and update during deployment."
+  type        = list(string)
+  default     = []
+}
+
+variable "state_table_arns" {
+  description = "DynamoDB state table ARNs Actions can read during smoke validation."
+  type        = list(string)
+  default     = []
 }
 
 variable "secret_arns" {

@@ -1,4 +1,4 @@
-"""Static checks for the production EC2 Compose deploy workflow.
+"""Static checks for Lambda-only production delivery workflows.
 
 The checks read repository files only. They intentionally avoid GitHub, AWS,
 Cloudflare, Docker, and Terraform calls so they can run safely in PR CI.
@@ -9,116 +9,272 @@ import re
 
 
 WORKFLOW_PATH = Path(".github/workflows/ci.yml")
+PYTHON_VERSION_PATH = Path(".python-version")
+LAMBDA_BACKEND_VARIABLES_PATH = Path(
+    "infra/terraform/modules/lambda_backend/variables.tf"
+)
 SERVICES = ("backend", "frontend", "admin")
 
 
 def check_workflow_deploy(project_root: Path) -> list[str]:
     """Return static findings for the production deploy workflow contract."""
     workflow = _read(project_root / WORKFLOW_PATH)
-    deploy_job = _job_block(workflow, "deploy-production")
+    local_python_version = _read(project_root / PYTHON_VERSION_PATH).strip()
+    lambda_variables = _read(project_root / LAMBDA_BACKEND_VARIABLES_PATH)
     publish_release_job = _job_block(workflow, "publish-release-images")
     publish_candidate_job = _job_block(workflow, "publish-candidate-images")
+    cutover_job = _job_block(workflow, "cutover-prerequisites")
+    promote_job = _job_block(workflow, "promote-lambda-production")
+    verify_job = _job_block(workflow, "verify-lambda-production")
 
     findings: list[str] = []
-    findings.extend(_check_main_deploy_gates(deploy_job, publish_release_job, publish_candidate_job))
-    findings.extend(_check_external_inputs(deploy_job))
-    findings.extend(_check_ssm_deploy(deploy_job, publish_release_job))
-    findings.extend(_check_cloudflare_health(deploy_job))
+    findings.extend(
+        _check_main_deploy_gates(
+            workflow,
+            promote_job,
+            verify_job,
+            publish_release_job,
+            publish_candidate_job,
+        )
+    )
+    findings.extend(_check_lambda_production_inputs(promote_job, verify_job))
+    findings.extend(_check_no_ec2_compose_delivery(workflow))
+    findings.extend(_check_lambda_delivery(workflow, cutover_job, promote_job))
+    findings.extend(
+        _check_lambda_python_runtime_alignment(
+            workflow,
+            lambda_variables,
+            local_python_version,
+        )
+    )
     return findings
 
 
 def _check_main_deploy_gates(
-    deploy_job: str,
+    workflow: str,
+    promote_job: str,
+    verify_job: str,
     publish_release_job: str,
     publish_candidate_job: str,
 ) -> list[str]:
     findings: list[str] = []
 
-    if not deploy_job or "github.event_name == 'push' && github.ref == 'refs/heads/main'" not in deploy_job:
-        findings.append("production deploy job must run only on push events to refs/heads/main")
+    main_guard = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    if not promote_job or main_guard not in promote_job:
+        findings.append(
+            "production Lambda promotion job must run only on push events to refs/heads/main"
+        )
+    if not verify_job or main_guard not in verify_job:
+        findings.append(
+            "production Lambda smoke job must run only on push events to refs/heads/main"
+        )
 
-    if not deploy_job or "needs: publish-release-images" not in deploy_job:
-        findings.append("production deploy job must depend on release image promotion after evaluation gates")
+    if (
+        not promote_job
+        or "needs: [lambda-package, cutover-prerequisites]" not in promote_job
+    ):
+        findings.append(
+            "production Lambda promotion must depend on package and cutover gates"
+        )
     if not publish_release_job or "needs: evaluation" not in publish_release_job:
-        findings.append("production deploy job must depend on release image promotion after evaluation gates")
+        findings.append("release image promotion must still wait for evaluation gates")
 
     pr_candidate_guard = "github.event_name == 'pull_request'" in publish_candidate_job
-    deploy_mentions_pr = "pull_request" in deploy_job if deploy_job else True
+    production_jobs = "\n".join([promote_job, verify_job])
+    deploy_mentions_pr = "pull_request" in production_jobs if production_jobs else True
     if not pr_candidate_guard or deploy_mentions_pr:
         findings.append("pull requests must not have any production deploy path")
 
-    return findings
-
-
-def _check_external_inputs(deploy_job: str) -> list[str]:
-    findings: list[str] = []
-
-    hostname_secret_inputs = [
-        f"TF_VAR_{service}_hostname: ${{{{ secrets.PROD_{service.upper()}_HOSTNAME }}}}"
-        for service in SERVICES
-    ]
-    if not deploy_job or not _contains_all(deploy_job, hostname_secret_inputs):
-        findings.append("production deploy must pass backend/frontend/admin hostnames from secrets")
-
-    forbidden_hostname_literals = (
-        "artesolutions.com.co",
-        "chatbot.",
-        "api.",
-        "app.",
-    )
-    if deploy_job and any(literal in deploy_job for literal in forbidden_hostname_literals):
-        findings.append("production deploy must not hardcode service hostnames in workflow source")
-
-    runtime_env = "TF_VAR_backend_runtime_environment_variables: ${{ vars.PROD_BACKEND_RUNTIME_ENV_JSON || '{}' }}"
-    if not deploy_job or runtime_env not in deploy_job:
-        findings.append("production deploy must pass backend runtime env from vars with {} fallback")
-
-    if not deploy_job or "TF_VAR_backend_runtime_secret_arns: ${{ secrets.PROD_BACKEND_RUNTIME_SECRET_ARNS_JSON }}" not in deploy_job:
-        findings.append("production deploy must keep backend secrets in runtime secret ARNs")
+    if "deploy-production:" in workflow:
+        findings.append("legacy EC2 deploy-production job must be removed")
 
     return findings
 
 
-def _check_ssm_deploy(deploy_job: str, publish_release_job: str) -> list[str]:
+def _check_lambda_production_inputs(promote_job: str, verify_job: str) -> list[str]:
     findings: list[str] = []
 
-    required_release_tags = [
-        f"push_if_missing arte-chatbot-{service} \"${{{{ vars.{service.upper()}_ECR_REPOSITORY_URL }}}}\" \"${{SHA_TAG}}\""
-        for service in SERVICES
+    required_promote_env = [
+        "LAMBDA_PROD_FUNCTION_NAME: ${{ vars.LAMBDA_PROD_FUNCTION_NAME }}",
+        "LAMBDA_PROD_ALIAS_NAME: ${{ vars.LAMBDA_PROD_ALIAS_NAME || 'live' }}",
+        "LAMBDA_PROD_API_URL: ${{ vars.LAMBDA_PROD_API_URL }}",
+        "LAMBDA_PROD_STATE_TABLE_NAME: ${{ vars.LAMBDA_PROD_STATE_TABLE_NAME }}",
+        "LAMBDA_PROD_STATE_KEY_PREFIX: ${{ vars.LAMBDA_PROD_STATE_KEY_PREFIX || 'prod' }}",
     ]
-    if not publish_release_job or not _contains_all(publish_release_job, required_release_tags):
-        findings.append("production deploy must keep SHA-tagged ECR release images")
+    if not promote_job or not _contains_all(promote_job, required_promote_env):
+        findings.append(
+            "production Lambda promotion must use Lambda function, alias, API, and state variables"
+        )
 
-    ssm_needles = [
-        "aws ssm describe-instance-information",
-        "InstanceInformationList[0].PingStatus",
+    if (
+        not promote_job
+        or "AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}" not in promote_job
+    ):
+        findings.append("production Lambda promotion must use AWS deploy role secret")
+
+    if not verify_job or not _contains_all(
+        verify_job,
+        [
+            "scripts/lambda_smoke.py",
+            '--base-url "${{ needs.promote-lambda-production.outputs.api-url }}"',
+            "--environment production",
+            '--state-table-name "${{ needs.promote-lambda-production.outputs.state-table-name }}"',
+            '--state-key-prefix "${{ needs.promote-lambda-production.outputs.state-key-prefix }}"',
+        ],
+    ):
+        findings.append(
+            "production Lambda verification must smoke the API Gateway endpoint and DynamoDB state"
+        )
+
+    return findings
+
+
+def _check_no_ec2_compose_delivery(workflow: str) -> list[str]:
+    forbidden_tokens = [
+        "TF_VAR_vpc_id",
+        "TF_VAR_public_subnet_id",
+        "TF_VAR_edge_tunnel_secret",
+        "TF_VAR_cloudflare_account_id",
+        "TF_VAR_cloudflare_zone_id",
+        "ec2_compose_host",
         "aws ssm send-command",
         "AWS-RunShellScript",
-        "/opt/arte-chatbot/deploy.sh ${SHA_TAG}",
-        "aws ssm wait command-executed",
-        "terraform -chdir=infra/terraform/envs/prod output -json ec2_compose_host",
+        "/opt/arte-chatbot/deploy.sh",
+        "Verify backend health through Cloudflare",
+        "LAMBDA_CUTOVER_REVERT_CONFIRMED",
+        "existing EC2 Compose deployment path",
     ]
-    if not deploy_job or not _contains_all(deploy_job, ssm_needles):
-        findings.append("production deploy must invoke /opt/arte-chatbot/deploy.sh through SSM")
+    if any(token in workflow for token in forbidden_tokens):
+        return [
+            "workflow must not keep EC2 Compose, Cloudflare Tunnel, VPC/subnet, or revert-confirmation deploy paths"
+        ]
+    return []
 
-    forbidden_ecs_paths = ("Deploy Production ECS Services", "aws ecs", "ecs update-service", "force-new-deployment")
-    if deploy_job and any(path in deploy_job for path in forbidden_ecs_paths):
-        findings.append("production deploy must not keep ECS service update paths")
+
+def _check_lambda_delivery(
+    workflow: str, cutover_job: str, promote_job: str
+) -> list[str]:
+    findings: list[str] = []
+    lambda_package_job = _job_block(workflow, "lambda-package")
+    staging_deploy_job = _job_block(workflow, "deploy-lambda-staging")
+    staging_smoke_job = _job_block(workflow, "smoke-lambda-staging")
+    rollback_job = _job_block(workflow, "rollback-lambda-production")
+
+    if not lambda_package_job or not _contains_all(
+        lambda_package_job,
+        [
+            "scripts/build_lambda_package.py --output",
+            "--scan-only",
+            "backend/tests/test_lambda_runtime.py",
+            "scripts/tests/test_lambda_delivery_scripts.py",
+            "actions/upload-artifact@v4",
+            "package-sha256",
+        ],
+    ):
+        findings.append(
+            "lambda package job must test, build, scan, and upload one zip artifact"
+        )
+
+    if not staging_deploy_job or not _contains_all(
+        staging_deploy_job,
+        [
+            "needs: [lambda-package, evaluation]",
+            "aws-actions/configure-aws-credentials@v4",
+            "LAMBDA_STAGING_FUNCTION_NAME",
+            "LAMBDA_STAGING_ALIAS_NAME",
+            "LAMBDA_STAGING_API_URL",
+            "aws lambda update-function-code",
+            "aws lambda update-alias",
+            "needs.lambda-package.outputs.package-sha256",
+        ],
+    ):
+        findings.append(
+            "lambda staging deploy must use OIDC and the scanned package artifact"
+        )
+
+    if not staging_smoke_job or not _contains_all(
+        staging_smoke_job,
+        [
+            "scripts/lambda_smoke.py",
+            "--environment staging",
+            "--require-source-docs",
+            "LAMBDA_STAGING_IAM_DENIED_DYNAMODB_TABLE_NAME",
+            "PROD_BACKEND_HOSTNAME",
+            "evaluation.harness.run --sprint lambda-staging --no-upload",
+        ],
+    ):
+        findings.append(
+            "lambda staging smoke must validate chat, File Inputs, DynamoDB, IAM denial, and URL isolation"
+        )
+
+    if not cutover_job or not _contains_all(
+        cutover_job,
+        [
+            "Lambda-only production Terraform cutover confirmed",
+            'module "compose_host"',
+            'module "edge_tunnel"',
+            'variable "vpc_id"',
+            'variable "public_subnet_id"',
+            'variable "edge_tunnel_secret"',
+        ],
+    ):
+        findings.append(
+            "lambda cutover must verify production Terraform is Lambda-only"
+        )
+
+    if not promote_job or not _contains_all(
+        promote_job,
+        [
+            "needs: [lambda-package, cutover-prerequisites]",
+            "Download exact Lambda package artifact",
+            "needs.lambda-package.outputs.package-sha256",
+            "aws lambda get-alias",
+            "previous-version",
+            "aws lambda update-function-code",
+            "aws lambda update-alias",
+            "LAMBDA_PROD_FUNCTION_NAME",
+        ],
+    ):
+        findings.append(
+            "lambda production promotion must use the same package and capture rollback target"
+        )
+
+    if not rollback_job or not _contains_all(
+        rollback_job,
+        [
+            "scripts/lambda_rollback.py rollback-alias",
+            "LAMBDA_ROLLBACK_TARGET_VERSION",
+            "needs.promote-lambda-production.outputs.previous-version",
+        ],
+    ):
+        findings.append(
+            "lambda rollback job must restore a discovered previous alias version"
+        )
 
     return findings
 
 
-def _check_cloudflare_health(deploy_job: str) -> list[str]:
-    if not deploy_job or not _contains_all(
-        deploy_job,
-        ["https://${TF_VAR_backend_hostname}/health", "curl", "TF_VAR_backend_hostname"],
+def _check_lambda_python_runtime_alignment(
+    workflow: str,
+    lambda_variables: str,
+    local_python_version: str,
+) -> list[str]:
+    workflow_python = _workflow_python_version(workflow)
+    terraform_python = _terraform_lambda_python_version(lambda_variables)
+    if (
+        not workflow_python
+        or not terraform_python
+        or workflow_python != terraform_python
+        or (local_python_version and local_python_version != terraform_python)
     ):
-        return ["production deploy must verify backend health through the Cloudflare hostname"]
+        return ["lambda package Python version must match Terraform Lambda runtime"]
     return []
 
 
 def _job_block(workflow: str, job_name: str) -> str:
-    pattern = re.compile(rf"^  {re.escape(job_name)}:\n(?P<body>(?:    .+\n|\n)+)", re.MULTILINE)
+    pattern = re.compile(
+        rf"^  {re.escape(job_name)}:\n(?P<body>(?:    .+\n|\n)+)", re.MULTILINE
+    )
     match = pattern.search(workflow)
     return match.group(0) if match else ""
 
@@ -131,3 +287,25 @@ def _read(path: Path) -> str:
 
 def _contains_all(text: str, needles: list[str]) -> bool:
     return all(needle in text for needle in needles)
+
+
+def _workflow_python_version(workflow: str) -> str:
+    match = re.search(r'PYTHON_VERSION:\s*["\']?(?P<version>\d+\.\d+)["\']?', workflow)
+    return match.group("version") if match else ""
+
+
+def _terraform_lambda_python_version(lambda_variables: str) -> str:
+    runtime_block = _variable_block(lambda_variables, "runtime")
+    match = re.search(
+        r'default\s*=\s*["\']python(?P<version>\d+\.\d+)["\']', runtime_block
+    )
+    return match.group("version") if match else ""
+
+
+def _variable_block(text: str, variable_name: str) -> str:
+    pattern = re.compile(
+        rf'variable\s+"{re.escape(variable_name)}"\s+{{(?P<body>.*?)\n}}',
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    return match.group(0) if match else ""

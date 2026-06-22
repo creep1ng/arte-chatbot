@@ -9,6 +9,7 @@ attribute access, which ensures environment variables patched by tests
 import time.
 """
 
+import os
 from typing import Annotated, Any, Optional
 
 from pydantic import Field, field_validator, model_validator
@@ -23,6 +24,18 @@ LOCAL_CORS_ORIGINS = [
 ]
 
 
+def _env_flag_enabled(name: str) -> bool:
+    """Return whether a boolean-like environment flag is enabled."""
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _settings_env_file() -> Optional[str]:
+    """Return the dotenv path unless tests explicitly disable dotenv loading."""
+    if _env_flag_enabled("ARTE_CHATBOT_DISABLE_DOTENV"):
+        return None
+    return ".env"
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables.
 
@@ -35,7 +48,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_settings_env_file(),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -74,6 +87,51 @@ class Settings(BaseSettings):
         ge=1,
         le=120,
         description="S3 read timeout in seconds",
+    )
+
+    # Lambda/serverless state
+    state_backend: str = Field(
+        default="memory",
+        description="State backend to use: memory or dynamodb",
+    )
+    dynamodb_state_table_name: Optional[str] = Field(
+        default=None,
+        description="DynamoDB table name for durable chatbot state",
+    )
+    dynamodb_state_key_prefix: str = Field(
+        default="",
+        description="Optional key prefix for staging/prod state isolation",
+    )
+    session_ttl_seconds: int = Field(
+        default=30 * 24 * 60 * 60,
+        ge=60,
+        description="TTL for persisted session items in seconds",
+    )
+    buffer_ttl_seconds: int = Field(
+        default=24 * 60 * 60,
+        ge=60,
+        description="TTL for persisted buffer items in seconds",
+    )
+    rate_limit_ttl_seconds: int = Field(
+        default=24 * 60 * 60,
+        ge=60,
+        description="TTL for shared rate-limit counter items in seconds",
+    )
+    lambda_timeout_seconds: int = Field(
+        default=25,
+        ge=1,
+        le=900,
+        description="Configured Lambda timeout budget in seconds",
+    )
+
+    # Runtime secret references for Lambda/Terraform wiring.
+    openai_api_key_secret_ref: Optional[str] = Field(
+        default=None,
+        description="SSM/Secrets Manager reference for OPENAI_API_KEY",
+    )
+    chat_api_key_secret_ref: Optional[str] = Field(
+        default=None,
+        description="SSM/Secrets Manager reference for CHAT_API_KEY",
     )
 
     # Auth
@@ -183,7 +241,6 @@ class Settings(BaseSettings):
     buffer_window_seconds: int = Field(
         default=5,
         ge=1,
-        le=15,
         description="Buffer window in seconds for multi-message accumulation",
     )
 
@@ -211,6 +268,18 @@ class Settings(BaseSettings):
         """Normalize app_env for simple production checks."""
         return str(value).strip().lower()
 
+    @field_validator("state_backend", mode="before")
+    @classmethod
+    def _normalize_state_backend(cls, value: str) -> str:
+        """Normalize the state backend selector."""
+        return str(value).strip().lower()
+
+    @field_validator("dynamodb_state_key_prefix", mode="before")
+    @classmethod
+    def _normalize_state_key_prefix(cls, value: str) -> str:
+        """Avoid accidental duplicate separators in DynamoDB partition keys."""
+        return str(value or "").strip().strip("#")
+
     @field_validator("allowed_cors_origins", mode="before")
     @classmethod
     def _parse_allowed_cors_origins(cls, value: Any) -> list[str]:
@@ -230,6 +299,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"msg_delay_min_ms ({self.msg_delay_min_ms}) must be <= "
                 f"msg_delay_max_ms ({self.msg_delay_max_ms})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_state_backend(self) -> "Settings":
+        """Validate state backend specific configuration."""
+        if self.state_backend not in {"memory", "dynamodb"}:
+            raise ValueError("STATE_BACKEND must be 'memory' or 'dynamodb'")
+        if self.state_backend == "dynamodb" and not self.dynamodb_state_table_name:
+            raise ValueError(
+                "DYNAMODB_STATE_TABLE_NAME is required when STATE_BACKEND=dynamodb"
             )
         return self
 

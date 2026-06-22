@@ -4,17 +4,32 @@ Unit tests for the llm_client.py module.
 Tests the LLM client for OpenAI Responses API integration with tool calling support.
 """
 
+from collections.abc import Iterator
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
+from backend.app import llm_client as llm_client_module
+from backend.app.config import settings
 from backend.app.llm_client import (
-    LLMClient,
-    LLMServiceError,
     ARTE_SYSTEM_PROMPT,
     DATASHEET_SYSTEM_PROMPT,
+    LLMClient,
+    LLMServiceError,
 )
 from backend.app.schemas import LLMResponse
-from backend.app import llm_client as llm_client_module
+from backend.app.secret_resolver import clear_runtime_secret_cache
+
+
+@pytest.fixture(autouse=True)
+def reset_settings_cache() -> Iterator[None]:
+    """Keep lazy settings and secret-ref cache isolated between tests."""
+    settings.reset()
+    clear_runtime_secret_cache()
+    yield
+    settings.reset()
+    clear_runtime_secret_cache()
 
 
 class TestLLMClientInitialization:
@@ -23,6 +38,7 @@ class TestLLMClientInitialization:
     @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"}, clear=True)
     def test_llm_client_default_env_vars(self) -> None:
         """Test LLMClient initialization with default env vars."""
+        settings.reset()
         client = LLMClient()
         assert client.api_key == "sk-test-key"
 
@@ -32,14 +48,19 @@ class TestLLMClientInitialization:
         client = LLMClient(api_key="sk-explicit-key")
         assert client.api_key == "sk-explicit-key"
 
-    def test_llm_client_default_model(self) -> None:
-        """Test LLMClient uses default model."""
+    @patch("backend.app.llm_client.settings")
+    def test_llm_client_default_model(self, mock_settings: MagicMock) -> None:
+        """Test LLMClient uses the current settings default model."""
+        mock_settings.openai_api_key = "sk-test-key"
+        mock_settings.openai_api_key_secret_ref = None
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.llm_model = "gpt-5.4-nano"
         client = LLMClient()
         assert client.model == "gpt-5.4-nano"
 
     def test_llm_client_custom_model(self) -> None:
         """Test LLMClient accepts custom model."""
-        client = LLMClient(model="gpt-4")
+        client = LLMClient(api_key="sk-test-key", model="gpt-4")
         assert client.model == "gpt-4"
 
 

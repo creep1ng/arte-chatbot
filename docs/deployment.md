@@ -1,174 +1,220 @@
-# Fargate + Cloudflare Deployment Guide
+# Lambda Serverless Deployment Guide
 
-Production CD is live for backend, frontend, and admin containers on AWS ECS Fargate, exposed through scoped Cloudflare Tunnel sidecars. GitHub Actions builds and evaluates images first; only `main` can publish release tags and apply production Terraform.
+Production cutover moves the backend from EC2 Compose/Cloudflare Tunnel to AWS Lambda behind API Gateway HTTP API. The production Terraform root is now Lambda-only: the EC2 Compose host, Cloudflare Tunnel, and SSM Run Command deploy path were intentionally removed as a destructive cutover. Frontend and admin image delivery stay on the existing ECR path.
 
 ## Current production status
 
 | Area | Status |
 |---|---|
-| CD workflow | Live; `deploy-production` runs only on `push` to `main`. |
-| Last verified run | GitHub Actions run `26991613251` passed lint, build, health, evaluation, release publish, and production ECS deploy. |
-| Public API | `https://chatbot.artesolutions.com.co/health` returned healthy JSON during SDD verify. |
-| Public app | `https://app.artesolutions.com.co` returned HTTP 200 during SDD verify. |
-| Public admin | `https://admin.artesolutions.com.co` returned HTTP 200 during SDD verify. |
-| Known tradeoff | `PROD_ASSIGN_PUBLIC_IP=true` is the short-term egress fix until NAT/VPC endpoints are provisioned. |
+| Backend target | Lambda + API Gateway HTTP API is the cutover target. |
+| Existing path | EC2 Compose/Cloudflare Tunnel production fallback has been removed. |
+| Staging | Lambda staging deploys the same scanned package artifact to a non-production direct endpoint. |
+| Production Terraform inputs | `TF_VAR_vpc_id`, `TF_VAR_public_subnet_id`, `TF_VAR_cloudflare_account_id`, and `TF_VAR_edge_tunnel_secret` are no longer required. `TF_VAR_cloudflare_zone_id` plus `CLOUDFLARE_API_TOKEN` are used only to manage the backend custom-domain DNS record. |
+| Backend custom domain | `https://chatbot.artesolutions.com.co` is expected to work only after Terraform creates the API Gateway custom domain, ACM DNS validation record, API mapping, and Cloudflare CNAME. The direct `execute-api` URL may work before this. |
+| Session reset policy | No live EC2 sessions exist; cutover may reset in-memory sessions. Durable Lambda state starts in DynamoDB. |
 
 ## Quick path
 
-1. Open a PR and let CI build, test, health-check, and evaluate the images.
-2. Confirm candidate tags exist in ECR, for example `pr-123-sha-<commit>` and `sha-<commit>`.
-3. Merge to `main`; the workflow pushes `sha-<commit>` release tags and applies `infra/terraform/envs/prod`.
-4. Verify the three public Cloudflare endpoints.
-5. If validation was done through local staging, destroy it before its expiration timestamp.
+1. Open the fourth feature-branch-chain PR for delivery gates only.
+2. Let CI lint, run targeted tests, build `dist/lambda/backend.zip`, and scan the package for `.env`, `.env.deploy`, and plaintext credentials.
+3. Deploy Lambda staging from the scanned artifact and smoke the direct staging endpoint.
+4. Run staging `/health`, authenticated `/chat`, S3 File Inputs, DynamoDB persistence, IAM-denied negative probe, and production URL isolation checks.
+5. Plan/apply `infra/terraform/envs/prod` with Lambda-only inputs; do not provide VPC, public subnet, Cloudflare account, or tunnel secret variables. Provide Cloudflare zone/token only for DNS custom-domain management.
+6. Enable Lambda cutover variables and promote the same package hash to the production Lambda alias.
+7. If production verification fails, restore the previous Lambda alias version with `scripts/lambda_rollback.py`.
 
-## Required GitHub configuration
+## Deployment configuration matrix
 
-### Secrets
+There are three different places for configuration. Keep them separate:
 
-| Secret | Purpose |
+1. **GitHub** drives CI/CD jobs and smoke checks.
+2. **AWS SSM/Secrets Manager** stores Lambda runtime secret values.
+3. **`.env.deploy`** is local-only input for operator-run Terraform.
+
+### GitHub Repository Variables
+
+GitHub Variables are non-sensitive values used by `.github/workflows/ci.yml`.
+
+| Name | Kind | Example | Meaning |
+|---|---|---|---|
+| `AWS_REGION` | GitHub Variable | `us-east-2` | Region used by workflow AWS actions. Defaults to `us-east-2` if absent. |
+| `BACKEND_ECR_REPOSITORY_URL` | GitHub Variable | `521170872319.dkr.ecr.us-east-2.amazonaws.com/arte-chatbot-prod-backend` | Backend ECR repository used by image publishing jobs. |
+| `FRONTEND_ECR_REPOSITORY_URL` | GitHub Variable | `521170872319.dkr.ecr.us-east-2.amazonaws.com/arte-chatbot-prod-frontend` | Frontend ECR repository used by image publishing jobs. |
+| `ADMIN_ECR_REPOSITORY_URL` | GitHub Variable | `521170872319.dkr.ecr.us-east-2.amazonaws.com/arte-chatbot-prod-admin` | Admin ECR repository used by image publishing jobs. |
+| `LAMBDA_CUTOVER_ENABLED` | GitHub Variable | `true` | Enables production Lambda promotion jobs on `main`. Keep `false` or unset to disable production promotion. |
+| `LAMBDA_PROD_FUNCTION_NAME` | GitHub Variable | `arte-chatbot-prod-backend-lambda` | Production Lambda function to update during promotion. |
+| `LAMBDA_PROD_ALIAS_NAME` | GitHub Variable | `live` | Production Lambda alias that receives traffic. |
+| `LAMBDA_PROD_API_URL` | GitHub Variable | `https://chatbot.artesolutions.com.co` | Production API URL used by production smoke checks. |
+| `LAMBDA_PROD_STATE_TABLE_NAME` | GitHub Variable | `arte-chatbot-prod-backend-lambda-state` | DynamoDB table checked by production smoke. |
+| `LAMBDA_PROD_STATE_KEY_PREFIX` | GitHub Variable | `prod` | DynamoDB state prefix checked by production smoke. |
+| `LAMBDA_STAGING_FUNCTION_NAME` | GitHub Variable | `<staging-lambda-function-name>` | Staging Lambda function updated before production promotion. Required when `LAMBDA_CUTOVER_ENABLED=true` on `main`. |
+| `LAMBDA_STAGING_ALIAS_NAME` | GitHub Variable | `staging` | Staging alias. Defaults to `staging` in workflow expressions. |
+| `LAMBDA_STAGING_API_URL` | GitHub Variable | `https://<api-id>.execute-api.us-east-2.amazonaws.com/` | Direct staging endpoint for smoke/evaluation. |
+| `LAMBDA_STAGING_STATE_TABLE_NAME` | GitHub Variable | `<staging-state-table-name>` | DynamoDB table checked by staging smoke. |
+| `LAMBDA_STAGING_STATE_KEY_PREFIX` | GitHub Variable | `<staging-prefix>` | DynamoDB state prefix checked by staging smoke. |
+| `LAMBDA_STAGING_IAM_DENIED_DYNAMODB_TABLE_NAME` | GitHub Variable | `<denied-table-name>` | Resource expected to fail the IAM-denied staging probe. |
+| `LAMBDA_STAGING_SMOKE_CHAT_MESSAGE` | GitHub Variable | `Validación staging: ...` | Optional staging smoke prompt. |
+
+`PROD_BACKEND_RUNTIME_ENV_JSON` is **not used by the current workflow**. Runtime environment values are applied by Terraform through `.env.deploy`, not by GitHub promotion jobs.
+
+### GitHub Repository Secrets
+
+GitHub Secrets are sensitive values used by workflow jobs. They are not read by Lambda at runtime unless a workflow explicitly injects them into a command.
+
+| Name | Kind | Example | Meaning |
+|---|---|---|---|
+| `AWS_CI_ROLE_ARN` | GitHub Secret | `arn:aws:iam::521170872319:role/<ci-role>` | OIDC role used by CI jobs that need AWS access. |
+| `AWS_DEPLOY_ROLE_ARN` | GitHub Secret | `arn:aws:iam::521170872319:role/<deploy-role>` | OIDC role used by staging/prod Lambda deploy jobs. |
+| `OPENAI_API_KEY` | GitHub Secret | `<openai-api-key>` | CI/evaluation plaintext credential. Lambda production runtime should use AWS SSM/Secrets Manager instead. |
+| `CHAT_API_KEY` | GitHub Secret | `<chat-api-key>` | Plaintext API key used by production smoke checks. Do not put the Secrets Manager ARN here. |
+| `AWS_BUCKET_NAME` | GitHub Secret | `arte-chatbot-fichas-tecnicas` | S3 bucket used by CI/evaluation jobs. |
+| `PROD_BACKEND_HOSTNAME` | GitHub Secret | `chatbot.artesolutions.com.co` | Masked production hostname used only as a forbidden URL during staging isolation checks. |
+| `LAMBDA_STAGING_CHAT_API_KEY` | GitHub Secret | `<staging-chat-api-key>` | Plaintext staging `/chat` API key for staging smoke. Required when `LAMBDA_CUTOVER_ENABLED=true` on `main`. |
+
+`PROD_BACKEND_RUNTIME_SECRET_ARNS_JSON` is **not used by the current workflow**. Runtime secret ARNs are Terraform inputs in `.env.deploy`. Keep this secret only if another operator workflow consumes it later.
+
+### AWS SSM Parameter Store / Secrets Manager
+
+Lambda runtime secrets live in AWS, not in GitHub. Terraform passes only ARNs into Lambda as `*_SECRET_REF` environment variables, and the Lambda execution role reads the secret values at runtime.
+
+| Name | Kind | Example | Meaning |
+|---|---|---|---|
+| `/arte-chatbot/prod/openai-api-key` | SSM SecureString or Secrets Manager secret | `sk-proj-...` | Production OpenAI key read by Lambda as `OPENAI_API_KEY`. |
+| `/arte-chatbot-prod/prod/runtime/CHAT_API_KEY` | Secrets Manager secret | `<chat-api-key>` | Production `/chat` API key read by Lambda as `CHAT_API_KEY`. |
+
+The Lambda environment variable names are generated by Terraform from `backend_runtime_secret_arns`:
+
+| Lambda env name | Kind | Example | Meaning |
+|---|---|---|---|
+| `OPENAI_API_KEY_SECRET_REF` | Lambda env var containing ARN | `arn:aws:ssm:us-east-2:521170872319:parameter/arte-chatbot/prod/openai-api-key` | Points Lambda to the OpenAI key secret. |
+| `CHAT_API_KEY_SECRET_REF` | Lambda env var containing ARN | `arn:aws:secretsmanager:us-east-2:521170872319:secret:/arte-chatbot-prod/prod/runtime/CHAT_API_KEY-...` | Points Lambda to the chat API key secret. |
+
+Do not store plaintext production Lambda runtime secrets in Terraform files, committed docs, or `.env.deploy`.
+
+### Local `.env.deploy` for Terraform
+
+`.env.deploy` is a local/manual deployment input file. It is uncommitted, not packaged into Lambda, not loaded by Lambda at runtime, and not used by CI/CD.
+
+| Name | Kind | Example | Meaning |
+|---|---|---|---|
+| `TF_VAR_backend_hostname` | `.env.deploy` Terraform input | `chatbot.artesolutions.com.co` | Public backend custom domain managed by Terraform. |
+| `TF_VAR_frontend_hostname` | `.env.deploy` Terraform input | `<frontend-hostname>` | Public frontend hostname used for CORS/public URL config. |
+| `TF_VAR_admin_hostname` | `.env.deploy` Terraform input | `<admin-hostname>` | Public admin hostname used for CORS/public URL config. |
+| `TF_VAR_cloudflare_zone_id` | `.env.deploy` Terraform input | `cab3c51956faf03216e2a1ab74e6e399` | Cloudflare zone where Terraform creates ACM validation and backend CNAME records. |
+| `TF_VAR_backend_runtime_secret_arns` | `.env.deploy` Terraform input | `{"OPENAI_API_KEY":"arn:aws:ssm:us-east-2:521170872319:parameter/...","CHAT_API_KEY":"arn:aws:secretsmanager:us-east-2:521170872319:secret:..."}` | Map from app secret names to AWS SSM/Secrets Manager ARNs. Values are ARNs, not plaintext secrets. |
+| `TF_VAR_backend_runtime_environment_variables` | `.env.deploy` Terraform input | `{"APP_ENV":"production"}` | Extra non-sensitive Lambda runtime environment variables. Do not include `AWS_REGION`; Lambda reserves it. |
+| `CLOUDFLARE_API_TOKEN` | `.env.deploy` or sourced local token file | `<cloudflare-token>` | Local Terraform provider credential for DNS changes only. Not needed by Lambda or GitHub promotion. |
+
+For production Lambda-only Terraform, `.env.deploy` no longer needs `TF_VAR_vpc_id`, `TF_VAR_public_subnet_id`, `TF_VAR_cloudflare_account_id`, or `TF_VAR_edge_tunnel_secret`.
+
+### Lambda runtime variables created by Terraform
+
+Operators do not set these directly in GitHub. Terraform creates them on the Lambda function.
+
+| Name | Kind | Example | Meaning |
+|---|---|---|---|
+| `APP_ENV` | Lambda env var | `prod` or `production` | Runtime environment label. |
+| `AWS_BUCKET_NAME` | Lambda env var | `arte-chatbot-fichas-tecnicas` | S3 bucket containing `index/catalog_index.json` and product PDFs. |
+| `STATE_BACKEND` | Lambda env var | `dynamodb` | Enables durable DynamoDB-backed sessions, ownership, rate counters, and buffer state. |
+| `DYNAMODB_STATE_TABLE_NAME` | Lambda env var | `arte-chatbot-prod-backend-lambda-state` | DynamoDB state table used by the Lambda backend. |
+| `DYNAMODB_STATE_KEY_PREFIX` | Lambda env var | `prod` | Prefix that isolates production keys inside the state table. |
+| `SESSION_TTL_SECONDS` | Lambda env var | `2592000` | TTL for persisted session/turn/token items. |
+| `BUFFER_TTL_SECONDS` | Lambda env var | `86400` | TTL for multi-message buffer and polling items. |
+| `RATE_LIMIT_TTL_SECONDS` | Lambda env var | `86400` | TTL for shared rate-limit counter rows. |
+| `LAMBDA_TIMEOUT_SECONDS` | Lambda env var | `25` | App-side timeout budget aligned below API Gateway/Lambda timeout. |
+| `ALLOWED_CORS_ORIGINS` | Lambda env var | `https://app.example.com,https://admin.example.com` | Browser origins allowed in production. No wildcard. |
+| `PUBLIC_API_URL` | Lambda env var | `https://chatbot.artesolutions.com.co` | Public API URL advertised to clients after cutover. |
+| `PUBLIC_FRONTEND_URL` | Lambda env var | `https://<frontend-hostname>` | Public frontend origin allowed by CORS. |
+| `PUBLIC_ADMIN_URL` | Lambda env var | `https://<admin-hostname>` | Public admin origin allowed by CORS. |
+| `AWS_REGION` | Reserved Lambda env var | `us-east-2` | Set automatically by AWS Lambda. Do not configure it yourself. |
+
+## CI/CD flow
+
+| Stage | Gate |
 |---|---|
-| `AWS_CI_ROLE_ARN` | OIDC role used by CI image/evaluation jobs that need AWS access. |
-| `AWS_DEPLOY_ROLE_ARN` | OIDC role used by production deploy. |
-| `OPENAI_API_KEY` | Runtime/evaluation OpenAI credential. |
-| `CHAT_API_KEY` | API auth key used by health/evaluation flows. |
-| `AWS_BUCKET_NAME` | S3 bucket for catalog and PDF data. |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API token for Terraform-managed tunnels/DNS. |
-| `PROD_BACKEND_TUNNEL_SECRET` | Backend Cloudflare tunnel secret. |
-| `PROD_FRONTEND_TUNNEL_SECRET` | Frontend Cloudflare tunnel secret. |
-| `PROD_ADMIN_TUNNEL_SECRET` | Admin Cloudflare tunnel secret. |
-| `PROD_BACKEND_RUNTIME_SECRET_ARNS_JSON` | JSON map of backend ECS secret names to Secrets Manager/SSM ARNs, including `OPENAI_API_KEY` and `CHAT_API_KEY`. |
+| Lint | Ruff, format check, dependency audit, syntax check. |
+| Tests | Targeted Lambda/runtime/state/delivery tests run before packaging. |
+| Package | `uv run python scripts/build_lambda_package.py` builds `dist/lambda/backend.zip` with the same Python minor version as the Terraform Lambda runtime. |
+| Package scan | The zip is scanned for `.env`, `.env.deploy`, `.aws`, credentials, and obvious plaintext secret markers. |
+| Staging deploy | OIDC assumes `AWS_DEPLOY_ROLE_ARN`; the scanned artifact is published to the staging Lambda alias. |
+| Staging smoke | Direct endpoint validates `/health`, `/chat`, File Inputs/source docs, DynamoDB rows, IAM-denied probe, and production URL isolation. |
+| Staging evaluation | Evaluation harness runs against the same staging endpoint with S3 upload disabled. |
+| Cutover prerequisite | Production Terraform is Lambda-only and contains no EC2 Compose/Cloudflare Tunnel wiring. |
+| Production promotion | The same package SHA is uploaded to production and the production alias is moved to the new published version. |
+| Production smoke | Production custom domain validates `/health`, `/chat`, and DynamoDB persistence. |
+| Rollback | Previous alias version is captured before promotion and can be restored automatically or manually. |
 
-### Variables
+## Multi-message buffering on Lambda
 
-| Variable | Purpose |
-|---|---|
-| `AWS_REGION` | AWS region; current deploy defaults to `us-east-2` if unset in the workflow expression. |
-| `BACKEND_ECR_REPOSITORY_URL` | Backend ECR repository URL. |
-| `FRONTEND_ECR_REPOSITORY_URL` | Frontend ECR repository URL. |
-| `ADMIN_ECR_REPOSITORY_URL` | Admin ECR repository URL. |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account id used by Terraform. |
-| `CLOUDFLARE_ZONE_ID` | Cloudflare zone id for `artesolutions.com.co`. |
-| `PROD_VPC_ID` | Production VPC id for ECS services. |
-| `PROD_PRIVATE_SUBNET_IDS_JSON` | JSON list of subnet ids for Fargate tasks. |
-| `PROD_ASSIGN_PUBLIC_IP` | Temporary egress switch. Currently `true`; prefer `false` after NAT/VPC endpoints exist. |
+Lambda does not rely on delayed `asyncio.create_task` execution after returning
+`202 Accepted`. When `STATE_BACKEND=dynamodb`, each buffered message is stored
+in DynamoDB and `/buffer-result/{session_id}` is the durable polling trigger:
 
-## Production deploy flow
+1. `/chat` stores the message and returns `202` with a poll URL.
+2. The client polls `/buffer-result/{session_id}`.
+3. If the debounce window has elapsed since the last stored message, the poll
+   request flushes the durable buffer, processes the joined message, and returns
+   the ready result.
+4. If the window has not elapsed or another poll is processing, the endpoint
+   returns `pending`.
 
-| Step | Gate |
-|---|---|
-| Build | Backend, frontend, and admin Docker images are built from separate Dockerfiles. |
-| Health | Backend container must answer `/health`. |
-| Evaluation | The evaluation harness must pass before any release image push. |
-| ECR publish | Immutable `sha-${GITHUB_SHA}` tags are pushed. PRs also get `pr-<number>-sha-${GITHUB_SHA}` candidate tags. |
-| Deploy | `deploy-production` runs only for `push` on `refs/heads/main` and assumes `AWS_DEPLOY_ROLE_ARN` through GitHub OIDC. |
-
-Production Terraform root: `infra/terraform/envs/prod/`.
-
-Production hostnames:
-
-| Service | Hostname |
-|---|---|
-| Backend API | `chatbot.artesolutions.com.co` |
-| Frontend | `app.artesolutions.com.co` |
-| Admin | `admin.artesolutions.com.co` |
-
-## Post-deploy verification
-
-```bash
-curl -fsS https://chatbot.artesolutions.com.co/health
-curl -fsSIL https://app.artesolutions.com.co
-curl -fsSIL https://admin.artesolutions.com.co
-```
-
-Expected result:
-
-- Backend returns healthy JSON.
-- Frontend and admin return HTTP 200.
-- The GitHub Actions deploy run is green.
+Local memory mode still uses in-process debounce tasks for developer ergonomics;
+that behavior is not treated as Lambda durability.
 
 ## Rollback runbook
 
-Use rollback when a `main` deploy passes infrastructure apply but runtime behavior regresses.
+### Lambda alias rollback
 
-1. Pick the previous known-good `sha-<commit>` image tag or ECS task definition revision from the prior successful deploy.
-2. Re-run Terraform from `infra/terraform/envs/prod` with the previous image tags for backend, frontend, and admin.
-3. Wait for ECS services to stabilize.
-4. Re-run the post-deploy verification checks above.
-5. If tunnel credentials changed during the bad deploy, rotate or revoke the replaced Cloudflare tunnel secrets after the rollback is healthy.
-
-Rollback is possible because release images use SHA-based tags and ECS registers task definition revisions per deploy.
-
-## IAM and credentials
-
-Deployed ECS tasks use IAM roles and the AWS SDK default credential provider chain. Do not inject long-lived `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY` into production ECS tasks.
-
-For local development, use a normal AWS credential-chain source:
-
-- `AWS_PROFILE`
-- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`
-- `aws sso login`
-- environment-provided temporary credentials
-
-## Network egress follow-up
-
-`PROD_ASSIGN_PUBLIC_IP=true` is currently accepted as a short-term production unblocker. The stronger production posture is:
-
-1. Add NAT Gateway or the required VPC endpoints for AWS dependencies.
-2. Keep outbound HTTPS available for Cloudflare Tunnel connectors.
-3. Set `PROD_ASSIGN_PUBLIC_IP=false`.
-4. Redeploy and verify the three public endpoints.
-
-Do NOT flip this variable blindly. This is one of those places where speed without understanding bites: if tasks cannot reach Secrets Manager, S3, ECR, logs, or Cloudflare, ECS will fail even if Terraform applies cleanly.
-
-## Local staging
-
-Local staging is intentionally not a CI workflow. It must run from a developer machine and uses isolated state, names, hostnames, tunnel secrets, SSM parameters, and Secrets Manager entries.
-
-Example:
+Use when the Lambda package or runtime behavior regresses after alias promotion.
 
 ```bash
-scripts/deploy-local-staging.sh \
-  --staging-id pr-123 \
-  --backend-tag pr-123-sha-abcdef1 \
-  --frontend-tag pr-123-sha-abcdef1 \
-  --admin-tag pr-123-sha-abcdef1 \
-  --plan-only
+uv run python scripts/lambda_rollback.py discover-alias \
+  --aws-region us-east-2 \
+  --function-name "$LAMBDA_PROD_FUNCTION_NAME" \
+  --alias-name "${LAMBDA_PROD_ALIAS_NAME:-live}"
+
+uv run python scripts/lambda_rollback.py rollback-alias \
+  --aws-region us-east-2 \
+  --function-name "$LAMBDA_PROD_FUNCTION_NAME" \
+  --alias-name "${LAMBDA_PROD_ALIAS_NAME:-live}" \
+  --target-version "$PREVIOUS_VERSION"
 ```
 
-The script rejects:
+Then rerun production `/health` and `/chat` smoke checks.
 
-- CI/GitHub Actions execution
-- missing or implicit tags such as `latest` or `bootstrap`
-- production-like staging ids such as `api`, `app`, `admin`, `prod`, or `main`
-- expiration timestamps more than three days from now
+The EC2 fallback route is intentionally unavailable after this cutover. Rollback is Lambda-version only: restore the previous alias target and rerun production smoke checks.
 
-Local staging hostnames are derived from the staging id:
+## Feature-branch-chain boundary
 
-| Service | Pattern |
+This work is the fourth chained PR slice:
+
+| Slice | Scope |
 |---|---|
-| Backend API | `staging-chatbot-api-<id>.artesolutions.com.co` |
-| Frontend | `staging-chatbot-<id>.artesolutions.com.co` |
-| Admin | `staging-chatbot-admin-<id>.artesolutions.com.co` |
+| PR 1 | Lambda-safe state and DynamoDB repository. |
+| PR 2 | Lambda runtime, Mangum handler, and package exclusions. |
+| PR 3 | Terraform Lambda/API/DynamoDB/IAM/staging infrastructure. |
+| PR 4 | CI/CD package gates, staging smoke/evaluation, rollback, and cutover docs. |
 
-Destroy when done:
+Child PRs should target the previous slice branch, not `main`, until the tracker PR aggregates the feature branch.
 
-```bash
-scripts/deploy-local-staging.sh \
-  --staging-id pr-123 \
-  --backend-tag pr-123-sha-abcdef1 \
-  --frontend-tag pr-123-sha-abcdef1 \
-  --admin-tag pr-123-sha-abcdef1 \
-  --destroy
-```
+## Roadmap exclusions
+
+Do not implement these as part of the first Lambda cutover:
+
+- WAF/API Gateway advanced throttling beyond basic HTTP API readiness.
+- SQS/EventBridge/Step Functions durable workflow redesign.
+- Async chat jobs with polling/webhooks for slow File Inputs.
+- Dashboards, alarms, X-Ray, or OpenTelemetry beyond existing logs.
+
+Track them after the Lambda migration is healthy in production.
 
 ## Verification checklist
 
-- [ ] PR workflow built all three images.
-- [ ] Health and evaluation gates passed before image publishing.
-- [ ] PR did not run `deploy-production`.
-- [ ] ECR contains rollback-visible SHA tags.
-- [ ] `main` deploy used GitHub OIDC, not long-lived static AWS keys.
-- [ ] ECS task role can read the S3 catalog/PDF bucket.
-- [ ] Cloudflare hostnames route to same-task localhost origins.
-- [ ] Public API, app, and admin endpoints respond after deploy.
-- [ ] Local staging has an expiration no later than three days and is destroyed after validation.
+- [ ] Lambda package artifact SHA is recorded and reused for staging and production.
+- [ ] Package scan confirms `.env`, `.env.deploy`, and plaintext credentials are absent.
+- [ ] Staging direct endpoint is not a production URL.
+- [ ] Staging `/chat` returns source documents for a datasheet-backed prompt.
+- [ ] Staging DynamoDB table contains the smoke session rows.
+- [ ] IAM-denied probe fails with an authorization error.
+- [ ] Production alias rollback target is captured before promotion.
+- [ ] Production Terraform plan/apply succeeds without VPC/subnet/tunnel secret variables.

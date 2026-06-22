@@ -12,6 +12,21 @@ from pydantic import ValidationError
 from backend.app.config import Settings
 
 
+class TestDotenvIsolationConfig:
+    """Tests for deterministic pytest configuration loading."""
+
+    def test_disable_dotenv_ignores_local_env_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """ARTE_CHATBOT_DISABLE_DOTENV makes Settings ignore local `.env`."""
+        (tmp_path / ".env").write_text("LOG_LEVEL=DEBUG\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ARTE_CHATBOT_DISABLE_DOTENV", "1")
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+
+        assert Settings().log_level == "INFO"
+
+
 class TestConversationLoggingConfig:
     """Tests for conversation logging settings."""
 
@@ -88,6 +103,54 @@ class TestRuntimeCorsConfig:
                 "https://app.artesolutions.com.co",
                 "https://admin.artesolutions.com.co",
             ]
+
+
+class TestServerlessStateConfig:
+    """Tests for Lambda state and secret reference settings."""
+
+    def test_state_backend_defaults_to_memory(self) -> None:
+        """Local execution keeps the existing in-memory behavior by default."""
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings()
+            assert settings.state_backend == "memory"
+
+    def test_dynamodb_state_backend_requires_table_name(self) -> None:
+        """DynamoDB state must fail fast when the table name is missing."""
+        with patch.dict(os.environ, {"STATE_BACKEND": "dynamodb"}, clear=True):
+            with pytest.raises(ValidationError, match="DYNAMODB_STATE_TABLE_NAME"):
+                Settings()
+
+    def test_dynamodb_state_config_from_env(self) -> None:
+        """DynamoDB state settings are read from environment variables."""
+        env = {
+            "STATE_BACKEND": "DYNAMODB",
+            "DYNAMODB_STATE_TABLE_NAME": "arte-chatbot-state",
+            "DYNAMODB_STATE_KEY_PREFIX": "#local-staging#",
+            "SESSION_TTL_SECONDS": "7200",
+            "BUFFER_TTL_SECONDS": "600",
+            "RATE_LIMIT_TTL_SECONDS": "300",
+            "LAMBDA_TIMEOUT_SECONDS": "28",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            settings = Settings()
+            assert settings.state_backend == "dynamodb"
+            assert settings.dynamodb_state_table_name == "arte-chatbot-state"
+            assert settings.dynamodb_state_key_prefix == "local-staging"
+            assert settings.session_ttl_seconds == 7200
+            assert settings.buffer_ttl_seconds == 600
+            assert settings.rate_limit_ttl_seconds == 300
+            assert settings.lambda_timeout_seconds == 28
+
+    def test_lambda_secret_references_are_configurable(self) -> None:
+        """Runtime secret refs are configurable without plaintext secrets."""
+        env = {
+            "OPENAI_API_KEY_SECRET_REF": "/arte/prod/openai-api-key",
+            "CHAT_API_KEY_SECRET_REF": "/arte/prod/chat-api-key",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            settings = Settings()
+            assert settings.openai_api_key_secret_ref == "/arte/prod/openai-api-key"
+            assert settings.chat_api_key_secret_ref == "/arte/prod/chat-api-key"
 
     def test_public_runtime_urls_are_configurable(self) -> None:
         """Public API/frontend/admin URLs are read from environment."""
