@@ -1,8 +1,8 @@
 """Async HTTP client for the Chatwoot Application API.
 
 Provides connection-pooled requests, automatic retry with exponential
-backoff + jitter for transient failures, and a Redis outbox for
-background replay of failed actions.
+backoff + jitter for transient failures, and an optional injected outbox for
+background replay of failed actions in local tooling/tests.
 """
 
 import asyncio
@@ -12,8 +12,6 @@ import random
 from typing import Any, Literal, Optional
 
 import httpx
-
-from backend.app.redis_cache import RedisCache
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +26,7 @@ class ChatwootClient:
         base_url: Chatwoot instance base URL (e.g. ``https://chatwoot.example.com``).
         agent_bot_token: API token for the agent bot.
         account_id: Chatwoot account identifier.
-        redis_cache: Redis cache instance for the outbox.
+        outbox: Optional async list-like dependency for failed actions.
     """
 
     def __init__(
@@ -36,11 +34,11 @@ class ChatwootClient:
         base_url: str,
         agent_bot_token: str,
         account_id: int,
-        redis_cache: RedisCache,
+        outbox: Optional[Any] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._account_id = account_id
-        self._redis = redis_cache
+        self._outbox = outbox
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),
             headers={"api_access_token": agent_bot_token},
@@ -195,14 +193,16 @@ class ChatwootClient:
         return await self._request_with_retry("GET", url, params=params)
 
     async def enqueue_failed_action(self, action: dict[str, Any]) -> bool:
-        """Store a failed action in the Redis outbox for later replay.
+        """Store a failed action in an injected outbox for later replay.
 
         Returns:
             ``True`` if the action was queued successfully.
         """
-        key = f"{self._redis._prefix}:outbox"
+        if self._outbox is None:
+            logger.warning("No Chatwoot outbox configured; failed action not queued")
+            return False
         try:
-            await self._redis.lpush(key, json.dumps(action))
+            await self._outbox.lpush("chatwoot:outbox", json.dumps(action))
             return True
         except Exception as exc:
             logger.warning("Failed to enqueue action: %s", exc)
@@ -218,9 +218,10 @@ class ChatwootClient:
         Returns:
             List of actions that were in the outbox.
         """
-        key = f"{self._redis._prefix}:outbox"
+        if self._outbox is None:
+            return []
         try:
-            raw_items = await self._redis.lrange(key, 0, -1)
+            raw_items = await self._outbox.lrange("chatwoot:outbox", 0, -1)
             actions = [json.loads(item) for item in raw_items]
             return actions
         except Exception as exc:

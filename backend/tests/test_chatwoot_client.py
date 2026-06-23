@@ -1,7 +1,7 @@
 """Tests for ChatwootClient async HTTP wrapper.
 
 Uses respx to mock the Chatwoot Application API and validates
-rate-limiting, retries, error handling, and outbox behaviour.
+rate-limiting, retries, error handling, and optional outbox behaviour.
 """
 
 from typing import Any
@@ -12,25 +12,20 @@ import pytest
 import respx
 
 from backend.app.chatwoot_client import ChatwootClient
-from backend.app.redis_cache import RedisCache
 
 
 @pytest.fixture
-def redis_cache() -> RedisCache:
-    mock_redis = AsyncMock(spec=RedisCache)
-    mock_redis._prefix = "chatwoot"
-    mock_redis._account_id = 1
-    mock_redis._build_key = RedisCache._build_key
-    return mock_redis  # type: ignore[return-value]
+def outbox() -> AsyncMock:
+    return AsyncMock()
 
 
 @pytest.fixture
-def client(redis_cache: RedisCache) -> ChatwootClient:
+def client(outbox: AsyncMock) -> ChatwootClient:
     return ChatwootClient(
         base_url="https://chatwoot.example.com",
         agent_bot_token="test-token",
         account_id=1,
-        redis_cache=redis_cache,
+        outbox=outbox,
     )
 
 
@@ -76,7 +71,7 @@ class TestSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_5xx_retries_then_outbox(
-        self, client: ChatwootClient, redis_cache: Any
+        self, client: ChatwootClient, outbox: Any
     ) -> None:
         with respx.mock:
             route = respx.post(
@@ -85,12 +80,13 @@ class TestSendMessage:
             result = await client.send_message(42, "hello")
             assert result == {}
             assert route.call_count == 3
-            redis_cache.lpush.assert_awaited_once()
+            outbox.lpush.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_send_message_respects_retry_after(
-        self, client: ChatwootClient, redis_cache: Any
+        self, client: ChatwootClient, outbox: Any
     ) -> None:
+        del outbox
         with respx.mock:
             route = respx.post(
                 "https://chatwoot.example.com/api/v1/accounts/1/conversations/42/messages"
@@ -196,18 +192,18 @@ class TestOutbox:
 
     @pytest.mark.asyncio
     async def test_enqueue_failed_action(
-        self, client: ChatwootClient, redis_cache: Any
+        self, client: ChatwootClient, outbox: Any
     ) -> None:
         action = {"type": "send_message", "conversation_id": 42}
         result = await client.enqueue_failed_action(action)
         assert result is True
-        redis_cache.lpush.assert_awaited_once()
+        outbox.lpush.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_process_outbox_stub(
-        self, client: ChatwootClient, redis_cache: Any
+        self, client: ChatwootClient, outbox: Any
     ) -> None:
-        redis_cache.lrange.return_value = ['{"type": "send_message"}']
+        outbox.lrange.return_value = ['{"type": "send_message"}']
         result = await client.process_outbox()
         assert isinstance(result, list)
         assert len(result) == 1

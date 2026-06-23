@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import time
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -21,9 +22,10 @@ def _signed_headers(payload: bytes, secret: str = "test-secret") -> dict[str, st
 def _chatwoot_signed_headers(
     payload: bytes,
     secret: str = "test-secret",
-    timestamp: str = "1779820000",
+    timestamp: str | None = None,
 ) -> dict[str, str]:
     """Build real Chatwoot AgentBot timestamped signature headers."""
+    timestamp = timestamp or str(int(time.time()))
     signed_payload = f"{timestamp}.".encode() + payload
     digest = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
     return {
@@ -507,19 +509,13 @@ def test_chatwoot_health_disabled(
     assert response.json()["chatwoot_enabled"] is False
 
 
-def test_chatwoot_health_enabled_redis_healthy(
+def test_chatwoot_health_enabled_configured(
     client: TestClient,
-    main_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Enabled integration with healthy Redis and config should be healthy."""
+    """Enabled integration with config and local state should be healthy."""
     monkeypatch.setenv("CHATWOOT_ENABLED", "true")
     settings.reset()
-    redis_cache = AsyncMock()
-    redis_cache.health_check.return_value = True
-    main_module.app.dependency_overrides[main_module.get_redis_cache] = lambda: (
-        redis_cache
-    )
 
     response = client.get("/health/chatwoot")
 
@@ -527,65 +523,44 @@ def test_chatwoot_health_enabled_redis_healthy(
     assert response.json() == {
         "status": "healthy",
         "chatwoot_enabled": True,
-        "redis": "healthy",
         "chatwoot_api": "configured",
+        "webhook_secret": "configured",
+        "state_backend": "memory",
+        "durable_state": "memory",
     }
-    main_module.app.dependency_overrides.clear()
 
 
-def test_chatwoot_health_enabled_redis_unavailable(
+def test_chatwoot_health_enabled_production_without_durable_state_degrades(
     client: TestClient,
-    main_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Redis failures should degrade but not fail health."""
+    """Production Chatwoot health degrades without DynamoDB-backed state."""
     monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("ALLOWED_CORS_ORIGINS", "https://app.example.com")
     settings.reset()
-    redis_cache = AsyncMock()
-    redis_cache.health_check.return_value = False
-    main_module.app.dependency_overrides[main_module.get_redis_cache] = lambda: (
-        redis_cache
-    )
 
     response = client.get("/health/chatwoot")
 
     assert response.status_code == 200
     assert response.json()["status"] == "degraded"
-    assert response.json()["redis"] == "unavailable"
-    main_module.app.dependency_overrides.clear()
+    assert response.json()["durable_state"] == "memory"
 
 
 def test_chatwoot_health_missing_chatwoot_config(
     client: TestClient,
-    main_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Missing Chatwoot API config should report degraded/not_configured."""
     monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    monkeypatch.setenv("CHATWOOT_API_URL", "")
+    monkeypatch.setenv("CHATWOOT_AGENT_BOT_TOKEN", "")
+    monkeypatch.delenv("CHATWOOT_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("CHATWOOT_API_URL", raising=False)
     settings.reset()
-    redis_cache = AsyncMock()
-    redis_cache.health_check.return_value = True
-    main_module.app.dependency_overrides[main_module.get_redis_cache] = lambda: (
-        redis_cache
-    )
 
     response = client.get("/health/chatwoot")
 
     assert response.status_code == 200
     assert response.json()["status"] == "degraded"
     assert response.json()["chatwoot_api"] == "not_configured"
-    main_module.app.dependency_overrides.clear()
-
-
-def test_get_redis_cache_uses_unconfigured_namespace_when_account_missing(
-    main_module: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Missing Chatwoot account IDs must not share account 1 cache keys."""
-    monkeypatch.delenv("CHATWOOT_ACCOUNT_ID", raising=False)
-    settings.reset()
-
-    redis_cache = main_module.get_redis_cache()
-
-    assert redis_cache._build_key("scope", "id") == ("chatwoot:unconfigured:scope:id")

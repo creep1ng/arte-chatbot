@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import time
 
 from backend.app.auth import verify_chatwoot_signature
 
@@ -50,10 +51,22 @@ def test_verify_chatwoot_signature_accepts_chatwoot_timestamped_signature() -> N
     """Real AgentBot webhooks sign '<timestamp>.<body>'."""
     payload = b'{"event":"message_created"}'
     secret = "test-secret"
-    timestamp = "1779820000"
+    timestamp = str(int(time.time()))
     signature = f"sha256={_timestamped_signature(payload, secret, timestamp)}"
 
     assert verify_chatwoot_signature(payload, signature, secret, timestamp=timestamp)
+
+
+def test_verify_chatwoot_signature_rejects_stale_timestamp() -> None:
+    """Old timestamped signatures must fail replay protection."""
+    payload = b'{"event":"message_created"}'
+    secret = "test-secret"
+    timestamp = "1779820000"
+    signature = f"sha256={_timestamped_signature(payload, secret, timestamp)}"
+
+    assert not verify_chatwoot_signature(
+        payload, signature, secret, timestamp=timestamp
+    )
 
 
 def test_verify_chatwoot_signature_rejects_timestamped_signature_without_timestamp() -> (

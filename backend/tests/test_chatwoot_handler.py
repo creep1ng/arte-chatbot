@@ -31,17 +31,6 @@ def chatwoot_client() -> Any:
 
 
 @pytest.fixture
-def redis_cache() -> Any:
-    cache = AsyncMock()
-    cache._prefix = "chatwoot"
-    cache._account_id = 1
-    cache._build_key = lambda scope, entity_id, field=None: (
-        f"chatwoot:1:{scope}:{entity_id}" + (f":{field}" if field else "")
-    )
-    return cache
-
-
-@pytest.fixture
 def config_provider() -> Any:
     provider = MagicMock()
     provider.is_chatwoot_enabled.return_value = True
@@ -72,7 +61,6 @@ def escalation_handler() -> Any:
 @pytest.fixture
 def handler(
     chatwoot_client: Any,
-    redis_cache: Any,
     config_provider: Any,
     message_buffer: Any,
     session_manager: Any,
@@ -80,7 +68,6 @@ def handler(
 ) -> ChatwootHandler:
     return ChatwootHandler(
         chatwoot_client=chatwoot_client,
-        redis_cache=redis_cache,
         config_provider=config_provider,
         message_buffer=message_buffer,
         session_manager=session_manager,
@@ -112,30 +99,21 @@ def _message_payload(
 
 
 class TestIdempotency:
-    """Duplicate message detection via Redis set."""
+    """Duplicate message detection via handler state."""
 
     @pytest.mark.asyncio
-    async def test_is_duplicate_true(
-        self, handler: ChatwootHandler, redis_cache: Any
-    ) -> None:
-        redis_cache.sismember.return_value = True
+    async def test_is_duplicate_true(self, handler: ChatwootHandler) -> None:
+        await handler._mark_processed(101)
         assert await handler._is_duplicate(101) is True
-        redis_cache.sismember.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_is_duplicate_false(
-        self, handler: ChatwootHandler, redis_cache: Any
-    ) -> None:
-        redis_cache.sismember.return_value = False
+    async def test_is_duplicate_false(self, handler: ChatwootHandler) -> None:
         assert await handler._is_duplicate(101) is False
 
     @pytest.mark.asyncio
-    async def test_mark_processed(
-        self, handler: ChatwootHandler, redis_cache: Any
-    ) -> None:
-        redis_cache.sadd.return_value = True
+    async def test_mark_processed(self, handler: ChatwootHandler) -> None:
         assert await handler._mark_processed(101) is True
-        redis_cache.sadd.assert_awaited_once()
+        assert await handler._mark_processed(101) is False
 
 
 class TestHandleMessageCreated:
@@ -228,7 +206,6 @@ class TestHandleMessageCreated:
     async def test_full_buffer_processes_callback_and_appends_history(
         self,
         chatwoot_client: Any,
-        redis_cache: Any,
         config_provider: Any,
         message_buffer: Any,
         session_manager: Any,
@@ -237,7 +214,6 @@ class TestHandleMessageCreated:
         process_message = AsyncMock(return_value="Respuesta técnica")
         handler = ChatwootHandler(
             chatwoot_client=chatwoot_client,
-            redis_cache=redis_cache,
             config_provider=config_provider,
             message_buffer=message_buffer,
             session_manager=session_manager,
@@ -266,7 +242,6 @@ class TestHandleMessageCreated:
     async def test_single_contact_message_processes_after_buffer_window(
         self,
         chatwoot_client: Any,
-        redis_cache: Any,
         config_provider: Any,
         message_buffer: Any,
         session_manager: Any,
@@ -277,7 +252,6 @@ class TestHandleMessageCreated:
         profile.buffer_window_seconds = 0
         handler = ChatwootHandler(
             chatwoot_client=chatwoot_client,
-            redis_cache=redis_cache,
             config_provider=config_provider,
             message_buffer=message_buffer,
             session_manager=session_manager,

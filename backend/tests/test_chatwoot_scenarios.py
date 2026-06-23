@@ -1,8 +1,8 @@
 """Mocked scenario tests for Chatwoot webhook flows.
 
 These tests exercise the FastAPI endpoint plus real ``ChatwootHandler``
-dispatching with mocked collaborators. They intentionally avoid real Redis and
-Chatwoot network calls.
+dispatching with mocked collaborators. They intentionally avoid real Chatwoot
+network calls.
 """
 
 import hashlib
@@ -18,36 +18,6 @@ from backend.app.chatwoot_handler import ChatwootHandler
 from backend.app.config import settings
 from backend.app.escalation_handler import EscalationHandler
 from backend.app.message_buffer import BufferState
-
-
-class InMemoryRedisCache:
-    """Small async RedisCache test double safe across TestClient event loops."""
-
-    def __init__(self) -> None:
-        self._sets: dict[str, set[str]] = {}
-        self._values: dict[str, str] = {}
-
-    def _build_key(self, scope: str, entity_id: str, field: str | None = None) -> str:
-        """Build keys using the production Chatwoot namespace shape."""
-        key = f"chatwoot:1:{scope}:{entity_id}"
-        if field is not None:
-            key = f"{key}:{field}"
-        return key
-
-    async def sismember(self, key: str, member: str) -> bool:
-        """Return whether a set member exists."""
-        return member in self._sets.get(key, set())
-
-    async def sadd(self, key: str, member: str) -> bool:
-        """Add a set member."""
-        self._sets.setdefault(key, set()).add(member)
-        return True
-
-    async def set(self, key: str, value: str, ttl: int | None = None) -> bool:
-        """Store a string value."""
-        del ttl
-        self._values[key] = value
-        return True
 
 
 class DummyProfile:
@@ -148,12 +118,6 @@ def client(main_module: Any) -> TestClient:
 
 
 @pytest.fixture
-def redis_cache() -> InMemoryRedisCache:
-    """Return an in-memory RedisCache-compatible test double."""
-    return InMemoryRedisCache()
-
-
-@pytest.fixture
 def handler_dependencies() -> dict[str, Any]:
     """Return mocked dependencies used to build a real handler."""
     return {
@@ -166,14 +130,12 @@ def handler_dependencies() -> dict[str, Any]:
 
 def _override_handler(
     main_module: Any,
-    redis_cache: InMemoryRedisCache,
     dependencies: dict[str, Any],
     process_message: Any | None = None,
 ) -> ChatwootHandler:
     """Install a FastAPI override returning a real ChatwootHandler."""
     handler = ChatwootHandler(
         chatwoot_client=dependencies["client"],
-        redis_cache=redis_cache,
         config_provider=dependencies["config"],
         message_buffer=dependencies["buffer"],
         session_manager=dependencies["sessions"],
@@ -188,11 +150,10 @@ def _override_handler(
 def test_valid_contact_message_dispatches_through_handler(
     client: TestClient,
     main_module: Any,
-    redis_cache: InMemoryRedisCache,
     handler_dependencies: dict[str, Any],
 ) -> None:
     """Contact messages should traverse endpoint, handler, and dependencies."""
-    _override_handler(main_module, redis_cache, handler_dependencies)
+    _override_handler(main_module, handler_dependencies)
     body = json.dumps(_message_payload()).encode()
 
     response = client.post(
@@ -216,14 +177,12 @@ def test_valid_contact_message_dispatches_through_handler(
 def test_webhook_full_buffer_flow_sends_response_and_appends_history(
     client: TestClient,
     main_module: Any,
-    redis_cache: InMemoryRedisCache,
     handler_dependencies: dict[str, Any],
 ) -> None:
     """Full buffer should process and send a mocked bot response via Chatwoot."""
     process_message = AsyncMock(return_value="Respuesta desde el bot")
     _override_handler(
         main_module,
-        redis_cache,
         handler_dependencies,
         process_message=process_message,
     )
@@ -260,11 +219,10 @@ def test_webhook_full_buffer_flow_sends_response_and_appends_history(
 def test_human_agent_message_cancels_buffer_without_bot_reply(
     client: TestClient,
     main_module: Any,
-    redis_cache: InMemoryRedisCache,
     handler_dependencies: dict[str, Any],
 ) -> None:
     """Human-agent messages should cancel pending bot work and not reply."""
-    _override_handler(main_module, redis_cache, handler_dependencies)
+    _override_handler(main_module, handler_dependencies)
     body = json.dumps(_message_payload(message_id=102, sender_type="user")).encode()
 
     response = client.post(
@@ -283,11 +241,10 @@ def test_human_agent_message_cancels_buffer_without_bot_reply(
 def test_duplicate_webhook_is_accepted_without_second_processing(
     client: TestClient,
     main_module: Any,
-    redis_cache: InMemoryRedisCache,
     handler_dependencies: dict[str, Any],
 ) -> None:
     """Duplicate messages should return accepted and skip handler side effects."""
-    _override_handler(main_module, redis_cache, handler_dependencies)
+    _override_handler(main_module, handler_dependencies)
     body = json.dumps(_message_payload(message_id=103)).encode()
     headers = _signed_headers(body)
 

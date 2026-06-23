@@ -1,28 +1,27 @@
 """Webhook event dispatcher for Chatwoot.
 
 Routes incoming webhook payloads to the appropriate handler, enforces
-idempotency via Redis, and logs all events with structured context.
+idempotency via the configured state repository, and logs all events with
+structured context.
 """
 
-import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
 from backend.app.chatwoot_client import ChatwootClient
 from backend.app.config_provider import ConfigProvider
 from backend.app.escalation_handler import EscalationHandler
-from backend.app.message_buffer import RedisMessageBuffer
-from backend.app.redis_cache import RedisCache
+from backend.app.message_buffer import ChatwootMessageBuffer
 from backend.app.schemas import (
     ChatwootWebhookPayload,
     ConversationCreatedPayload,
     ConversationStatusChangedPayload,
     MessageCreatedPayload,
 )
+from backend.app.state_repository import ChatbotStateRepository
 
 logger = logging.getLogger(__name__)
 
-_PROCESSED_SET_TTL_SECONDS = 3600
 _MAX_BUFFER_MESSAGES = 5
 
 ProcessMessageCallback = Callable[[str, str, list[Any]], Awaitable[str]]
@@ -33,34 +32,33 @@ class ChatwootHandler:
 
     Args:
         chatwoot_client: Client for the Chatwoot Application API.
-        redis_cache: Redis cache for idempotency and state.
         config_provider: Runtime configuration provider.
     """
 
     def __init__(
         self,
         chatwoot_client: ChatwootClient,
-        redis_cache: RedisCache,
         config_provider: ConfigProvider,
-        message_buffer: Optional[RedisMessageBuffer] = None,
+        state_repository: Optional[ChatbotStateRepository] = None,
+        message_buffer: Optional[ChatwootMessageBuffer] = None,
         session_manager: Optional[Any] = None,
         escalation_handler: Optional[EscalationHandler] = None,
         process_message: Optional[ProcessMessageCallback] = None,
     ) -> None:
         self._client = chatwoot_client
-        self._redis = redis_cache
         self._config = config_provider
+        self._state_repository = state_repository
         self._buffer = message_buffer
         self._sessions = session_manager
         self._escalation = escalation_handler
         self._process_message = process_message
-        self._flush_tasks: dict[str, asyncio.Task[None]] = {}
+        self._processed_messages: set[str] = set()
 
     async def handle_event(self, payload: ChatwootWebhookPayload) -> None:
         """Route a webhook payload to the correct handler.
 
-        Idempotency is enforced for ``message_created`` events using a
-        Redis set with a 1-hour TTL.
+        Idempotency is enforced for ``message_created`` events using durable
+        state when configured.
         """
         event = payload.event
         conversation_id = getattr(payload, "conversation", None)
@@ -75,7 +73,8 @@ class ChatwootHandler:
         )
 
         if event == "message_created" and isinstance(payload, MessageCreatedPayload):
-            if await self._is_duplicate(payload.message.id):
+            message_id = payload.message.id
+            if await self._is_duplicate(message_id):
                 logger.info(
                     "chatwoot_duplicate_skipped",
                     extra={
@@ -85,7 +84,7 @@ class ChatwootHandler:
                 )
                 return
             await self._handle_message_created(payload)
-            await self._mark_processed(payload.message.id)
+            await self._mark_processed(message_id)
         elif event == "conversation_created" and isinstance(
             payload, ConversationCreatedPayload
         ):
@@ -176,18 +175,16 @@ class ChatwootHandler:
                 )
             await self._client.send_typing_indicator(conversation_id)
             if self._should_process_full_buffer(buffer_state):
-                self._cancel_scheduled_flush(conversation_key)
                 await self._process_full_buffer(
                     conversation_id=conversation_id,
                     conversation_key=conversation_key,
                     session_id=session_id,
                 )
-            else:
-                self._schedule_buffer_flush(
+            elif self._process_message is not None:
+                await self._process_full_buffer(
                     conversation_id=conversation_id,
                     conversation_key=conversation_key,
                     session_id=session_id,
-                    window_seconds=window_seconds,
                 )
             logger.info(
                 "user message received conversation_id=%s message_id=%s",
@@ -245,67 +242,6 @@ class ChatwootHandler:
         messages = getattr(buffer_state, "messages", None)
         return isinstance(messages, list) and len(messages) >= _MAX_BUFFER_MESSAGES
 
-    def _schedule_buffer_flush(
-        self,
-        conversation_id: int,
-        conversation_key: str,
-        session_id: Optional[str],
-        window_seconds: int,
-    ) -> None:
-        """Schedule delayed processing after the debounce window expires."""
-        if (
-            self._buffer is None
-            or self._process_message is None
-            or self._sessions is None
-            or session_id is None
-        ):
-            return
-
-        self._cancel_scheduled_flush(conversation_key)
-        task = asyncio.create_task(
-            self._flush_buffer_after_window(
-                conversation_id=conversation_id,
-                conversation_key=conversation_key,
-                session_id=session_id,
-                window_seconds=window_seconds,
-            )
-        )
-        self._flush_tasks[conversation_key] = task
-
-    def _cancel_scheduled_flush(self, conversation_key: str) -> None:
-        """Cancel an existing delayed flush for a conversation."""
-        task = self._flush_tasks.pop(conversation_key, None)
-        if task and not task.done():
-            task.cancel()
-
-    async def _flush_buffer_after_window(
-        self,
-        conversation_id: int,
-        conversation_key: str,
-        session_id: str,
-        window_seconds: int,
-    ) -> None:
-        """Flush and process a buffered message after the debounce window."""
-        try:
-            await asyncio.sleep(window_seconds)
-            await self._process_full_buffer(
-                conversation_id=conversation_id,
-                conversation_key=conversation_key,
-                session_id=session_id,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.exception(
-                "chatwoot_buffer_flush_failed conversation_id=%s: %s",
-                conversation_id,
-                exc,
-            )
-        finally:
-            current_task = asyncio.current_task()
-            if self._flush_tasks.get(conversation_key) is current_task:
-                self._flush_tasks.pop(conversation_key, None)
-
     async def _process_full_buffer(
         self,
         conversation_id: int,
@@ -352,24 +288,23 @@ class ChatwootHandler:
             },
         )
 
-    async def _is_duplicate(self, message_id: int) -> bool:
+    async def _is_duplicate(self, message_id: str | int) -> bool:
         """Return ``True`` if *message_id* has already been processed."""
-        key = self._redis._build_key("processed_messages", "")
-        return await self._redis.sismember(key, str(message_id))
+        message_key = str(message_id)
+        if self._state_repository is not None:
+            return self._state_repository.has_processed_chatwoot_message(message_key)
+        return message_key in self._processed_messages
 
-    async def _mark_processed(self, message_id: int) -> bool:
+    async def _mark_processed(self, message_id: str | int) -> bool:
         """Mark *message_id* as processed with a 1-hour TTL.
 
         .. note::
-            Redis sets do not support TTL on individual members, so the
-            entire set is given a TTL. In production this may be replaced
-            with a sorted set or per-message key.
+            DynamoDB-backed state is the production path. In-memory tracking is
+            only a local/test fallback for handlers without a repository.
         """
-        key = self._redis._build_key("processed_messages", "")
-        result = await self._redis.sadd(key, str(message_id))
-        await self._redis.set(
-            f"{key}:ttl",
-            "1",
-            ttl=_PROCESSED_SET_TTL_SECONDS,
-        )
-        return result
+        message_key = str(message_id)
+        if self._state_repository is not None:
+            return self._state_repository.mark_chatwoot_message_processed(message_key)
+        was_new = message_key not in self._processed_messages
+        self._processed_messages.add(message_key)
+        return was_new

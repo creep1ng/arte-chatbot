@@ -1,6 +1,6 @@
-"""Tests for Chatwoot and Redis configuration settings.
+"""Tests for Chatwoot configuration settings.
 
-Validates new Settings fields, defaults, env mapping, and the
+Validates Settings fields, defaults, env mapping, and the
 model validator that warns when Chatwoot is enabled but misconfigured.
 """
 
@@ -66,19 +66,15 @@ class TestChatwootSettingsDefaults:
             settings = Settings()
             assert settings.chatwoot_technical_label == "technical"
 
-    def test_redis_url_defaults_localhost(self) -> None:
+    def test_chatwoot_secret_refs_default_none(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings()
-            assert settings.redis_url == "redis://localhost:6379/0"
-
-    def test_redis_password_defaults_none(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            settings = Settings()
-            assert settings.redis_password is None
+            assert settings.chatwoot_agent_bot_token_secret_ref is None
+            assert settings.chatwoot_webhook_secret_ref is None
 
 
 class TestChatwootSettingsFromEnv:
-    """Settings must read Chatwoot and Redis values from environment."""
+    """Settings must read Chatwoot values from environment."""
 
     def test_chatwoot_fields_from_env(self) -> None:
         env = {
@@ -92,8 +88,10 @@ class TestChatwootSettingsFromEnv:
             "CHATWOOT_BOT_LABEL": "bot_label",
             "CHATWOOT_ESCALATED_LABEL": "esc_label",
             "CHATWOOT_TECHNICAL_LABEL": "tech_label",
-            "REDIS_URL": "redis://redis:6379/1",
-            "REDIS_PASSWORD": "pass",
+            "CHATWOOT_QUOTE_LABEL": "quote_label",
+            "CHATWOOT_ORDER_LABEL": "order_label",
+            "CHATWOOT_AGENT_BOT_TOKEN_SECRET_REF": "/arte/prod/chatwoot-token",
+            "CHATWOOT_WEBHOOK_SECRET_REF": "/arte/prod/chatwoot-webhook",
         }
         with patch.dict(os.environ, env, clear=True):
             settings = Settings()
@@ -107,8 +105,14 @@ class TestChatwootSettingsFromEnv:
             assert settings.chatwoot_bot_label == "bot_label"
             assert settings.chatwoot_escalated_label == "esc_label"
             assert settings.chatwoot_technical_label == "tech_label"
-            assert settings.redis_url == "redis://redis:6379/1"
-            assert settings.redis_password == "pass"
+            assert settings.chatwoot_quote_label == "quote_label"
+            assert settings.chatwoot_order_label == "order_label"
+            assert settings.chatwoot_agent_bot_token_secret_ref == (
+                "/arte/prod/chatwoot-token"
+            )
+            assert settings.chatwoot_webhook_secret_ref == (
+                "/arte/prod/chatwoot-webhook"
+            )
 
 
 class TestChatwootSettingsValidator:
@@ -128,6 +132,27 @@ class TestChatwootSettingsValidator:
             "CHATWOOT_ACCOUNT_ID": "1",
             "CHATWOOT_INBOX_ID": "1",
             "CHATWOOT_WEBHOOK_SECRET": "secret",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                Settings()
+                chatwoot_warnings = [
+                    warning
+                    for warning in w
+                    if issubclass(warning.category, UserWarning)
+                    and "Chatwoot is enabled but" in str(warning.message)
+                ]
+                assert len(chatwoot_warnings) == 0
+
+    def test_chatwoot_secret_refs_satisfy_required_secret_config(self) -> None:
+        env = {
+            "CHATWOOT_ENABLED": "true",
+            "CHATWOOT_API_URL": "https://chatwoot.example.com",
+            "CHATWOOT_AGENT_BOT_TOKEN_SECRET_REF": "/arte/prod/chatwoot-token",
+            "CHATWOOT_ACCOUNT_ID": "1",
+            "CHATWOOT_INBOX_ID": "1",
+            "CHATWOOT_WEBHOOK_SECRET_REF": "/arte/prod/chatwoot-webhook",
         }
         with patch.dict(os.environ, env, clear=True):
             with warnings.catch_warnings(record=True) as w:

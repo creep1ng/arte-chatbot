@@ -14,8 +14,8 @@ from backend.app.config import Settings, settings
 class ConfigProvider(Protocol):
     """Protocol for configuration providers.
 
-    Implementations may read from environment variables, Redis, or
-    an admin panel backend.
+    Implementations may read from environment variables, a repository, or an
+    admin panel backend.
     """
 
     def get(self, key: str) -> Any:
@@ -63,13 +63,15 @@ class EnvConfigProvider:
             "bot": self._settings.chatwoot_bot_label,
             "escalated": self._settings.chatwoot_escalated_label,
             "technical": self._settings.chatwoot_technical_label,
+            "quote": self._settings.chatwoot_quote_label,
+            "order": self._settings.chatwoot_order_label,
         }
         return mapping.get(name, name)
 
     def get_channel_profile(self, inbox_id: str) -> ChannelProfile:
         """Return a default channel profile for the given inbox.
 
-        Future implementations may lookup per-inbox overrides from Redis
+        Future implementations may lookup per-inbox overrides from a repository
         or an admin panel backend.
         """
         return get_default_channel_profile()
