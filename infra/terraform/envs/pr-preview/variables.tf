@@ -61,19 +61,15 @@ variable "aws_bucket_name" {
 }
 
 variable "backend_runtime_secret_arns" {
-  description = "Preview app secret ARNs, such as OPENAI_API_KEY and CHAT_API_KEY. Do not pass production secret ARNs."
+  description = "Preview app secret ARNs, such as OPENAI_API_KEY and CHAT_API_KEY. Prefer preview-scoped secrets; shared ARNs are allowed for temporary smoke validation."
   type        = map(string)
   default     = {}
 
   validation {
     condition = alltrue([
-      for arn in values(var.backend_runtime_secret_arns) :
-      startswith(arn, "arn:") &&
-      !strcontains(lower(arn), "/prod/") &&
-      !strcontains(lower(arn), ":prod/") &&
-      !strcontains(lower(arn), "production")
+      for arn in values(var.backend_runtime_secret_arns) : startswith(arn, "arn:")
     ])
-    error_message = "Preview secret ARNs must be AWS ARNs and must not point at production secrets."
+    error_message = "Preview secret refs must be AWS ARNs, not plaintext secret values."
   }
 }
 

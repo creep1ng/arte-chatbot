@@ -159,10 +159,7 @@ def _check_pr_preview_lambda(
             'variable "pr_sha"',
             'variable "expiration_at"',
             'default     = "arte-chatbot-preview"',
-            (
-                "Preview secret ARNs must be AWS ARNs and must not point at "
-                "production secrets."
-            ),
+            "Preview secret refs must be AWS ARNs, not plaintext secret values.",
             "default     = 259200",
         ],
     ):

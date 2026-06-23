@@ -36,9 +36,9 @@ locals {
     RATE_LIMIT_TTL_SECONDS    = tostring(var.rate_limit_ttl_seconds)
     LAMBDA_TIMEOUT_SECONDS    = tostring(var.timeout_seconds)
     ALLOWED_CORS_ORIGINS      = var.allowed_cors_origins
-    PUBLIC_API_URL            = coalesce(var.public_api_url, "")
-    PUBLIC_FRONTEND_URL       = coalesce(var.public_frontend_url, "")
-    PUBLIC_ADMIN_URL          = coalesce(var.public_admin_url, "")
+    PUBLIC_API_URL            = var.public_api_url != null ? var.public_api_url : ""
+    PUBLIC_FRONTEND_URL       = var.public_frontend_url != null ? var.public_frontend_url : ""
+    PUBLIC_ADMIN_URL          = var.public_admin_url != null ? var.public_admin_url : ""
   }
 
   runtime_environment_variables = merge(
