@@ -129,7 +129,8 @@ def _check_lambda_preview_delivery(
             ),
             '-backend-config="key=${STATE_KEY}"',
             "TF_VAR_pr_number",
-            "TF_VAR_backend_runtime_secret_arns",
+            "TF_VAR_backend_runtime_secret_arns: ${{ secrets.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON || '{}' }}",
+            "TF_VAR_kms_key_arns: ${{ secrets.LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON || '[]' }}",
         ],
     ):
         findings.append(
@@ -141,6 +142,7 @@ def _check_lambda_preview_delivery(
         [
             "scripts/lambda_smoke.py",
             '--base-url "${PREVIEW_API_URL}"',
+            "LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON: ${{ secrets.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON }}",
             "Resolve preview chat API key from runtime secret ARN",
             "aws secretsmanager get-secret-value",
             "aws ssm get-parameter",

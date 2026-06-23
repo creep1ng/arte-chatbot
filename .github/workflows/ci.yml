@@ -755,9 +755,9 @@ jobs:
       TF_VAR_lambda_package_path: ${{ github.workspace }}/dist/lambda/backend.zip
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-2' }}
       TF_VAR_aws_bucket_name: ${{ secrets.AWS_BUCKET_NAME }}
-      TF_VAR_backend_runtime_secret_arns: ${{ vars.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON || '{}' }}
+      TF_VAR_backend_runtime_secret_arns: ${{ secrets.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON || '{}' }}
       TF_VAR_backend_runtime_environment_variables: ${{ vars.LAMBDA_PREVIEW_RUNTIME_ENV_JSON || '{}' }}
-      TF_VAR_kms_key_arns: ${{ vars.LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON || '[]' }}
+      TF_VAR_kms_key_arns: ${{ secrets.LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON || '[]' }}
       TF_VAR_allowed_cors_origins: ${{ vars.LAMBDA_PREVIEW_ALLOWED_CORS_ORIGINS || '*' }}
     steps:
       - name: Checkout code
@@ -890,7 +890,7 @@ jobs:
 
       - name: Resolve preview chat API key from runtime secret ARN
         env:
-          LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON: ${{ vars.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON }}
+          LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON: ${{ secrets.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON }}
         run: |
           CHAT_API_KEY_SECRET_ARN=$(python - <<'PY'
           import json
