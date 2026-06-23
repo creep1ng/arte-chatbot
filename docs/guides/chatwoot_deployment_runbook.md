@@ -2,7 +2,7 @@
 
 This runbook explains how to connect the ARTE backend to a self-hosted Chatwoot AgentBot safely. Start with the happy path, verify with mocked/local checks first, and only then capture staging screenshots from a real Chatwoot workspace.
 
-> Current scope: backend webhook, Redis-backed state, mocked CI coverage, and operational rollout. Admin-panel Chatwoot configuration is intentionally deferred until the `feature/admin-panel-slice-*` work is integrated coherently.
+> Current scope: backend webhook, DynamoDB-backed state in Lambda, mocked CI coverage, and operational rollout. Admin-panel Chatwoot configuration is intentionally deferred until the `feature/admin-panel-slice-*` work is integrated coherently.
 
 ## Quick path
 
@@ -31,7 +31,7 @@ This runbook explains how to connect the ARTE backend to a self-hosted Chatwoot 
 |-------------|----------------|-------------------|
 | Self-hosted Chatwoot workspace | Source of AgentBot webhooks and Application API calls | Workspace URL is reachable over HTTPS |
 | Backend HTTPS host | Chatwoot must call the webhook publicly | `https://<backend-host>/health` responds |
-| Redis 7+ | Stores idempotency, buffers, mappings, and history cache | `/health/chatwoot` reports Redis healthy or degraded intentionally |
+| DynamoDB state table | Stores idempotency, buffers, mappings, and history cache for Lambda | `/health/chatwoot` reports durable state configured in production |
 | AgentBot access token | Allows bot responses through Chatwoot API | Token is stored only as a secret |
 | Webhook HMAC secret | Prevents unsigned webhook processing | Secret is generated and stored in backend config |
 | Existing backend secrets | `/chat` and LLM tooling still require them | `OPENAI_API_KEY`, `CHAT_API_KEY`, AWS vars are configured where needed |
@@ -78,17 +78,18 @@ The backend intentionally awaits webhook processing instead of scheduling `Backg
 |----------|----------|---------|-------|
 | `CHATWOOT_ENABLED` | Yes | `true` | Rollback switch: set `false` to disable webhook processing. |
 | `CHATWOOT_API_URL` | Yes | `https://chatwoot.example.com` | Chatwoot base URL, no trailing slash preferred. |
-| `CHATWOOT_AGENT_BOT_TOKEN` | Yes | secret | Application API token; never commit. |
-| `CHATWOOT_ACCOUNT_ID` | Yes | `1` | Numeric account ID used in API paths and Redis namespace. |
+| `CHATWOOT_AGENT_BOT_TOKEN` | Local only | secret | Application API token for local development; production should use `CHATWOOT_AGENT_BOT_TOKEN_SECRET_REF`. |
+| `CHATWOOT_AGENT_BOT_TOKEN_SECRET_REF` | Production | `arn:aws:ssm:us-east-2:521170872319:parameter/arte-chatbot-prod/prod/runtime/CHATWOOT_AGENT_BOT_TOKEN` | SSM/Secrets Manager reference resolved at runtime. See `docs/deployment.md` for the upload checklist. |
+| `CHATWOOT_ACCOUNT_ID` | Yes | `1` | Numeric account ID used in API paths and durable mappings. |
 | `CHATWOOT_INBOX_ID` | Recommended | `7` | Inbox used for initial channel mapping. |
-| `CHATWOOT_WEBHOOK_SECRET` | Yes | secret | Shared HMAC secret for webhook verification. |
+| `CHATWOOT_WEBHOOK_SECRET` | Local only | secret | Shared HMAC secret for local development; production should use `CHATWOOT_WEBHOOK_SECRET_REF`. |
+| `CHATWOOT_WEBHOOK_SECRET_REF` | Production | `arn:aws:ssm:us-east-2:521170872319:parameter/arte-chatbot-prod/prod/runtime/CHATWOOT_WEBHOOK_SECRET` | SSM/Secrets Manager reference resolved at runtime. See `docs/deployment.md` for the upload checklist. |
 | `CHATWOOT_HANDOFF_TEAM_ID` | Optional | `55` | Enables team assignment during escalation. |
 | `CHATWOOT_BOT_LABEL` | Optional | `bot` | Label configuration remains env-driven for now. |
 | `CHATWOOT_ESCALATED_LABEL` | Optional | `escalated` | Label applied during human handoff. |
-| `REDIS_URL` | Yes | `redis://redis:6379/0` | Redis state backend. |
-| `REDIS_PASSWORD` | If used | secret | Required only for secured Redis deployments. |
-| `REDIS_SOCKET_TIMEOUT` | Optional | `2.0` | Keep low to preserve graceful degradation. |
-| `REDIS_MAX_CONNECTIONS` | Optional | `20` | Tune with traffic. |
+| `STATE_BACKEND` | Production | `dynamodb` | Required for Lambda-safe Chatwoot state. |
+| `DYNAMODB_STATE_TABLE_NAME` | Production | `arte-chatbot-prod-state` | Shared chatbot state table. |
+| `DYNAMODB_STATE_KEY_PREFIX` | Recommended | `prod` | Isolates production/staging state keys. |
 
 ## GitHub staging notes
 
@@ -97,10 +98,12 @@ Use a protected GitHub Environment such as `staging` before enabling workflows t
 | Secret or variable | Mocked CI | Real staging |
 |--------------------|-----------|--------------|
 | `CHATWOOT_API_URL` | Dummy value in CI | Real Chatwoot URL |
-| `CHATWOOT_AGENT_BOT_TOKEN` | Dummy value in CI | Real AgentBot token |
+| `CHATWOOT_AGENT_BOT_TOKEN` | Dummy value in CI | Local plaintext only; prefer secret ref in Lambda |
+| `CHATWOOT_AGENT_BOT_TOKEN_SECRET_REF` | Not needed for mocked CI | Secret reference for Lambda |
 | `CHATWOOT_ACCOUNT_ID` | Dummy value in CI | Real numeric account ID |
 | `CHATWOOT_INBOX_ID` | Dummy value in CI | Real inbox ID |
-| `CHATWOOT_WEBHOOK_SECRET` | Dummy value in CI | Real webhook secret |
+| `CHATWOOT_WEBHOOK_SECRET` | Dummy value in CI | Local plaintext only; prefer secret ref in Lambda |
+| `CHATWOOT_WEBHOOK_SECRET_REF` | Not needed for mocked CI | Secret reference for Lambda |
 | `OPENAI_API_KEY` | Dummy for mocked Chatwoot CI | Real LLM key if staging invokes LLM |
 | `CHAT_API_KEY` | Dummy for mocked Chatwoot CI | Real backend API key |
 
@@ -124,7 +127,7 @@ Run these checks after deployment. They do not require a CI workflow.
 - [ ] AgentBot is assigned to the intended inbox.
 - [ ] Webhook URL is exactly `https://<backend-host>/webhook/chatwoot`.
 - [ ] Enabled events are exactly `message_created`, `conversation_created`, and `conversation_status_changed`.
-- [ ] A new conversation creates a session mapping in Redis.
+- [ ] A new conversation creates a session mapping in DynamoDB-backed state.
 - [ ] Incoming contact message receives a bot response in Chatwoot.
 - [ ] Private/outgoing AgentBot messages do not trigger additional bot responses.
 - [ ] Human-agent reply during a pending bot buffer prevents duplicate bot follow-up.
@@ -135,8 +138,8 @@ Run these checks after deployment. They do not require a CI workflow.
 |---------|--------------|-------|-----|
 | Chatwoot gets `401` from webhook | HMAC secret mismatch | Compare Chatwoot secret with `CHATWOOT_WEBHOOK_SECRET` | Rotate/update both values, then retry webhook. |
 | Chatwoot gets `503` | Integration disabled | Check `CHATWOOT_ENABLED` | Set `CHATWOOT_ENABLED=true` after config is complete. |
-| `/health/chatwoot` is `degraded` | Redis unavailable or Chatwoot config missing | Inspect `redis` and `chatwoot_api` fields | Fix Redis URL or required Chatwoot env vars. |
-| Bot replies twice | Duplicate webhook/idempotency failure or self-loop filtering issue | Check logs for same `message.id` twice | Verify Redis is reachable and outgoing/private filtering is enabled. |
+| `/health/chatwoot` is `degraded` | Durable state missing in production or Chatwoot config missing | Inspect `durable_state`, `state_backend`, and `chatwoot_api` fields | Configure `STATE_BACKEND=dynamodb`, state table, or required Chatwoot env vars. |
+| Bot replies twice | Duplicate webhook/idempotency failure or self-loop filtering issue | Check logs for same `message.id` twice | Verify DynamoDB state is configured and outgoing/private filtering is enabled. |
 | Human replied but bot still answered | Race window or missing human-agent event | Check webhook event order and `sender.type` | Confirm `message_created` events include agent messages. |
 | Escalation does not assign team | Missing `CHATWOOT_HANDOFF_TEAM_ID` | Check env and logs | Configure team ID or accept label/status-only handoff. |
 
@@ -171,7 +174,7 @@ uv run pytest \
   backend/tests/test_chatwoot_auth.py \
   backend/tests/test_chatwoot_endpoints.py \
   backend/tests/test_chatwoot_scenarios.py \
-  backend/tests/test_chatwoot_redis_integration.py
+  backend/tests/test_chatwoot_repository_integration.py
 ```
 
 ## Rollback
@@ -188,7 +191,7 @@ Expected rollback behavior:
 |------|--------|
 | `/webhook/chatwoot` | Returns `503` and does not parse or dispatch payloads |
 | `/chat` | Existing standalone API remains available |
-| Redis state | Existing keys can expire naturally |
+| DynamoDB state | Existing keys can expire naturally via TTL |
 | Chatwoot AgentBot | Can remain configured, but backend will not process webhooks |
 
 If Chatwoot keeps retrying after rollback, temporarily disable the Chatwoot webhook or AgentBot assignment in Chatwoot.

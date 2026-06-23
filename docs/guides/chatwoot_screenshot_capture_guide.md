@@ -127,12 +127,13 @@ without exposing customer data.
 {
   "status": "healthy",
   "chatwoot_enabled": true,
-  "redis": "healthy",
+  "state_backend": "dynamodb",
+  "durable_state": "configured",
   "chatwoot_api": "configured"
 }
 ```
 
-**Use it to verify:** backend config and Redis readiness.
+**Use it to verify:** backend config and DynamoDB-backed state readiness.
 
 ### 9. Incoming contact message response
 

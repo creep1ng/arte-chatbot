@@ -43,5 +43,5 @@ Part of #
 ## Notas para el reviewer
 
 <!-- Decisiones de diseño no obvias, trade-offs asumidos, deuda técnica
-     intencional (ej. "el dict en memoria se reemplaza en S2 con Redis").
+     intencional (ej. "el dict en memoria se reemplaza en S2 con estado durable").
      Si no hay nada especial, escribe "Sin notas". -->
