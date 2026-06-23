@@ -12,6 +12,7 @@ TERRAFORM_ROOT = Path("infra/terraform")
 PROD_ROOT = TERRAFORM_ROOT / "envs" / "prod"
 MODULE_ROOT = TERRAFORM_ROOT / "modules"
 LOCAL_STAGING_ROOT = TERRAFORM_ROOT / "envs" / "local-staging"
+PR_PREVIEW_ROOT = TERRAFORM_ROOT / "envs" / "pr-preview"
 
 
 def check_foundation(project_root: Path) -> list[str]:
@@ -33,6 +34,10 @@ def check_foundation(project_root: Path) -> list[str]:
     local_staging_main = _read(project_root / LOCAL_STAGING_ROOT / "main.tf")
     local_staging_variables = _read(project_root / LOCAL_STAGING_ROOT / "variables.tf")
     local_staging_outputs = _read(project_root / LOCAL_STAGING_ROOT / "outputs.tf")
+    pr_preview_main = _read(project_root / PR_PREVIEW_ROOT / "main.tf")
+    pr_preview_variables = _read(project_root / PR_PREVIEW_ROOT / "variables.tf")
+    pr_preview_outputs = _read(project_root / PR_PREVIEW_ROOT / "outputs.tf")
+    pr_preview_providers = _read(project_root / PR_PREVIEW_ROOT / "providers.tf")
     admin_dockerfile = _read(project_root / "admin" / "Dockerfile")
     admin_nginx = _read(project_root / "admin" / "nginx.conf")
 
@@ -97,6 +102,14 @@ def check_foundation(project_root: Path) -> list[str]:
             local_staging_main, local_staging_variables, local_staging_outputs
         )
     )
+    findings.extend(
+        _check_pr_preview_lambda(
+            pr_preview_main,
+            pr_preview_variables,
+            pr_preview_outputs,
+            pr_preview_providers,
+        )
+    )
 
     if not admin_dockerfile:
         findings.append("admin Dockerfile must exist")
@@ -104,6 +117,76 @@ def check_foundation(project_root: Path) -> list[str]:
         findings.append("admin nginx config must listen on port 3000")
     if "COPY admin/" not in admin_dockerfile or "COPY frontend/" in admin_dockerfile:
         findings.append("admin image must copy admin source, not frontend source")
+
+    return findings
+
+
+def _check_pr_preview_lambda(
+    pr_preview_main: str,
+    pr_preview_variables: str,
+    pr_preview_outputs: str,
+    pr_preview_providers: str,
+) -> list[str]:
+    findings: list[str] = []
+
+    lambda_module = _module_block(pr_preview_main, "lambda_backend")
+    if not lambda_module or not _contains_all(
+        lambda_module,
+        [
+            'source = "../../modules/lambda_backend"',
+            "local.preview_id",
+            "state_key_prefix                           = local.preview_id",
+            'alias_name           = "preview"',
+            'SECRET_NAMESPACE    = "/arte-chatbot/pr-preview/${local.preview_id}/"',
+            "CLEANUP_AFTER",
+            "PULL_REQUEST_NUMBER",
+        ],
+    ):
+        findings.append(
+            "PR preview must wire an isolated lambda_backend module with preview alias and state prefix"
+        )
+
+    if not _contains_all(
+        pr_preview_main,
+        ["PreviewId", "PullRequest", "ExpiresAt", "CleanupAfter", "terraform_data"],
+    ):
+        findings.append("PR preview must tag resources for ownership and cleanup")
+
+    if not _contains_all(
+        pr_preview_variables,
+        [
+            'variable "pr_number"',
+            'variable "pr_sha"',
+            'variable "expiration_at"',
+            'default     = "arte-chatbot-preview"',
+            (
+                "Preview secret ARNs must be AWS ARNs and must not point at "
+                "production secrets."
+            ),
+            "default     = 259200",
+        ],
+    ):
+        findings.append(
+            "PR preview variables must require PR identity, cleanup deadline, and non-production secrets"
+        )
+
+    if not _contains_all(
+        pr_preview_outputs,
+        [
+            'output "lambda_backend"',
+            "preview_id",
+            "invoke_url",
+            "state_table_name",
+            "state_key_prefix",
+            "expiration_at",
+        ],
+    ):
+        findings.append(
+            "PR preview outputs must expose endpoint and isolated state metadata"
+        )
+
+    if 'backend "s3" {}' not in pr_preview_providers:
+        findings.append("PR preview Terraform state must use S3 backend configuration")
 
     return findings
 

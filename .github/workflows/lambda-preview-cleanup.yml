@@ -1,0 +1,113 @@
+# Lambda PR preview cleanup
+
+name: Lambda Preview Cleanup
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [closed]
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+  TF_PREVIEW_STATE_BUCKET: ${{ vars.TF_PREVIEW_STATE_BUCKET || 'arte-chatbot-terraform-state' }}
+  TF_PREVIEW_STATE_PREFIX: ${{ vars.TF_PREVIEW_STATE_PREFIX || 'lambda-previews' }}
+
+jobs:
+  cleanup-lambda-preview:
+    name: Destroy Lambda PR Preview
+    runs-on: ubuntu-latest
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.LAMBDA_PREVIEW_ENABLED == 'true'
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    env:
+      AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN || secrets.AWS_DEPLOY_ROLE_ARN }}
+      TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+      TF_VAR_pr_sha: ${{ github.event.pull_request.head.sha }}
+      TF_VAR_pr_head_ref: ${{ github.event.pull_request.head.ref }}
+      TF_VAR_lambda_package_path: /tmp/lambda-preview-cleanup-placeholder.zip
+      TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-2' }}
+      TF_VAR_aws_bucket_name: ${{ secrets.AWS_BUCKET_NAME }}
+      TF_VAR_backend_runtime_secret_arns: ${{ vars.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON || '{}' }}
+      TF_VAR_backend_runtime_environment_variables: ${{ vars.LAMBDA_PREVIEW_RUNTIME_ENV_JSON || '{}' }}
+      TF_VAR_kms_key_arns: ${{ vars.LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON || '[]' }}
+      TF_VAR_allowed_cors_origins: ${{ vars.LAMBDA_PREVIEW_ALLOWED_CORS_ORIGINS || '*' }}
+      TF_VAR_expiration_at: "1970-01-01T00:00:00Z"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify cleanup configuration
+        run: |
+          missing=()
+          for name in AWS_PREVIEW_DEPLOY_ROLE_ARN TF_PREVIEW_STATE_BUCKET TF_VAR_aws_bucket_name; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("${name}")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required Lambda preview cleanup configuration:\n'
+            printf ' - %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+      - name: Create placeholder Lambda zip for destroy planning
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          path = Path("/tmp/lambda-preview-cleanup-placeholder.zip")
+          with zipfile.ZipFile(path, "w") as archive:
+              archive.writestr("placeholder.txt", "cleanup placeholder")
+          PY
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_PREVIEW_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Destroy isolated preview Terraform state
+        id: destroy
+        continue-on-error: true
+        run: |
+          STATE_PREFIX="${TF_PREVIEW_STATE_PREFIX%/}"
+          STATE_KEY="${STATE_PREFIX}/pr-${TF_VAR_pr_number}/terraform.tfstate"
+          terraform -chdir=infra/terraform/envs/pr-preview init \
+            -backend-config="bucket=${TF_PREVIEW_STATE_BUCKET}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+          terraform -chdir=infra/terraform/envs/pr-preview destroy -auto-approve -input=false
+
+      - name: Comment cleanup result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLEANUP_RESULT: ${{ steps.destroy.outcome }}
+        run: |
+          BODY=$(cat <<EOF
+          ### Lambda preview cleanup
+
+          Preview \`pr-${{ github.event.pull_request.number }}\` cleanup result: \`${CLEANUP_RESULT}\`.
+
+          Terraform state key: \`${TF_PREVIEW_STATE_PREFIX%/}/pr-${{ github.event.pull_request.number }}/terraform.tfstate\`.
+          EOF
+          )
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body "${BODY}" \
+            --edit-last \
+            --create-if-none
+
+      - name: Fail when cleanup failed
+        if: steps.destroy.outcome == 'failure'
+        run: exit 1

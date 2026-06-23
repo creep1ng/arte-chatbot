@@ -141,6 +141,7 @@ jobs:
             backend/tests/test_lambda_runtime.py \
             backend/tests/test_repository_wiring.py \
             backend/tests/test_state_repository.py \
+            scripts/tests/test_terraform_foundation.py \
             scripts/tests/test_workflow_deploy_checks.py \
             scripts/tests/test_lambda_delivery_scripts.py
 
@@ -333,7 +334,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lambda-package, evaluation]
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LAMBDA_CUTOVER_ENABLED == 'true') ||
+      (
+        github.event_name == 'push' &&
+        github.ref == 'refs/heads/main' &&
+        vars.LAMBDA_CUTOVER_ENABLED == 'true' &&
+        vars.LAMBDA_STAGING_ENABLED == 'true'
+      ) ||
       (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy-lambda')
     permissions:
       id-token: write
@@ -425,6 +431,7 @@ jobs:
     name: Smoke Lambda Staging
     runs-on: ubuntu-latest
     needs: [lambda-package, deploy-lambda-staging]
+    if: needs.deploy-lambda-staging.result == 'success'
     permissions:
       id-token: write
       contents: read
@@ -491,11 +498,40 @@ jobs:
   cutover-prerequisites:
     name: Verify Lambda-Only Cutover Prerequisites
     runs-on: ubuntu-latest
-    needs: smoke-lambda-staging
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LAMBDA_CUTOVER_ENABLED == 'true'
+    needs: [lambda-package, evaluation, deploy-lambda-staging, smoke-lambda-staging]
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.LAMBDA_CUTOVER_ENABLED == 'true'
+    env:
+      LAMBDA_STAGING_ENABLED: ${{ vars.LAMBDA_STAGING_ENABLED || 'false' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Confirm required package and evaluation gates
+        run: |
+          if [[ "${{ needs.lambda-package.result }}" != "success" ]]; then
+            echo "Lambda cutover blocked: lambda-package result was ${{ needs.lambda-package.result }}."
+            exit 1
+          fi
+          if [[ "${{ needs.evaluation.result }}" != "success" ]]; then
+            echo "Lambda cutover blocked: evaluation result was ${{ needs.evaluation.result }}."
+            exit 1
+          fi
+
+      - name: Confirm optional fixed staging gate status
+        run: |
+          if [[ "${LAMBDA_STAGING_ENABLED}" == "true" ]]; then
+            if [[ "${{ needs.smoke-lambda-staging.result }}" != "success" ]]; then
+              echo "Lambda cutover blocked: fixed staging is enabled but smoke result was ${{ needs.smoke-lambda-staging.result }}."
+              exit 1
+            fi
+            echo "Fixed Lambda staging smoke succeeded."
+          else
+            echo "Fixed Lambda staging is disabled; production cutover prerequisites continue."
+          fi
 
       - name: Confirm destructive Lambda-only production cutover
         run: |
@@ -689,6 +725,314 @@ jobs:
             --function-name "${LAMBDA_PROD_FUNCTION_NAME}" \
             --alias-name "${LAMBDA_PROD_ALIAS_NAME}" \
             --target-version "${LAMBDA_ROLLBACK_TARGET_VERSION}"
+
+  deploy-lambda-preview:
+    name: Deploy Lambda PR Preview
+    runs-on: ubuntu-latest
+    needs: [lambda-package, evaluation]
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.LAMBDA_PREVIEW_ENABLED == 'true'
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      preview-id: ${{ steps.preview.outputs.preview-id }}
+      function-name: ${{ steps.preview.outputs.function-name }}
+      alias-name: ${{ steps.preview.outputs.alias-name }}
+      api-url: ${{ steps.preview.outputs.invoke-url }}
+      state-table-name: ${{ steps.preview.outputs.state-table-name }}
+      state-key-prefix: ${{ steps.preview.outputs.state-key-prefix }}
+      expiration-at: ${{ steps.preview.outputs.expiration-at }}
+    env:
+      AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN || secrets.AWS_DEPLOY_ROLE_ARN }}
+      TF_PREVIEW_STATE_BUCKET: ${{ vars.TF_PREVIEW_STATE_BUCKET || 'arte-chatbot-terraform-state' }}
+      TF_PREVIEW_STATE_PREFIX: ${{ vars.TF_PREVIEW_STATE_PREFIX || 'lambda-previews' }}
+      TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+      TF_VAR_pr_sha: ${{ github.sha }}
+      TF_VAR_pr_head_ref: ${{ github.head_ref }}
+      TF_VAR_lambda_package_path: ${{ github.workspace }}/dist/lambda/backend.zip
+      TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-2' }}
+      TF_VAR_aws_bucket_name: ${{ secrets.AWS_BUCKET_NAME }}
+      TF_VAR_backend_runtime_secret_arns: ${{ vars.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON || '{}' }}
+      TF_VAR_backend_runtime_environment_variables: ${{ vars.LAMBDA_PREVIEW_RUNTIME_ENV_JSON || '{}' }}
+      TF_VAR_kms_key_arns: ${{ vars.LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON || '[]' }}
+      TF_VAR_allowed_cors_origins: ${{ vars.LAMBDA_PREVIEW_ALLOWED_CORS_ORIGINS || '*' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Lambda package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.LAMBDA_PACKAGE_ARTIFACT }}
+          path: dist/lambda
+
+      - name: Verify preview deploy configuration
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+          required = [
+              "AWS_PREVIEW_DEPLOY_ROLE_ARN",
+              "TF_PREVIEW_STATE_BUCKET",
+              "TF_VAR_aws_bucket_name",
+          ]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              print("Missing required Lambda preview deploy configuration:")
+              for name in missing:
+                  print(f" - {name}")
+              sys.exit(1)
+
+          try:
+              runtime_secret_arns = json.loads(
+                  os.environ.get("TF_VAR_backend_runtime_secret_arns", "{}")
+              )
+          except json.JSONDecodeError as exc:
+              print(f"LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON is invalid JSON: {exc}")
+              sys.exit(1)
+
+          required_secret_refs = {"OPENAI_API_KEY", "CHAT_API_KEY"}
+          missing_secret_refs = sorted(required_secret_refs - runtime_secret_arns.keys())
+          if missing_secret_refs:
+              print("Missing required Lambda preview runtime secret ARNs:")
+              for name in missing_secret_refs:
+                  print(f" - {name}")
+              sys.exit(1)
+          PY
+
+      - name: Verify downloaded package hash
+        run: |
+          python scripts/build_lambda_package.py \
+            --scan-only "${LAMBDA_PACKAGE_PATH}" \
+            --assert-sha256 "${{ needs.lambda-package.outputs.package-sha256 }}"
+
+      - name: Set preview expiration
+        run: |
+          EXPIRATION_AT=$(date -u -d '+3 days' '+%Y-%m-%dT%H:%M:%SZ')
+          echo "TF_VAR_expiration_at=${EXPIRATION_AT}" >> "${GITHUB_ENV}"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_PREVIEW_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Apply isolated preview Terraform state
+        id: preview
+        run: |
+          STATE_PREFIX="${TF_PREVIEW_STATE_PREFIX%/}"
+          STATE_KEY="${STATE_PREFIX}/pr-${TF_VAR_pr_number}/terraform.tfstate"
+          terraform -chdir=infra/terraform/envs/pr-preview init \
+            -backend-config="bucket=${TF_PREVIEW_STATE_BUCKET}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+          terraform -chdir=infra/terraform/envs/pr-preview apply -auto-approve -input=false
+          OUTPUT_JSON=$(mktemp)
+          terraform -chdir=infra/terraform/envs/pr-preview output -json lambda_backend > "${OUTPUT_JSON}"
+          OUTPUT_JSON="${OUTPUT_JSON}" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output = json.loads(Path(os.environ["OUTPUT_JSON"]).read_text(encoding="utf-8"))
+          key_map = {
+              "preview_id": "preview-id",
+              "function_name": "function-name",
+              "alias_name": "alias-name",
+              "invoke_url": "invoke-url",
+              "state_table_name": "state-table-name",
+              "state_key_prefix": "state-key-prefix",
+              "expiration_at": "expiration-at",
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as github_output:
+              for source_key, output_key in key_map.items():
+                  print(f"{output_key}={output[source_key]}", file=github_output)
+          PY
+
+  smoke-lambda-preview:
+    name: Smoke Lambda PR Preview
+    runs-on: ubuntu-latest
+    needs: deploy-lambda-preview
+    if: needs.deploy-lambda-preview.result == 'success'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install smoke dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN || secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve preview chat API key from runtime secret ARN
+        env:
+          LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON: ${{ vars.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON }}
+        run: |
+          CHAT_API_KEY_SECRET_ARN=$(python - <<'PY'
+          import json
+          import os
+          import sys
+
+          value = os.environ.get("LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON", "")
+          try:
+              secret_arns = json.loads(value)
+          except json.JSONDecodeError as exc:
+              print(f"Invalid LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON: {exc}", file=sys.stderr)
+              sys.exit(1)
+
+          chat_api_key_arn = secret_arns.get("CHAT_API_KEY", "")
+          if not chat_api_key_arn:
+              print("CHAT_API_KEY ARN is missing from LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON", file=sys.stderr)
+              sys.exit(1)
+
+          print(chat_api_key_arn)
+          PY
+          )
+
+          if [[ "${CHAT_API_KEY_SECRET_ARN}" == arn:aws:secretsmanager:* ]]; then
+            PREVIEW_CHAT_API_KEY=$(aws secretsmanager get-secret-value \
+              --secret-id "${CHAT_API_KEY_SECRET_ARN}" \
+              --query SecretString \
+              --output text)
+          elif [[ "${CHAT_API_KEY_SECRET_ARN}" == arn:aws:ssm:*:parameter/* ]]; then
+            PARAMETER_NAME="/${CHAT_API_KEY_SECRET_ARN#*:parameter/}"
+            if ! PREVIEW_CHAT_API_KEY=$(aws ssm get-parameter \
+              --name "${PARAMETER_NAME}" \
+              --with-decryption \
+              --query Parameter.Value \
+              --output text); then
+              PARAMETER_NAME="${CHAT_API_KEY_SECRET_ARN#*:parameter/}"
+              PREVIEW_CHAT_API_KEY=$(aws ssm get-parameter \
+                --name "${PARAMETER_NAME}" \
+                --with-decryption \
+                --query Parameter.Value \
+                --output text)
+            fi
+          else
+            echo "Unsupported CHAT_API_KEY secret ARN type." >&2
+            exit 1
+          fi
+
+          if [[ -z "${PREVIEW_CHAT_API_KEY}" || "${PREVIEW_CHAT_API_KEY}" == "None" ]]; then
+            echo "Resolved preview CHAT_API_KEY is empty." >&2
+            exit 1
+          fi
+          echo "::add-mask::${PREVIEW_CHAT_API_KEY}"
+          printf 'PREVIEW_CHAT_API_KEY=%s\n' "${PREVIEW_CHAT_API_KEY}" >> "${GITHUB_ENV}"
+
+      - name: Run preview smoke checks
+        env:
+          PREVIEW_API_URL: ${{ needs.deploy-lambda-preview.outputs.api-url }}
+          PREVIEW_STATE_TABLE: ${{ needs.deploy-lambda-preview.outputs.state-table-name }}
+          PREVIEW_STATE_PREFIX: ${{ needs.deploy-lambda-preview.outputs.state-key-prefix }}
+          DENIED_TABLE: ${{ vars.LAMBDA_PREVIEW_IAM_DENIED_DYNAMODB_TABLE_NAME }}
+          PROD_BACKEND_URL: https://${{ secrets.PROD_BACKEND_HOSTNAME }}
+          PROD_LAMBDA_API_URL: ${{ vars.LAMBDA_PROD_API_URL }}
+          SMOKE_CHAT_MESSAGE: ${{ vars.LAMBDA_PREVIEW_SMOKE_CHAT_MESSAGE }}
+        run: |
+          FORBIDDEN_ARGS=()
+          for url in "${PROD_BACKEND_URL}" "${PROD_LAMBDA_API_URL}"; do
+            if [[ -n "${url}" && "${url}" != "https://" ]]; then
+              FORBIDDEN_ARGS+=(--forbidden-url "${url}")
+            fi
+          done
+          DENIED_ARGS=()
+          if [[ -n "${DENIED_TABLE}" ]]; then
+            DENIED_ARGS+=(--expect-iam-denied-dynamodb-table "${DENIED_TABLE}")
+          fi
+          uv run python scripts/lambda_smoke.py \
+            --base-url "${PREVIEW_API_URL}" \
+            --chat-api-key "${PREVIEW_CHAT_API_KEY}" \
+            --chat-message "${SMOKE_CHAT_MESSAGE:-Validación preview PR: responde usando una ficha técnica de panel solar del catálogo.}" \
+            --environment staging \
+            "${FORBIDDEN_ARGS[@]}" \
+            --require-source-docs \
+            --state-table-name "${PREVIEW_STATE_TABLE}" \
+            --state-key-prefix "${PREVIEW_STATE_PREFIX}" \
+            --aws-region "${AWS_REGION}" \
+            "${DENIED_ARGS[@]}"
+
+      - name: Run preview evaluation harness against same endpoint
+        env:
+          API_BASE_URL: ${{ needs.deploy-lambda-preview.outputs.api-url }}
+          EVAL_S3_UPLOAD_ENABLED: "false"
+        run: CHAT_API_KEY="${PREVIEW_CHAT_API_KEY}" uv run python -m evaluation.harness.run --sprint lambda-preview-pr-${{ github.event.pull_request.number }} --no-upload
+
+      - name: Upload preview evaluation results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lambda-preview-evaluation-results-pr-${{ github.event.pull_request.number }}
+          path: evaluation/harness/output/
+          retention-days: 7
+
+  comment-lambda-preview:
+    name: Comment Lambda PR Preview
+    runs-on: ubuntu-latest
+    needs: [lambda-package, deploy-lambda-preview, smoke-lambda-preview]
+    if: |
+      always() &&
+      needs.deploy-lambda-preview.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.LAMBDA_PREVIEW_ENABLED == 'true'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Upsert preview PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_ID: ${{ needs.deploy-lambda-preview.outputs.preview-id }}
+          PREVIEW_API_URL: ${{ needs.deploy-lambda-preview.outputs.api-url }}
+          PREVIEW_FUNCTION_NAME: ${{ needs.deploy-lambda-preview.outputs.function-name }}
+          PREVIEW_STATE_TABLE: ${{ needs.deploy-lambda-preview.outputs.state-table-name }}
+          PREVIEW_STATE_PREFIX: ${{ needs.deploy-lambda-preview.outputs.state-key-prefix }}
+          PREVIEW_EXPIRATION_AT: ${{ needs.deploy-lambda-preview.outputs.expiration-at }}
+          SMOKE_RESULT: ${{ needs.smoke-lambda-preview.result }}
+        run: |
+          BODY=$(cat <<EOF
+          ### Lambda preview environment
+
+          - Preview: \`${PREVIEW_ID}\`
+          - API URL: ${PREVIEW_API_URL}
+          - Lambda function: \`${PREVIEW_FUNCTION_NAME}\`
+          - DynamoDB state: \`${PREVIEW_STATE_TABLE}\` / prefix \`${PREVIEW_STATE_PREFIX}\`
+          - Package SHA256: \`${{ needs.lambda-package.outputs.package-sha256 }}\`
+          - Smoke/evaluation result: \`${SMOKE_RESULT}\`
+          - Cleanup deadline tag: \`${PREVIEW_EXPIRATION_AT}\`
+
+          This preview is isolated per PR and is destroyed automatically when the PR closes.
+          EOF
+          )
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body "${BODY}" \
+            --edit-last \
+            --create-if-none
 
   publish-candidate-images:
     name: Publish PR Candidate Images
