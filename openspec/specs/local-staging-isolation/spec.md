@@ -39,7 +39,7 @@ names, endpoints, state, and credentials.
 
 ### Requirement: ECR-backed Staging Deployments
 
-Local staging deploys SHOULD consume an explicit ECR image tag produced by CI for
+Local staging deployments MUST consume an explicit ECR image tag produced by CI for
 the PR. A developer MAY push a local image to ECR and pass that tag to staging,
 but this is optional and MUST be explicit.
 
@@ -59,8 +59,8 @@ but this is optional and MUST be explicit.
 
 ### Requirement: Staging Expiration Metadata
 
-Local staging SHOULD record an expiration no later than three days after
-creation, and tooling SHOULD make expired environments visible for cleanup.
+Local staging MUST record an expiration no later than three days after creation,
+and tooling MUST make expired environments visible for cleanup.
 
 #### Scenario: Staging records expiration
 
@@ -136,7 +136,7 @@ tables, or origins are used without explicit approval.
 
 ### Requirement: Unique Staging Public Hostnames
 
-Local staging SHOULD expose each environment through a unique non-production
+Local staging MUST expose each environment through a unique non-production
 hostname or direct API endpoint derived from the staging identifier, such as
 `staging-chatbot-<id>.example.com` or a non-production API Gateway endpoint.
 Local staging MUST NOT use the official production service URL. Direct fallback
@@ -162,3 +162,31 @@ production.
 - WHEN a developer chooses direct endpoint testing
 - THEN the fallback is explicit and documented
 - AND it does not weaken production hostname or tunnel isolation
+
+### Requirement: Pull Request Preview Isolation
+
+Ephemeral pull request previews MUST use the `pr-preview` environment contract
+with pull-request-scoped names, Terraform state, API endpoints, DynamoDB tables,
+logs, runtime secret references, and cleanup controls distinct from staging and
+production. Preview deployment MUST be limited to same-repository pull requests.
+
+#### Scenario: Preview uses pull-request-scoped resources
+
+- GIVEN a same-repository pull request requests preview deployment
+- WHEN Terraform plans the preview stack
+- THEN resource names and state are derived from the pull request identity
+- AND staging or production resources are not selected
+
+#### Scenario: Preview cleanup targets only the pull request
+
+- GIVEN a pull-request preview has been deployed
+- WHEN cleanup runs for that pull request
+- THEN only the matching preview resources are destroyed
+- AND shared staging or production state is not mutated
+
+#### Scenario: Forked pull request is blocked before secrets
+
+- GIVEN a pull request originates from a fork
+- WHEN preview gating runs
+- THEN preview deployment is skipped
+- AND deployment secrets, runtime secret ARN JSON, and KMS ARN JSON are not read
