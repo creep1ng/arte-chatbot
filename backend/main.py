@@ -513,7 +513,9 @@ def _parse_chatwoot_payload(raw_payload: bytes) -> ChatwootWebhookPayload:
         raise HTTPException(status_code=422, detail="Invalid Chatwoot payload")
 
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("chatwoot_payload_received %s", _summarize_chatwoot_payload(payload))
+        logger.debug(
+            "chatwoot_payload_received %s", _summarize_chatwoot_payload(payload)
+        )
 
     event = payload.get("event")
     schema_by_event = {
@@ -682,7 +684,9 @@ async def chatwoot_health() -> JSONResponse:
                 "chatwoot_enabled": False,
                 "chatwoot_api": "not_configured",
                 "state_backend": settings.state_backend,
-                "durable_state": "configured" if state_repository is not None else "memory",
+                "durable_state": "configured"
+                if state_repository is not None
+                else "memory",
             },
         )
 
@@ -699,7 +703,10 @@ async def chatwoot_health() -> JSONResponse:
         "healthy"
         if has_chatwoot_config
         and has_webhook_secret
-        and (state_repository is not None or settings.app_env not in {"prod", "production"})
+        and (
+            state_repository is not None
+            or settings.app_env not in {"prod", "production"}
+        )
         else "degraded"
     )
 

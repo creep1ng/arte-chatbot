@@ -96,7 +96,9 @@ def _decode_response_body(response: dict[str, Any]) -> dict[str, Any]:
 def _chatwoot_signed_headers(payload: bytes, secret: str) -> dict[str, str]:
     timestamp = str(int(time.time()))
     signed_payload = f"{timestamp}.".encode("utf-8") + payload
-    digest = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    digest = hmac.new(
+        secret.encode("utf-8"), signed_payload, hashlib.sha256
+    ).hexdigest()
     return {
         "content-type": "application/json",
         "x-chatwoot-timestamp": timestamp,

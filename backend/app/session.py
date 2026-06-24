@@ -375,7 +375,9 @@ class SessionManager:
         if conversation_id is None:
             return history
 
-        data = await self._chatwoot.fetch_messages(int(conversation_id), limit=limit * 2)
+        data = await self._chatwoot.fetch_messages(
+            int(conversation_id), limit=limit * 2
+        )
         await self.hydrate_history_from_chatwoot(session_id, data.get("payload", []))
         return self.get_history(session_id)[-limit:]
 
@@ -392,7 +394,9 @@ class SessionManager:
                 turn.source_documents,
             )
 
-    def _parse_chatwoot_messages(self, messages: List[Dict[str, Any]]) -> List[ChatTurn]:
+    def _parse_chatwoot_messages(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[ChatTurn]:
         """Parse Chatwoot incoming/outgoing messages into conversation turns."""
         turns: List[ChatTurn] = []
         pending_question: Optional[str] = None

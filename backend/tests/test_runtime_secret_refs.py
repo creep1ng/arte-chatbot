@@ -141,9 +141,11 @@ def test_chatwoot_uses_runtime_secret_refs(
         _get_chatwoot_webhook_secret,
     )
 
-    assert _get_chatwoot_agent_bot_token() == secret_ref_environment[
-        "/arte/prod/chatwoot-agent-bot-token"
-    ]
-    assert _get_chatwoot_webhook_secret() == secret_ref_environment[
-        "/arte/prod/chatwoot-webhook-secret"
-    ]
+    assert (
+        _get_chatwoot_agent_bot_token()
+        == secret_ref_environment["/arte/prod/chatwoot-agent-bot-token"]
+    )
+    assert (
+        _get_chatwoot_webhook_secret()
+        == secret_ref_environment["/arte/prod/chatwoot-webhook-secret"]
+    )
