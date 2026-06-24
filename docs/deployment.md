@@ -8,7 +8,7 @@ Production cutover moves the backend from EC2 Compose/Cloudflare Tunnel to AWS L
 |---|---|
 | Backend target | Lambda + API Gateway HTTP API is the cutover target. |
 | Existing path | EC2 Compose/Cloudflare Tunnel production fallback has been removed. |
-| Staging | Lambda staging deploys the same scanned package artifact to a non-production direct endpoint. |
+| Staging | PR previews deploy the same scanned package artifact to isolated non-production direct endpoints. Fixed Lambda staging is optional and no longer blocks production cutover when disabled. |
 | Production Terraform inputs | `TF_VAR_vpc_id`, `TF_VAR_public_subnet_id`, `TF_VAR_cloudflare_account_id`, and `TF_VAR_edge_tunnel_secret` are no longer required. `TF_VAR_cloudflare_zone_id` plus `CLOUDFLARE_API_TOKEN` are used only to manage the backend custom-domain DNS record. |
 | Backend custom domain | `https://chatbot.artesolutions.com.co` is expected to work only after Terraform creates the API Gateway custom domain, ACM DNS validation record, API mapping, and Cloudflare CNAME. The direct `execute-api` URL may work before this. |
 | Session reset policy | No live EC2 sessions exist; cutover may reset in-memory sessions. Durable Lambda state starts in DynamoDB. |
@@ -17,10 +17,10 @@ Production cutover moves the backend from EC2 Compose/Cloudflare Tunnel to AWS L
 
 1. Open the fourth feature-branch-chain PR for delivery gates only.
 2. Let CI lint, run targeted tests, build `dist/lambda/backend.zip`, and scan the package for `.env`, `.env.deploy`, and plaintext credentials.
-3. Deploy Lambda staging from the scanned artifact and smoke the direct staging endpoint.
-4. Run staging `/health`, authenticated `/chat`, S3 File Inputs, DynamoDB persistence, IAM-denied negative probe, and production URL isolation checks.
+3. For PRs, deploy/update the Lambda preview from the scanned artifact and smoke its direct API Gateway endpoint.
+4. Run preview `/health`, authenticated `/chat`, S3 File Inputs, DynamoDB persistence, optional IAM-denied negative probe, and production URL isolation checks.
 5. Plan/apply `infra/terraform/envs/prod` with Lambda-only inputs; do not provide VPC, public subnet, Cloudflare account, or tunnel secret variables. Provide Cloudflare zone/token only for DNS custom-domain management.
-6. Enable Lambda cutover variables and promote the same package hash to the production Lambda alias.
+6. Enable Lambda cutover variables and promote the same package hash to the production Lambda alias. Fixed Lambda staging runs only when `LAMBDA_STAGING_ENABLED=true`.
 7. If production verification fails, restore the previous Lambda alias version with `scripts/lambda_rollback.py`.
 
 ## Deployment configuration matrix
@@ -42,6 +42,7 @@ GitHub Variables are non-sensitive values used by `.github/workflows/ci.yml`.
 | `FRONTEND_ECR_REPOSITORY_URL` | GitHub Variable | `521170872319.dkr.ecr.us-east-2.amazonaws.com/arte-chatbot-prod-frontend` | Frontend ECR repository used by image publishing jobs. |
 | `ADMIN_ECR_REPOSITORY_URL` | GitHub Variable | `521170872319.dkr.ecr.us-east-2.amazonaws.com/arte-chatbot-prod-admin` | Admin ECR repository used by image publishing jobs. |
 | `LAMBDA_CUTOVER_ENABLED` | GitHub Variable | `true` | Enables production Lambda promotion jobs on `main`. Keep `false` or unset to disable production promotion. |
+| `LAMBDA_STAGING_ENABLED` | GitHub Variable | `false` | Enables the legacy fixed Lambda staging gate before production cutover. Keep `false` when only PR previews are configured. |
 | `LAMBDA_PROD_FUNCTION_NAME` | GitHub Variable | `arte-chatbot-prod-backend-lambda` | Production Lambda function to update during promotion. |
 | `LAMBDA_PROD_ALIAS_NAME` | GitHub Variable | `live` | Production Lambda alias that receives traffic. |
 | `LAMBDA_PROD_API_URL` | GitHub Variable | `https://chatbot.artesolutions.com.co` | Production API URL used by production smoke checks. |
@@ -54,6 +55,13 @@ GitHub Variables are non-sensitive values used by `.github/workflows/ci.yml`.
 | `LAMBDA_STAGING_STATE_KEY_PREFIX` | GitHub Variable | `<staging-prefix>` | DynamoDB state prefix checked by staging smoke. |
 | `LAMBDA_STAGING_IAM_DENIED_DYNAMODB_TABLE_NAME` | GitHub Variable | `<denied-table-name>` | Resource expected to fail the IAM-denied staging probe. |
 | `LAMBDA_STAGING_SMOKE_CHAT_MESSAGE` | GitHub Variable | `Validación staging: ...` | Optional staging smoke prompt. |
+| `LAMBDA_PREVIEW_ENABLED` | GitHub Variable | `true` | Enables per-PR Lambda previews for same-repository PRs. |
+| `TF_PREVIEW_STATE_BUCKET` | GitHub Variable | `arte-chatbot-terraform-state` | S3 bucket used by the preview Terraform backend. Defaults to this value in workflows. |
+| `TF_PREVIEW_STATE_PREFIX` | GitHub Variable | `lambda-previews` | S3 key prefix for per-PR Terraform state, producing keys like `lambda-previews/pr-220/terraform.tfstate`. |
+| `LAMBDA_PREVIEW_RUNTIME_ENV_JSON` | GitHub Variable | `{"LOG_LEVEL":"INFO"}` | Optional non-sensitive preview runtime environment variables. |
+| `LAMBDA_PREVIEW_ALLOWED_CORS_ORIGINS` | GitHub Variable | `*` | Comma-separated CORS origins for direct preview API Gateway URLs. Defaults to `*`. |
+| `LAMBDA_PREVIEW_IAM_DENIED_DYNAMODB_TABLE_NAME` | GitHub Variable | `<denied-table-name>` | Optional resource expected to fail the IAM-denied preview probe. |
+| `LAMBDA_PREVIEW_SMOKE_CHAT_MESSAGE` | GitHub Variable | `Validación preview PR: ...` | Optional preview smoke prompt. |
 
 `PROD_BACKEND_RUNTIME_ENV_JSON` is **not used by the current workflow**. Runtime environment values are applied by Terraform through `.env.deploy`, not by GitHub promotion jobs. Chatwoot runtime settings follow the same rule: set them through Terraform inputs, not GitHub Actions variables.
 
@@ -65,11 +73,14 @@ GitHub Secrets are sensitive values used by workflow jobs. They are not read by 
 |---|---|---|---|
 | `AWS_CI_ROLE_ARN` | GitHub Secret | `arn:aws:iam::521170872319:role/<ci-role>` | OIDC role used by CI jobs that need AWS access. |
 | `AWS_DEPLOY_ROLE_ARN` | GitHub Secret | `arn:aws:iam::521170872319:role/<deploy-role>` | OIDC role used by staging/prod Lambda deploy jobs. |
+| `AWS_PREVIEW_DEPLOY_ROLE_ARN` | GitHub Secret | `arn:aws:iam::521170872319:role/<preview-deploy-role>` | OIDC role used to apply/destroy per-PR preview Terraform. Falls back to `AWS_DEPLOY_ROLE_ARN` if omitted. |
+| `LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON` | GitHub Secret | `{"OPENAI_API_KEY":"arn:...","CHAT_API_KEY":"arn:..."}` | SSM/Secrets Manager ARNs injected into preview Lambda as secret refs. The preview smoke job resolves the same `CHAT_API_KEY` ARN through AWS CLI, masks the value, and uses it for `/chat` and evaluation. Preview-scoped ARNs are preferred, but shared runtime ARNs are allowed while bootstrapping previews. |
+| `LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON` | GitHub Secret | `["arn:aws:kms:..."]` | Optional KMS keys needed to decrypt preview runtime secret refs. Use `[]` or omit it when no custom KMS key is needed. |
 | `OPENAI_API_KEY` | GitHub Secret | `<openai-api-key>` | CI/evaluation plaintext credential. Lambda production runtime should use AWS SSM/Secrets Manager instead. |
 | `CHAT_API_KEY` | GitHub Secret | `<chat-api-key>` | Plaintext API key used by production smoke checks. Do not put the Secrets Manager ARN here. |
-| `AWS_BUCKET_NAME` | GitHub Secret | `arte-chatbot-fichas-tecnicas` | S3 bucket used by CI/evaluation jobs. |
+| `AWS_BUCKET_NAME` | GitHub Secret | `arte-chatbot-fichas-tecnicas` | S3 bucket used by CI/evaluation jobs and preview Lambda catalog reads. |
 | `PROD_BACKEND_HOSTNAME` | GitHub Secret | `chatbot.artesolutions.com.co` | Masked production hostname used only as a forbidden URL during staging isolation checks. |
-| `LAMBDA_STAGING_CHAT_API_KEY` | GitHub Secret | `<staging-chat-api-key>` | Plaintext staging `/chat` API key for staging smoke. Required when `LAMBDA_CUTOVER_ENABLED=true` on `main`. |
+| `LAMBDA_STAGING_CHAT_API_KEY` | GitHub Secret | `<staging-chat-api-key>` | Plaintext staging `/chat` API key for fixed staging smoke. Required only when `LAMBDA_STAGING_ENABLED=true` or manual staging deploy is used. |
 
 `PROD_BACKEND_RUNTIME_SECRET_ARNS_JSON` is **not used by the current workflow**. Runtime secret ARNs are Terraform inputs in `.env.deploy`. Keep this secret only if another operator workflow consumes it later.
 
@@ -93,7 +104,7 @@ Lambda runtime secrets live in AWS, not in GitHub. Terraform passes only ARNs in
 
 | Name | Kind | Example | Meaning |
 |---|---|---|---|
-| `/arte-chatbot/prod/openai-api-key` | SSM SecureString or Secrets Manager secret | `sk-proj-...` | Production OpenAI key read by Lambda as `OPENAI_API_KEY`. |
+| `/arte-chatbot/prod/OPENAI_API_KEY` | SSM SecureString or Secrets Manager secret | `sk-proj-...` | Production OpenAI key read by Lambda as `OPENAI_API_KEY`. |
 | `/arte-chatbot-prod/prod/runtime/CHAT_API_KEY` | Secrets Manager secret | `<chat-api-key>` | Production `/chat` API key read by Lambda as `CHAT_API_KEY`. |
 | `/arte-chatbot-prod/prod/runtime/CHATWOOT_AGENT_BOT_TOKEN` | SSM SecureString or Secrets Manager secret | `<chatwoot-agent-bot-token>` | Chatwoot AgentBot API token read by Lambda as `CHATWOOT_AGENT_BOT_TOKEN`. |
 | `/arte-chatbot-prod/prod/runtime/CHATWOOT_WEBHOOK_SECRET` | SSM SecureString or Secrets Manager secret | `<chatwoot-webhook-hmac-secret>` | HMAC secret used to verify `/webhook/chatwoot` signatures. |
@@ -120,7 +131,7 @@ The Lambda environment variable names are generated by Terraform from `backend_r
 
 | Lambda env name | Kind | Example | Meaning |
 |---|---|---|---|
-| `OPENAI_API_KEY_SECRET_REF` | Lambda env var containing ARN | `arn:aws:ssm:us-east-2:521170872319:parameter/arte-chatbot/prod/openai-api-key` | Points Lambda to the OpenAI key secret. |
+| `OPENAI_API_KEY_SECRET_REF` | Lambda env var containing ARN | `arn:aws:ssm:us-east-2:521170872319:parameter/arte-chatbot/prod/OPENAI_API_KEY` | Points Lambda to the OpenAI key secret. |
 | `CHAT_API_KEY_SECRET_REF` | Lambda env var containing ARN | `arn:aws:secretsmanager:us-east-2:521170872319:secret:/arte-chatbot-prod/prod/runtime/CHAT_API_KEY-...` | Points Lambda to the chat API key secret. |
 | `CHATWOOT_AGENT_BOT_TOKEN_SECRET_REF` | Lambda env var containing ARN | `arn:aws:ssm:us-east-2:521170872319:parameter/arte-chatbot-prod/prod/runtime/CHATWOOT_AGENT_BOT_TOKEN` | Points Lambda to the Chatwoot AgentBot token. |
 | `CHATWOOT_WEBHOOK_SECRET_REF` | Lambda env var containing ARN | `arn:aws:ssm:us-east-2:521170872319:parameter/arte-chatbot-prod/prod/runtime/CHATWOOT_WEBHOOK_SECRET` | Points Lambda to the Chatwoot webhook HMAC secret. |
@@ -207,13 +218,30 @@ Operators do not set these directly in GitHub. Terraform creates them on the Lam
 | Tests | Targeted Lambda/runtime/state/delivery tests run before packaging. |
 | Package | `uv run python scripts/build_lambda_package.py` builds `dist/lambda/backend.zip` with the same Python minor version as the Terraform Lambda runtime. |
 | Package scan | The zip is scanned for `.env`, `.env.deploy`, `.aws`, credentials, and obvious plaintext secret markers. |
-| Staging deploy | OIDC assumes `AWS_DEPLOY_ROLE_ARN`; the scanned artifact is published to the staging Lambda alias. |
-| Staging smoke | Direct endpoint validates `/health`, `/chat`, File Inputs/source docs, DynamoDB rows, IAM-denied probe, and production URL isolation. |
-| Staging evaluation | Evaluation harness runs against the same staging endpoint with S3 upload disabled. |
+| PR preview deploy | On same-repository PRs with `LAMBDA_PREVIEW_ENABLED=true`, OIDC assumes `AWS_PREVIEW_DEPLOY_ROLE_ARN` and applies `infra/terraform/envs/pr-preview` with state key `lambda-previews/pr-<number>/terraform.tfstate`. |
+| PR preview smoke | Direct endpoint validates `/health`, `/chat`, File Inputs/source docs, DynamoDB rows, optional IAM-denied probe, and production URL isolation. The job reads the chat API key from the same `CHAT_API_KEY` ARN configured in the `LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON` GitHub Secret; no duplicate GitHub plaintext key is required. |
+| PR preview evaluation | Evaluation harness runs against the same preview endpoint with S3 upload disabled; the workflow comments the URL and validation result on the PR. |
+| PR preview cleanup | `.github/workflows/lambda-preview-cleanup.yml` destroys the per-PR Terraform state when the PR closes or merges. |
+| Fixed staging deploy | Optional. When `LAMBDA_STAGING_ENABLED=true`, OIDC assumes `AWS_DEPLOY_ROLE_ARN`; the scanned artifact is published to the fixed staging Lambda alias. |
+| Fixed staging smoke | Optional. Direct endpoint validates `/health`, `/chat`, File Inputs/source docs, DynamoDB rows, IAM-denied probe, and production URL isolation. |
 | Cutover prerequisite | Production Terraform is Lambda-only and contains no EC2 Compose/Cloudflare Tunnel wiring. |
 | Production promotion | The same package SHA is uploaded to production and the production alias is moved to the new published version. |
 | Production smoke | Production custom domain validates `/health`, `/chat`, and DynamoDB persistence. |
 | Rollback | Previous alias version is captured before promotion and can be restored automatically or manually. |
+
+## PR preview environments
+
+The PR preview path creates one isolated Lambda/API Gateway/DynamoDB stack per same-repository PR:
+
+1. `lambda-package` builds and scans `dist/lambda/backend.zip`.
+2. `deploy-lambda-preview` downloads that artifact, initializes S3 Terraform state at `TF_PREVIEW_STATE_PREFIX/pr-<number>/terraform.tfstate`, and applies `infra/terraform/envs/pr-preview`.
+3. `smoke-lambda-preview` validates the direct API Gateway URL, source documents, and the preview DynamoDB table/prefix.
+4. `comment-lambda-preview` upserts a PR comment with the API URL, Lambda function, state table/prefix, package SHA, validation result, and cleanup deadline.
+5. `lambda-preview-cleanup.yml` runs on PR close/merge and destroys the same Terraform state.
+
+Preview resources are tagged with `Environment=pr-preview`, `PreviewId=pr-<number>`, `PullRequest=<number>`, `ExpiresAt`, and `CleanupAfter`. These tags are the orphan-resource guardrail if a workflow is cancelled before cleanup.
+
+Previews intentionally use direct API Gateway URLs first. DNS per PR is a later enhancement and is not required for this scope.
 
 ## Multi-message buffering on Lambda
 

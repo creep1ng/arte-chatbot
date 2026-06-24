@@ -118,3 +118,25 @@ def test_local_staging_wires_isolated_lambda_backend() -> None:
         "local staging outputs must expose the direct Lambda HTTP API endpoint"
         not in findings
     )
+
+
+def test_pr_preview_wires_isolated_ephemeral_lambda_backend() -> None:
+    """PR previews must use per-PR Lambda/API/DynamoDB resources and S3 state."""
+    findings = _findings()
+
+    assert (
+        "PR preview must wire an isolated lambda_backend module with preview alias and state prefix"
+        not in findings
+    )
+    assert "PR preview must tag resources for ownership and cleanup" not in findings
+    assert (
+        "PR preview variables must require PR identity, cleanup deadline, and non-production secrets"
+        not in findings
+    )
+    assert (
+        "PR preview outputs must expose endpoint and isolated state metadata"
+        not in findings
+    )
+    assert (
+        "PR preview Terraform state must use S3 backend configuration" not in findings
+    )

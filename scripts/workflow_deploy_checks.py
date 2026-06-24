@@ -9,6 +9,7 @@ import re
 
 
 WORKFLOW_PATH = Path(".github/workflows/ci.yml")
+PREVIEW_CLEANUP_WORKFLOW_PATH = Path(".github/workflows/lambda-preview-cleanup.yml")
 PYTHON_VERSION_PATH = Path(".python-version")
 LAMBDA_BACKEND_VARIABLES_PATH = Path(
     "infra/terraform/modules/lambda_backend/variables.tf"
@@ -19,6 +20,7 @@ SERVICES = ("backend", "frontend", "admin")
 def check_workflow_deploy(project_root: Path) -> list[str]:
     """Return static findings for the production deploy workflow contract."""
     workflow = _read(project_root / WORKFLOW_PATH)
+    preview_cleanup_workflow = _read(project_root / PREVIEW_CLEANUP_WORKFLOW_PATH)
     local_python_version = _read(project_root / PYTHON_VERSION_PATH).strip()
     lambda_variables = _read(project_root / LAMBDA_BACKEND_VARIABLES_PATH)
     publish_release_job = _job_block(workflow, "publish-release-images")
@@ -26,6 +28,9 @@ def check_workflow_deploy(project_root: Path) -> list[str]:
     cutover_job = _job_block(workflow, "cutover-prerequisites")
     promote_job = _job_block(workflow, "promote-lambda-production")
     verify_job = _job_block(workflow, "verify-lambda-production")
+    preview_deploy_job = _job_block(workflow, "deploy-lambda-preview")
+    preview_smoke_job = _job_block(workflow, "smoke-lambda-preview")
+    preview_comment_job = _job_block(workflow, "comment-lambda-preview")
 
     findings: list[str] = []
     findings.extend(
@@ -40,6 +45,15 @@ def check_workflow_deploy(project_root: Path) -> list[str]:
     findings.extend(_check_lambda_production_inputs(promote_job, verify_job))
     findings.extend(_check_no_ec2_compose_delivery(workflow))
     findings.extend(_check_lambda_delivery(workflow, cutover_job, promote_job))
+    findings.extend(_check_fixed_staging_optional(workflow, cutover_job))
+    findings.extend(
+        _check_lambda_preview_delivery(
+            preview_deploy_job,
+            preview_smoke_job,
+            preview_comment_job,
+            preview_cleanup_workflow,
+        )
+    )
     findings.extend(
         _check_lambda_python_runtime_alignment(
             workflow,
@@ -47,6 +61,144 @@ def check_workflow_deploy(project_root: Path) -> list[str]:
             local_python_version,
         )
     )
+    return findings
+
+
+def _check_fixed_staging_optional(workflow: str, cutover_job: str) -> list[str]:
+    findings: list[str] = []
+    staging_deploy_job = _job_block(workflow, "deploy-lambda-staging")
+    staging_smoke_job = _job_block(workflow, "smoke-lambda-staging")
+
+    if not staging_deploy_job or not _contains_all(
+        staging_deploy_job,
+        [
+            "vars.LAMBDA_STAGING_ENABLED == 'true'",
+            "workflow_dispatch",
+            "inputs.action == 'deploy-lambda'",
+        ],
+    ):
+        findings.append(
+            "fixed Lambda staging deploy must be optional for main production cutover"
+        )
+
+    staging_smoke_guard = "if: needs.deploy-lambda-staging.result == 'success'"
+    if not staging_smoke_job or staging_smoke_guard not in staging_smoke_job:
+        findings.append(
+            "fixed Lambda staging smoke must run only after staging deploys"
+        )
+
+    if not cutover_job or not _contains_all(
+        cutover_job,
+        [
+            "always()",
+            "needs: [lambda-package, evaluation, deploy-lambda-staging, smoke-lambda-staging]",
+            "LAMBDA_STAGING_ENABLED",
+            "needs.smoke-lambda-staging.result",
+            "Fixed Lambda staging is disabled; production cutover prerequisites continue.",
+        ],
+    ):
+        findings.append(
+            "production cutover must continue when fixed Lambda staging is disabled"
+        )
+
+    return findings
+
+
+def _check_lambda_preview_delivery(
+    preview_deploy_job: str,
+    preview_smoke_job: str,
+    preview_comment_job: str,
+    preview_cleanup_workflow: str,
+) -> list[str]:
+    findings: list[str] = []
+
+    if not preview_deploy_job or not _contains_all(
+        preview_deploy_job,
+        [
+            "needs: [lambda-package, evaluation]",
+            "github.event_name == 'pull_request'",
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            "vars.LAMBDA_PREVIEW_ENABLED == 'true'",
+            "actions/download-artifact@v4",
+            "needs.lambda-package.outputs.package-sha256",
+            "hashicorp/setup-terraform@v3",
+            "terraform -chdir=infra/terraform/envs/pr-preview init",
+            (
+                "terraform -chdir=infra/terraform/envs/pr-preview "
+                "apply -auto-approve -input=false"
+            ),
+            '-backend-config="key=${STATE_KEY}"',
+            "TF_VAR_pr_number",
+            "TF_VAR_backend_runtime_secret_arns: ${{ secrets.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON || '{}' }}",
+            "TF_VAR_kms_key_arns: ${{ secrets.LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON || '[]' }}",
+        ],
+    ):
+        findings.append(
+            "lambda PR preview deploy must use the scanned package artifact and isolated Terraform state"
+        )
+
+    if not preview_smoke_job or not _contains_all(
+        preview_smoke_job,
+        [
+            "scripts/lambda_smoke.py",
+            '--base-url "${PREVIEW_API_URL}"',
+            "LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON: ${{ secrets.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON }}",
+            "Resolve preview chat API key from runtime secret ARN",
+            "aws secretsmanager get-secret-value",
+            "aws ssm get-parameter",
+            "::add-mask::${PREVIEW_CHAT_API_KEY}",
+            "--require-source-docs",
+            '--state-table-name "${PREVIEW_STATE_TABLE}"',
+            '--state-key-prefix "${PREVIEW_STATE_PREFIX}"',
+            '--chat-api-key "${PREVIEW_CHAT_API_KEY}"',
+            (
+                "evaluation.harness.run --sprint lambda-preview-pr-"
+                "${{ github.event.pull_request.number }} --no-upload"
+            ),
+            'CHAT_API_KEY="${PREVIEW_CHAT_API_KEY}"',
+            (
+                "lambda-preview-evaluation-results-pr-"
+                "${{ github.event.pull_request.number }}"
+            ),
+        ],
+    ):
+        findings.append(
+            "lambda PR preview smoke must validate the direct endpoint, state isolation, and evaluation harness"
+        )
+
+    if not preview_comment_job or not _contains_all(
+        preview_comment_job,
+        [
+            "pull-requests: write",
+            "gh pr comment",
+            "--edit-last",
+            "--create-if-none",
+            (
+                "This preview is isolated per PR and is destroyed automatically when "
+                "the PR closes."
+            ),
+        ],
+    ):
+        findings.append("lambda PR preview must comment URL and validation result")
+
+    if not preview_cleanup_workflow or not _contains_all(
+        preview_cleanup_workflow,
+        [
+            "types: [closed]",
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            "vars.LAMBDA_PREVIEW_ENABLED == 'true'",
+            (
+                "terraform -chdir=infra/terraform/envs/pr-preview "
+                "destroy -auto-approve -input=false"
+            ),
+            "TF_PREVIEW_STATE_PREFIX",
+            "gh pr comment",
+        ],
+    ):
+        findings.append(
+            "lambda PR preview cleanup must destroy Terraform state on PR close"
+        )
+
     return findings
 
 
