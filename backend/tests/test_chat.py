@@ -462,7 +462,7 @@ class TestChatEndpointWithToolCall:
         self, mock_file_inputs: MagicMock, mock_s3: MagicMock, mock_llm: MagicMock
     ) -> None:
         """Test chat endpoint with tool call in response."""
-        # First LLM call returns tool call, second call should return no tool calls (normal response)
+        # First LLM call returns tool call; the file-input response is returned directly.
         tool_call_response = make_llm_response(
             text="",
             tool_calls=[
@@ -477,11 +477,7 @@ class TestChatEndpointWithToolCall:
             ],
         )
 
-        normal_response = make_llm_response(
-            text="El panel Jinko Tiger Pro 460W tiene una potencia de 460W.",
-        )
-
-        mock_llm.side_effect = [tool_call_response, normal_response]
+        mock_llm.return_value = tool_call_response
 
         # Mock S3 download
         mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
@@ -727,11 +723,10 @@ class TestSourceDocumentsBehavior:
             },
         }
 
-        # First LLM call returns tool call, second returns normal response
+        # First LLM call returns tool call; the file-input response is returned directly.
         tool_call_response = make_llm_response(text="", tool_calls=[leer_tool_call])
-        normal_response = make_llm_response(text="Contenido ficha")
 
-        mock_llm.side_effect = [tool_call_response, normal_response]
+        mock_llm.return_value = tool_call_response
         mock_s3.download_pdf.return_value = b"%PDF-1.4 test content"
         mock_file_inputs.upload_pdf.return_value = "file-abc123"
 
@@ -817,11 +812,11 @@ class TestAgenticLoopBehavior:
             },
         }
 
-        # Mock LLM side effects: first call buscar, second call leer, third call returns final response
+        # Mock LLM side effects: first call buscar, second call leer. The file-input
+        # response is returned directly to avoid a redundant final LLM call.
         mock_llm.side_effect = [
             make_llm_response(text="", tool_calls=[buscar_tool_call]),
             make_llm_response(text="", tool_calls=[leer_tool_call]),
-            make_llm_response(text="Ficha técnica procesada"),
         ]
 
         mock_catalog = MagicMock()
@@ -858,7 +853,7 @@ class TestAgenticLoopBehavior:
         assert response.status_code == 200
         data = response.json()
         assert data["response"] == "Ficha técnica procesada"
-        assert mock_llm.call_count == 3
+        assert mock_llm.call_count == 2
         mock_catalog.search.assert_called_once()
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
@@ -945,11 +940,10 @@ class TestAgenticLoopBehavior:
             },
         }
 
-        # First LLM call returns leer tool call, second call returns normal response
+        # First LLM call returns leer tool call; the file-input response is returned directly.
         tool_call_response = make_llm_response(text="", tool_calls=[leer_tool_call])
-        normal_response = make_llm_response(text="Información obtenida directamente")
 
-        mock_llm.side_effect = [tool_call_response, normal_response]
+        mock_llm.return_value = tool_call_response
 
         with (
             patch("backend.main.get_catalog") as mock_get_catalog,
@@ -1075,15 +1069,7 @@ class TestTokenAccumulation:
             output_tokens=50,
             total_tokens=150,
         )
-        # Final call after tool: 200 in, 80 out
-        final_response = make_llm_response(
-            text="[INTENT: FAQ] Información del panel",
-            input_tokens=200,
-            output_tokens=80,
-            total_tokens=280,
-        )
-
-        mock_llm.side_effect = [tool_response, final_response]
+        mock_llm.return_value = tool_response
         mock_s3.download_pdf.return_value = b"%PDF-1.4 test"
         mock_file_inputs.upload_pdf.return_value = "file-abc"
         mock_file_inputs.delete_file.return_value = None
@@ -1111,12 +1097,12 @@ class TestTokenAccumulation:
 
         assert response.status_code == 200
         data = response.json()
-        # 100 (main call 1) + 300 (file call) + 200 (main call 2) = 600
-        assert data["input_tokens"] == 600
-        # 50 + 120 + 80 = 250
-        assert data["output_tokens"] == 250
-        # 150 + 420 + 280 = 850
-        assert data["total_tokens"] == 850
+        # 100 (main call) + 300 (file call) = 400
+        assert data["input_tokens"] == 400
+        # 50 + 120 = 170
+        assert data["output_tokens"] == 170
+        # 150 + 420 = 570
+        assert data["total_tokens"] == 570
 
     def test_escalation_returns_zero_tokens(self) -> None:
         """Test that escalation (no LLM call) returns zero tokens."""
