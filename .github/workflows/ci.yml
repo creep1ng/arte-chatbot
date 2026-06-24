@@ -967,7 +967,7 @@ jobs:
           uv run python scripts/lambda_smoke.py \
             --base-url "${PREVIEW_API_URL}" \
             --chat-api-key "${PREVIEW_CHAT_API_KEY}" \
-            --chat-message "${SMOKE_CHAT_MESSAGE:-Validación preview PR: responde usando una ficha técnica de panel solar del catálogo.}" \
+            --chat-message "${SMOKE_CHAT_MESSAGE:-Validación preview PR: usa la herramienta leer_ficha_tecnica con ruta_s3 raw/paneles/PANEL SOLAR MONOCRISTALINO LONGI 605W.pdf y responde en una frase corta con la potencia del panel.}" \
             --environment staging \
             "${FORBIDDEN_ARGS[@]}" \
             --require-source-docs \
