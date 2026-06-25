@@ -83,6 +83,36 @@ def test_lambda_staging_deploy_and_smoke_validate_isolated_serverless_runtime() 
         "lambda staging smoke must validate chat, File Inputs, DynamoDB, IAM denial, and URL isolation"
         not in findings
     )
+    assert (
+        "fixed Lambda staging deploy must be optional for main production cutover"
+        not in findings
+    )
+    assert (
+        "fixed Lambda staging smoke must run only after staging deploys" not in findings
+    )
+    assert (
+        "production cutover must continue when fixed Lambda staging is disabled"
+        not in findings
+    )
+
+
+def test_lambda_pr_preview_deploys_smokes_comments_and_cleans_up() -> None:
+    """PR previews must be isolated, validated, discoverable, and disposable."""
+    findings = _findings()
+
+    assert (
+        "lambda PR preview deploy must use the scanned package artifact and isolated Terraform state"
+        not in findings
+    )
+    assert (
+        "lambda PR preview smoke must validate the direct endpoint, state isolation, and evaluation harness"
+        not in findings
+    )
+    assert "lambda PR preview must comment URL and validation result" not in findings
+    assert (
+        "lambda PR preview cleanup must destroy Terraform state on PR close"
+        not in findings
+    )
 
 
 def test_lambda_production_cutover_is_lambda_only_and_promotes_same_package() -> None:

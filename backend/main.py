@@ -56,6 +56,7 @@ from backend.app.greeting import maybe_prepend_greeting
 from backend.app.llm_client import (
     _WHATSAPP_SPLIT_INSTRUCTIONS,
     ARTE_SYSTEM_PROMPT,
+    DATASHEET_SYSTEM_PROMPT,
     LLMClient,
     LLMServiceError,
     expand_query_with_context,
@@ -645,6 +646,7 @@ async def _process_leer_ficha_tecnica(
     llm_client: LLMClient,
     s3_client: S3Client,
     file_inputs_client: FileInputsClient,
+    system_prompt: Optional[str] = None,
 ) -> tuple[LLMResponse, list[str]]:
     """Process a tool call for reading a technical datasheet.
 
@@ -652,6 +654,7 @@ async def _process_leer_ficha_tecnica(
         tool_call: The tool call dict from OpenAI response.
         user_message: The original user message.
         session_id: The session identifier.
+        system_prompt: Optional system prompt override for the File Input call.
 
     Returns:
         Tuple of (LLMResponse, list_of_s3_paths_used).
@@ -834,6 +837,7 @@ async def _process_leer_ficha_tecnica(
             message=user_message,
             file_id=file_id,
             session_id=session_id,
+            system_prompt=system_prompt,
         )
         return llm_response, [ruta_s3]
     finally:
@@ -893,10 +897,18 @@ async def _process_chat_message(
         inferred_profile, PROFILE_INSTRUCTIONS["intermedio"]
     )
     system_prompt_with_profile = f"{ARTE_SYSTEM_PROMPT}\n\n## Adaptación al perfil del usuario\n{profile_instructions}"
+    datasheet_system_prompt = (
+        f"{ARTE_SYSTEM_PROMPT}\n\n"
+        "## Lectura de ficha técnica adjunta\n"
+        f"{DATASHEET_SYSTEM_PROMPT}\n\n"
+        "## Adaptación al perfil del usuario\n"
+        f"{profile_instructions}"
+    )
 
     # P2: Append WhatsApp split instructions if enabled
     if settings.split_messages_enabled:
         system_prompt_with_profile += _WHATSAPP_SPLIT_INSTRUCTIONS
+        datasheet_system_prompt += _WHATSAPP_SPLIT_INSTRUCTIONS
 
     # Detect escalation
     escalation_result = default_detector.detect(message)
@@ -1181,6 +1193,7 @@ async def _process_chat_message(
                 )
 
             tool_results: list[dict[str, Any]] = []
+            direct_file_response_texts: list[str] = []
 
             for tool_call in tool_calls:
                 function_name = tool_call.get("function", {}).get("name")
@@ -1222,6 +1235,7 @@ async def _process_chat_message(
                             llm_client=llm_client,
                             s3_client=s3_client,
                             file_inputs_client=file_inputs_client,
+                            system_prompt=datasheet_system_prompt,
                         )
                         acc_input_tokens += ficha_response.input_tokens
                         acc_output_tokens += ficha_response.output_tokens
@@ -1230,6 +1244,7 @@ async def _process_chat_message(
                         source_docs.extend(
                             [SourceDocument(ruta=ruta) for ruta in new_source_docs]
                         )
+                        direct_file_response_texts.append(ficha_response.text)
 
                         tool_results.append(
                             {
@@ -1334,6 +1349,93 @@ async def _process_chat_message(
                             "success": False,
                         }
                     )
+
+            direct_file_response_text = "\n\n".join(
+                text.strip() for text in direct_file_response_texts if text.strip()
+            )
+            if direct_file_response_text:
+                intent_type, confidence, cleaned_content = _extract_intent_type(
+                    direct_file_response_text
+                )
+                intent_for_behavior = intent_type or "FAQ"
+                escalate = intent_for_behavior in ESCALATE_INTENTS
+                is_out_of_domain = intent_for_behavior == "fuera_de_dominio"
+                if escalate:
+                    response_text = DEFAULT_ESCALATION_MESSAGE
+                elif is_out_of_domain:
+                    response_text = OUT_OF_DOMAIN_MESSAGE
+                else:
+                    response_text = cleaned_content
+
+                if (
+                    not escalate
+                    and not is_out_of_domain
+                    and settings.whatsapp_formatter_enabled
+                ):
+                    response_text = format_for_whatsapp(cleaned_content)
+
+                split_messages: list[str] = []
+                split_delays: list[int] = []
+                if not escalate and not is_out_of_domain:
+                    split_messages, split_delays = process_split_messages(
+                        text=response_text,
+                        intent_type=intent_for_behavior,
+                        llm_regenerate_fn=None,
+                    )
+                if split_messages:
+                    split_messages[0] = maybe_prepend_greeting(
+                        session_id=session_id,
+                        response_text=split_messages[0],
+                        intent_type=intent_for_behavior,
+                        escalate=escalate,
+                    )
+                    response_text = "\n\n".join(split_messages)
+                else:
+                    response_text = maybe_prepend_greeting(
+                        session_id=session_id,
+                        response_text=response_text,
+                        intent_type=intent_for_behavior,
+                        escalate=escalate,
+                    )
+
+                session_manager.add_turn(
+                    session_id=session_id,
+                    question=message,
+                    answer=response_text,
+                    source_documents=[s.ruta for s in source_docs],
+                )
+                session_manager.add_token_usage(
+                    session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+                )
+                response_time_ms = (time.time() - request_start) * 1000
+                _fire_conversation_log(
+                    session_id=session_id,
+                    user_message=message,
+                    bot_response=response_text,
+                    intent_type=intent_for_behavior,
+                    escalate=escalate,
+                    source_documents=[s.ruta for s in source_docs],
+                    input_tokens=acc_input_tokens,
+                    output_tokens=acc_output_tokens,
+                    total_tokens=acc_total_tokens,
+                    response_time_ms=response_time_ms,
+                    user_profile=inferred_profile,
+                )
+                return ChatResponse(
+                    response=response_text,
+                    escalate=escalate,
+                    intent_type=intent_type,
+                    confidence=confidence,
+                    session_id=session_id,
+                    source_documents=source_docs,
+                    num_sources=len(source_docs),
+                    user_profile=inferred_profile,
+                    messages=split_messages,
+                    delays_ms=split_delays,
+                    input_tokens=acc_input_tokens,
+                    output_tokens=acc_output_tokens,
+                    total_tokens=acc_total_tokens,
+                )
 
             if all(not r["success"] for r in tool_results):
                 error_content = "\n".join(

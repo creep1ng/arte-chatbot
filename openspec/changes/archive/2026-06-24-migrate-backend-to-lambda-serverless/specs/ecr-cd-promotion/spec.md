@@ -31,6 +31,7 @@ Images and Lambda packages MUST be promoted to deployable releases only after CI
 ### Requirement: Production Deploys Only From Main
 
 Production ECS or Lambda deployment MUST run only from a merge or push to `main`. Pull requests MAY build and test candidates but MUST NOT deploy production.
+Same-repository pull requests MAY deploy an ephemeral preview stack after gates pass; forked pull requests MUST NOT deploy previews or read deployment secrets.
 (Previously: Production deployment was limited to ECS from `main`.)
 
 #### Scenario: Main branch deploys production
@@ -46,6 +47,21 @@ Production ECS or Lambda deployment MUST run only from a merge or push to `main`
 - WHEN all build and evaluation gates pass
 - THEN production deployment is skipped
 - AND candidate artifacts are not treated as production releases
+
+#### Scenario: Same-repository pull request deploys only preview
+
+- GIVEN CI runs for a same-repository pull request
+- AND preview deployment is enabled
+- WHEN package, tests, and evaluation gates pass
+- THEN the workflow may deploy or update the pull-request preview stack
+- AND no production alias or production route is updated
+
+#### Scenario: Pull request preview cleanup runs on close
+
+- GIVEN a pull-request preview stack exists
+- WHEN the pull request is closed
+- THEN the workflow destroys the matching preview environment
+- AND cleanup does not require production deployment permissions beyond the preview-scoped resources
 
 ### Requirement: Immutable Image and Task Definition Promotion
 
@@ -89,3 +105,10 @@ The CD workflow MUST use short-lived AWS credentials and least-privilege permiss
 - GIVEN the deployment role is scoped to Arte Chatbot deployment resources
 - WHEN the workflow promotes images or Lambda packages
 - THEN it completes without requiring administrator-wide AWS permissions
+
+#### Scenario: Preview smoke can read state evidence
+
+- GIVEN the preview workflow deploy role runs smoke checks after deployment
+- WHEN it validates DynamoDB persistence for the generated chat session
+- THEN the role allows scoped `dynamodb:Query` and `dynamodb:GetItem`
+- AND the workflow fails if those reads are denied
