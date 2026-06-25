@@ -44,6 +44,31 @@ Staging MUST expose a quick direct non-production chatbot endpoint for validatio
 - THEN validation fails with an authorization error
 - AND no fallback credential is used
 
+### Requirement: Pull Request Preview Isolation
+
+Ephemeral pull request previews MUST use the `pr-preview` environment contract with pull-request-scoped names, Terraform state, API endpoints, DynamoDB tables, logs, runtime secret references, and cleanup controls distinct from staging and production. Preview deployment MUST be limited to same-repository pull requests.
+
+#### Scenario: Preview uses pull-request-scoped resources
+
+- GIVEN a same-repository pull request requests preview deployment
+- WHEN Terraform plans the preview stack
+- THEN resource names and state are derived from the pull request identity
+- AND staging or production resources are not selected
+
+#### Scenario: Preview cleanup targets only the pull request
+
+- GIVEN a pull-request preview has been deployed
+- WHEN cleanup runs for that pull request
+- THEN only the matching preview resources are destroyed
+- AND shared staging or production state is not mutated
+
+#### Scenario: Forked pull request is blocked before secrets
+
+- GIVEN a pull request originates from a fork
+- WHEN preview gating runs
+- THEN preview deployment is skipped
+- AND deployment secrets, runtime secret ARN JSON, and KMS ARN JSON are not read
+
 ## MODIFIED Requirements
 
 ### Requirement: Isolated Tokens, Secrets, and Parameters
