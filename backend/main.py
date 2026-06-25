@@ -36,21 +36,29 @@ from backend.app.logging_config import setup_logging
 # Configure logging before anything else (reads LOG_LEVEL from centralized settings)
 setup_logging()
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from mangum import Mangum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from backend.app.auth import api_key_principal, verify_api_key
+from backend.app.auth import (
+    api_key_principal,
+    verify_api_key,
+    verify_chatwoot_signature,
+)
 from backend.app.catalog import CatalogError, get_catalog
+from backend.app.chatwoot_client import ChatwootClient
+from backend.app.chatwoot_handler import ChatwootHandler
 from backend.app.config import settings
+from backend.app.config_provider import EnvConfigProvider
 from backend.app.conversation_logger import (
     ConversationLogEntry,
     ConversationLogger,
     redact_text,
 )
 from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+from backend.app.escalation_handler import EscalationHandler
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.greeting import maybe_prepend_greeting
 from backend.app.llm_client import (
@@ -62,6 +70,7 @@ from backend.app.llm_client import (
     expand_query_with_context,
 )
 from backend.app.message_buffer import (
+    ChatwootMessageBuffer,
     add_to_buffer,
     clear_pending_chat_response,
     clear_processing,
@@ -79,7 +88,15 @@ from backend.app.message_buffer import (
 
 from backend.app.message_splitter import process_split_messages
 from backend.app.s3_client import S3Client, S3DownloadError
-from backend.app.schemas import LLMResponse, SourceDocument
+from backend.app.schemas import (
+    ChatwootWebhookPayload,
+    ConversationCreatedPayload,
+    ConversationStatusChangedPayload,
+    LLMResponse,
+    MessageCreatedPayload,
+    SourceDocument,
+)
+from backend.app.secret_resolver import configured_secret_value
 from backend.app.security import (
     bind_or_validate_session,
     check_rate_limit,
@@ -277,6 +294,74 @@ def get_file_inputs_client() -> FileInputsClient:
     return file_inputs_client
 
 
+def get_config_provider() -> EnvConfigProvider:
+    """Dependency that provides the runtime configuration provider."""
+    return EnvConfigProvider()
+
+
+def _get_chatwoot_agent_bot_token() -> Optional[str]:
+    """Return the Chatwoot AgentBot token from plaintext or secret refs."""
+    return configured_secret_value(
+        settings.chatwoot_agent_bot_token,
+        settings.chatwoot_agent_bot_token_secret_ref,
+        region_name=settings.aws_region,
+    )
+
+
+def _get_chatwoot_webhook_secret() -> Optional[str]:
+    """Return the Chatwoot webhook secret from plaintext or secret refs."""
+    return configured_secret_value(
+        settings.chatwoot_webhook_secret,
+        settings.chatwoot_webhook_secret_ref,
+        region_name=settings.aws_region,
+    )
+
+
+def _ensure_chatwoot_state_is_safe() -> None:
+    """Reject unsafe production Chatwoot state configuration."""
+    if settings.app_env in {"prod", "production"} and state_repository is None:
+        raise RuntimeError("Chatwoot requires STATE_BACKEND=dynamodb in production")
+
+
+def get_chatwoot_client() -> ChatwootClient:
+    """Dependency that provides a configured Chatwoot API client."""
+    agent_bot_token = _get_chatwoot_agent_bot_token()
+    if (
+        not settings.chatwoot_api_url
+        or not agent_bot_token
+        or settings.chatwoot_account_id is None
+    ):
+        raise RuntimeError("Chatwoot API client is not configured")
+
+    return ChatwootClient(
+        base_url=settings.chatwoot_api_url,
+        agent_bot_token=agent_bot_token,
+        account_id=settings.chatwoot_account_id,
+    )
+
+
+def get_chatwoot_handler() -> ChatwootHandler:
+    """Dependency that wires Chatwoot webhook handling services."""
+    _ensure_chatwoot_state_is_safe()
+    config_provider = get_config_provider()
+    chatwoot_client = get_chatwoot_client()
+    message_buffer = ChatwootMessageBuffer(state_repository)
+    escalation_handler = EscalationHandler(
+        chatwoot_client=chatwoot_client,
+        config_provider=config_provider,
+        session_manager=session_manager,
+    )
+    return ChatwootHandler(
+        chatwoot_client=chatwoot_client,
+        config_provider=config_provider,
+        state_repository=state_repository,
+        message_buffer=message_buffer,
+        session_manager=session_manager,
+        escalation_handler=escalation_handler,
+        process_message=_process_chatwoot_message,
+    )
+
+
 # Lazy-load catalog to allow /health to work without AWS credentials in CI
 _catalog_search: Optional[Any] = None
 
@@ -287,6 +372,17 @@ def get_catalog_search() -> Any:
     if _catalog_search is None:
         _catalog_search = get_catalog()
     return _catalog_search
+
+
+class _CatalogSearchProxy:
+    """Lazy proxy kept for tests that patch ``backend.main.catalog_search``."""
+
+    def search(self, *args: Any, **kwargs: Any) -> Any:
+        """Delegate search to the lazily loaded catalog."""
+        return get_catalog_search().search(*args, **kwargs)
+
+
+catalog_search = _CatalogSearchProxy()
 
 
 MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
@@ -397,6 +493,232 @@ async def health_check() -> JSONResponse:
             "status": "healthy",
             "service": "arte-chatbot-backend",
             "version": "1.0.0",
+        },
+    )
+
+
+def _parse_chatwoot_payload(raw_payload: bytes) -> ChatwootWebhookPayload:
+    """Parse a raw Chatwoot webhook body into the matching schema."""
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        logger.warning("chatwoot_payload_invalid_json size=%s", len(raw_payload))
+        raise HTTPException(status_code=422, detail="Invalid Chatwoot payload") from exc
+
+    if not isinstance(payload, dict):
+        logger.warning(
+            "chatwoot_payload_invalid_type payload_type=%s",
+            type(payload).__name__,
+        )
+        raise HTTPException(status_code=422, detail="Invalid Chatwoot payload")
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "chatwoot_payload_received %s", _summarize_chatwoot_payload(payload)
+        )
+
+    event = payload.get("event")
+    schema_by_event = {
+        "message_created": MessageCreatedPayload,
+        "conversation_created": ConversationCreatedPayload,
+        "conversation_status_changed": ConversationStatusChangedPayload,
+    }
+    schema = schema_by_event.get(str(event))
+    if event == "message_created":
+        payload = _normalize_message_created_payload(payload)
+    try:
+        if schema is None:
+            return ChatwootWebhookPayload.model_validate(payload)
+        return schema.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "chatwoot_payload_validation_failed event=%s schema=%s errors=%s summary=%s",
+            event,
+            schema.__name__ if schema is not None else ChatwootWebhookPayload.__name__,
+            exc.errors(),
+            _summarize_chatwoot_payload(payload),
+        )
+        if schema is not None and event is not None:
+            return ChatwootWebhookPayload.model_validate(
+                {
+                    "event": str(event),
+                    "account": payload.get("account")
+                    if isinstance(payload.get("account"), dict)
+                    else {},
+                }
+            )
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+def _normalize_message_created_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Chatwoot's flat message webhook shape to internal schema."""
+    normalized = dict(payload)
+    if "message" not in normalized:
+        normalized["message"] = {
+            "id": normalized.get("id"),
+            "content": normalized.get("content"),
+            "content_type": normalized.get("content_type", "text"),
+            "message_type": _normalize_chatwoot_message_type(
+                normalized.get("message_type", "incoming")
+            ),
+            "private": normalized.get("private", False),
+        }
+    elif isinstance(normalized["message"], dict):
+        normalized["message"] = {
+            **normalized["message"],
+            "message_type": _normalize_chatwoot_message_type(
+                normalized["message"].get("message_type", "incoming")
+            ),
+        }
+
+    sender = normalized.get("sender")
+    if isinstance(sender, dict):
+        sender_type = sender.get("type")
+        if isinstance(sender_type, str):
+            normalized["sender"] = {**sender, "type": sender_type.lower()}
+        elif _looks_like_chatwoot_contact(sender):
+            normalized["sender"] = {**sender, "type": "contact"}
+
+    conversation = normalized.get("conversation")
+    if isinstance(conversation, dict) and conversation.get("contact_id") is None:
+        contact_inbox = conversation.get("contact_inbox")
+        if isinstance(contact_inbox, dict):
+            normalized["conversation"] = {
+                **conversation,
+                "contact_id": contact_inbox.get("contact_id"),
+            }
+
+    return normalized
+
+
+def _normalize_chatwoot_message_type(value: Any) -> Any:
+    """Normalize Chatwoot Rails enum values to API string values."""
+    if isinstance(value, int):
+        return {
+            0: "incoming",
+            1: "outgoing",
+            2: "activity",
+        }.get(value, value)
+    return value
+
+
+def _looks_like_chatwoot_contact(sender: dict[str, Any]) -> bool:
+    """Return true when a Chatwoot sender dict has contact-only fields."""
+    return (
+        any(
+            sender.get(key) is not None
+            for key in (
+                "phone_number",
+                "email",
+                "identifier",
+            )
+        )
+        or "blocked" in sender
+    )
+
+
+def _summarize_chatwoot_payload(payload: dict[str, Any]) -> str:
+    """Return a PII-light summary for webhook diagnostics."""
+    conversation = payload.get("conversation")
+    message = payload.get("message")
+    sender = payload.get("sender")
+    return (
+        f"event={payload.get('event')!r} "
+        f"keys={sorted(payload.keys())} "
+        f"conversation_keys="
+        f"{sorted(conversation.keys()) if isinstance(conversation, dict) else None} "
+        f"message_keys={sorted(message.keys()) if isinstance(message, dict) else None} "
+        f"sender_keys={sorted(sender.keys()) if isinstance(sender, dict) else None} "
+        f"has_top_level_message_fields="
+        f"{any(key in payload for key in ('id', 'content', 'content_type', 'message_type'))}"
+    )
+
+
+@app.post("/webhook/chatwoot")
+async def chatwoot_webhook(
+    request: Request,
+    x_chatwoot_signature: Annotated[Optional[str], Header()] = None,
+    x_chatwoot_timestamp: Annotated[Optional[str], Header()] = None,
+    x_hub_signature_256: Annotated[Optional[str], Header()] = None,
+) -> JSONResponse:
+    """Receive, verify, validate, and dispatch Chatwoot webhooks."""
+    if not settings.chatwoot_enabled:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Chatwoot integration disabled"},
+        )
+
+    raw_payload = await request.body()
+    signature = x_chatwoot_signature or x_hub_signature_256
+    if not verify_chatwoot_signature(
+        raw_payload,
+        signature,
+        _get_chatwoot_webhook_secret(),
+        timestamp=x_chatwoot_timestamp,
+    ):
+        raise HTTPException(status_code=401, detail="Invalid Chatwoot signature")
+
+    payload = _parse_chatwoot_payload(raw_payload)
+    dependency = (
+        request.app.dependency_overrides.get(get_chatwoot_handler)
+        or get_chatwoot_handler
+    )
+    handler = dependency()
+    try:
+        await handler.handle_event(payload)
+    except Exception as exc:
+        logger.exception("Chatwoot webhook handler failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Chatwoot handler failed") from exc
+
+    return JSONResponse(status_code=200, content={"status": "accepted"})
+
+
+@app.get("/health/chatwoot")
+async def chatwoot_health() -> JSONResponse:
+    """Report Chatwoot integration health without external API calls."""
+    if not settings.chatwoot_enabled:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "disabled",
+                "chatwoot_enabled": False,
+                "chatwoot_api": "not_configured",
+                "state_backend": settings.state_backend,
+                "durable_state": "configured"
+                if state_repository is not None
+                else "memory",
+            },
+        )
+
+    has_chatwoot_config = bool(
+        settings.chatwoot_api_url
+        and _get_chatwoot_agent_bot_token()
+        and settings.chatwoot_account_id is not None
+    )
+    has_webhook_secret = bool(_get_chatwoot_webhook_secret())
+    durable_state = "configured" if state_repository is not None else "memory"
+    chatwoot_api_status = "configured" if has_chatwoot_config else "not_configured"
+    webhook_status = "configured" if has_webhook_secret else "not_configured"
+    status_value = (
+        "healthy"
+        if has_chatwoot_config
+        and has_webhook_secret
+        and (
+            state_repository is not None
+            or settings.app_env not in {"prod", "production"}
+        )
+        else "degraded"
+    )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": status_value,
+            "chatwoot_enabled": True,
+            "chatwoot_api": chatwoot_api_status,
+            "webhook_secret": webhook_status,
+            "state_backend": settings.state_backend,
+            "durable_state": durable_state,
         },
     )
 
@@ -1593,6 +1915,21 @@ async def _process_chat_message(
             e,
         )
         raise
+
+
+async def _process_chatwoot_message(
+    session_id: str, message: str, history: list[Any]
+) -> str:
+    """Process a Chatwoot message through the standard chatbot pipeline."""
+    del history
+    response = await _process_chat_message(
+        session_id=session_id,
+        message=message,
+        llm_client=llm_client,
+        s3_client=s3_client,
+        file_inputs_client=file_inputs_client,
+    )
+    return response.response
 
 
 async def _on_buffer_window_expired(session_id: str, joined_message: str) -> None:

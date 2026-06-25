@@ -43,6 +43,26 @@ def test_rate_limiter_delegates_to_repository() -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_manager_delegates_chatwoot_mapping_to_repository() -> None:
+    """Chatwoot conversation mappings survive SessionManager instances."""
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table)
+    first_manager = SessionManager(state_repository=repository)
+
+    session_id = await first_manager.get_or_create_session_for_conversation(
+        "42",
+        account_id=1,
+    )
+
+    cold_start_manager = SessionManager(
+        state_repository=DynamoDBStateRepository(table=table)
+    )
+
+    assert await cold_start_manager.get_session_id("42") == session_id
+    assert await cold_start_manager.get_conversation_id(session_id) == "42"
+
+
+@pytest.mark.asyncio
 async def test_message_buffer_delegates_polling_state_to_repository() -> None:
     """Buffer and pending response state survive module-level memory resets."""
     from backend.app import message_buffer

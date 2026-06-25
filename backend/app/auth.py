@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import time
 from typing import Optional
 
 from fastapi import Security, HTTPException, status
@@ -49,3 +50,43 @@ def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
 def api_key_principal(api_key: str) -> str:
     """Return a stable non-secret principal identifier for an API key."""
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def verify_chatwoot_signature(
+    payload: bytes,
+    signature: Optional[str],
+    secret: Optional[str],
+    *,
+    timestamp: Optional[str] = None,
+    tolerance_seconds: int = 300,
+) -> bool:
+    """Verify Chatwoot webhook HMAC signatures.
+
+    Chatwoot AgentBot webhooks sign ``{timestamp}.{payload}`` and prefix the
+    digest with ``sha256=``. Older/local tests may sign the raw payload only;
+    both forms are accepted when no timestamp is present.
+    """
+    if not isinstance(payload, bytes) or not signature or not secret:
+        return False
+
+    received_digest = signature.removeprefix("sha256=")
+    candidates = [payload]
+    if timestamp:
+        try:
+            timestamp_seconds = int(timestamp)
+        except ValueError:
+            return False
+        if abs(int(time.time()) - timestamp_seconds) > tolerance_seconds:
+            return False
+        candidates.insert(0, f"{timestamp}.".encode("utf-8") + payload)
+
+    secret_bytes = secret.encode("utf-8")
+    for signed_payload in candidates:
+        expected_digest = hmac.new(
+            secret_bytes,
+            signed_payload,
+            hashlib.sha256,
+        ).hexdigest()
+        if hmac.compare_digest(received_digest, expected_digest):
+            return True
+    return False

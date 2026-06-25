@@ -188,3 +188,26 @@ def test_dynamodb_keys_include_prefix_and_ttl() -> None:
     item = table.items[("local-staging#SESSION#s1", "META")]
     assert item["owner"] == "client-a"
     assert isinstance(item["expires_at"], int)
+
+
+def test_chatwoot_conversation_mapping_survives_repository_instances() -> None:
+    """Chatwoot conversation/session mappings are durable and bidirectional."""
+    table = FakeDynamoDBTable()
+    first_repo = DynamoDBStateRepository(table=table, key_prefix="prod")
+    first_repo.map_chatwoot_conversation("42", "session-42", account_id=7)
+
+    cold_start_repo = DynamoDBStateRepository(table=table, key_prefix="prod")
+
+    assert cold_start_repo.get_chatwoot_session_id("42", account_id=7) == "session-42"
+    assert cold_start_repo.get_chatwoot_conversation_id("session-42") == "42"
+
+
+def test_chatwoot_message_idempotency_key_is_durable() -> None:
+    """Processed Chatwoot message IDs are persisted for webhook retries."""
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table)
+
+    assert repository.has_processed_chatwoot_message("101") is False
+    assert repository.mark_chatwoot_message_processed("101") is True
+    assert repository.has_processed_chatwoot_message("101") is True
+    assert repository.mark_chatwoot_message_processed("101") is False

@@ -31,6 +31,8 @@ def secret_ref_environment(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     values = {
         "/arte/prod/openai-api-key": "resolved-openai-key",
         "arn:aws:secretsmanager:us-east-2:123456789012:secret:chat-api-key": "resolved-chat-key",
+        "/arte/prod/chatwoot-agent-bot-token": "resolved-chatwoot-token",
+        "/arte/prod/chatwoot-webhook-secret": "resolved-chatwoot-secret",
     }
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("CHAT_API_KEY", "")
@@ -38,6 +40,16 @@ def secret_ref_environment(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     monkeypatch.setenv(
         "CHAT_API_KEY_SECRET_REF",
         "arn:aws:secretsmanager:us-east-2:123456789012:secret:chat-api-key",
+    )
+    monkeypatch.setenv("CHATWOOT_AGENT_BOT_TOKEN", "")
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "")
+    monkeypatch.setenv(
+        "CHATWOOT_AGENT_BOT_TOKEN_SECRET_REF",
+        "/arte/prod/chatwoot-agent-bot-token",
+    )
+    monkeypatch.setenv(
+        "CHATWOOT_WEBHOOK_SECRET_REF",
+        "/arte/prod/chatwoot-webhook-secret",
     )
     monkeypatch.setenv("AWS_REGION", "us-east-2")
 
@@ -118,3 +130,22 @@ def test_auth_uses_chat_api_secret_ref(
         verify_api_key("wrong-key")
 
     assert exc_info.value.status_code == 403
+
+
+def test_chatwoot_uses_runtime_secret_refs(
+    secret_ref_environment: dict[str, str],
+) -> None:
+    """Chatwoot runtime helpers resolve AgentBot and webhook secrets."""
+    from backend.main import (
+        _get_chatwoot_agent_bot_token,
+        _get_chatwoot_webhook_secret,
+    )
+
+    assert (
+        _get_chatwoot_agent_bot_token()
+        == secret_ref_environment["/arte/prod/chatwoot-agent-bot-token"]
+    )
+    assert (
+        _get_chatwoot_webhook_secret()
+        == secret_ref_environment["/arte/prod/chatwoot-webhook-secret"]
+    )

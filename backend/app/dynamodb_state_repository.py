@@ -240,6 +240,67 @@ class DynamoDBStateRepository:
         state.processing_started_at = None
         self._put_buffer_state(state)
 
+    def get_chatwoot_session_id(
+        self, conversation_id: str, account_id: int = 1
+    ) -> Optional[str]:
+        """Return the internal session mapped to a Chatwoot conversation."""
+        item = self._get_item(
+            self._chatwoot_conversation_pk(conversation_id, account_id),
+            "META",
+        )
+        session_id = item.get("session_id") if item else None
+        return str(session_id) if session_id else None
+
+    def map_chatwoot_conversation(
+        self, conversation_id: str, session_id: str, account_id: int = 1
+    ) -> None:
+        """Persist bidirectional Chatwoot conversation/session mapping."""
+        expires_at = self._ttl(self._session_ttl_seconds)
+        self._table.put_item(
+            Item={
+                "PK": self._chatwoot_conversation_pk(conversation_id, account_id),
+                "SK": "META",
+                "conversation_id": str(conversation_id),
+                "account_id": int(account_id),
+                "session_id": session_id,
+                "expires_at": expires_at,
+            }
+        )
+        self._table.put_item(
+            Item={
+                "PK": self._session_pk(session_id),
+                "SK": "CHATWOOT",
+                "conversation_id": str(conversation_id),
+                "account_id": int(account_id),
+                "expires_at": expires_at,
+            }
+        )
+
+    def get_chatwoot_conversation_id(self, session_id: str) -> Optional[str]:
+        """Return the Chatwoot conversation mapped to a session."""
+        item = self._get_item(self._session_pk(session_id), "CHATWOOT")
+        conversation_id = item.get("conversation_id") if item else None
+        return str(conversation_id) if conversation_id else None
+
+    def has_processed_chatwoot_message(self, message_id: str) -> bool:
+        """Return whether a Chatwoot message webhook was already processed."""
+        return bool(self._get_item(self._chatwoot_message_pk(message_id), "PROCESSED"))
+
+    def mark_chatwoot_message_processed(self, message_id: str) -> bool:
+        """Persist a Chatwoot processed-message idempotency key."""
+        if self.has_processed_chatwoot_message(message_id):
+            return False
+        self._table.put_item(
+            Item={
+                "PK": self._chatwoot_message_pk(message_id),
+                "SK": "PROCESSED",
+                "message_id": str(message_id),
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": self._ttl(self._buffer_ttl_seconds),
+            }
+        )
+        return True
+
     def _get_turns(self, session_id: str) -> list[ChatTurn]:
         response = self._table.query(
             KeyConditionExpression="PK = :pk AND begins_with(SK, :prefix)",
@@ -284,6 +345,16 @@ class DynamoDBStateRepository:
 
     def _rate_pk(self, principal: str) -> str:
         key = f"RATE#{principal}"
+        return f"{self._key_prefix}#{key}" if self._key_prefix else key
+
+    def _chatwoot_conversation_pk(
+        self, conversation_id: str, account_id: int = 1
+    ) -> str:
+        key = f"CHATWOOT#CONVERSATION#{account_id}#{conversation_id}"
+        return f"{self._key_prefix}#{key}" if self._key_prefix else key
+
+    def _chatwoot_message_pk(self, message_id: str) -> str:
+        key = f"CHATWOOT#MESSAGE#{message_id}"
         return f"{self._key_prefix}#{key}" if self._key_prefix else key
 
     @staticmethod

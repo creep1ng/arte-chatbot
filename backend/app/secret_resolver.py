@@ -38,7 +38,7 @@ def configured_secret_value(
     """
     if plaintext_value:
         return plaintext_value
-    if not secret_ref:
+    if not isinstance(secret_ref, str) or not secret_ref.strip():
         return None
     return _resolve_runtime_secret_cached(secret_ref.strip(), region_name)
 

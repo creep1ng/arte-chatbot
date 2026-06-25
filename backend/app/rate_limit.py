@@ -21,8 +21,8 @@ class InMemoryRateLimiter:
     """Sliding-window limiter scoped by principal.
 
     This limiter is intentionally process-local. It protects local and single-node
-    deployments; horizontally scaled deployments should replace it with Redis/API
-    gateway enforcement while keeping the same endpoint behavior.
+    deployments; horizontally scaled deployments should use the shared state
+    repository or API Gateway enforcement while keeping the same endpoint behavior.
     """
 
     def __init__(self) -> None:

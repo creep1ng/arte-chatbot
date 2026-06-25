@@ -1,0 +1,566 @@
+"""Endpoint wiring tests for Chatwoot webhook and health routes."""
+
+import hashlib
+import hmac
+import json
+import time
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.app.config import settings
+
+
+def _signed_headers(payload: bytes, secret: str = "test-secret") -> dict[str, str]:
+    """Build Chatwoot signature headers for *payload*."""
+    digest = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return {"X-Chatwoot-Signature": digest}
+
+
+def _chatwoot_signed_headers(
+    payload: bytes,
+    secret: str = "test-secret",
+    timestamp: str | None = None,
+) -> dict[str, str]:
+    """Build real Chatwoot AgentBot timestamped signature headers."""
+    timestamp = timestamp or str(int(time.time()))
+    signed_payload = f"{timestamp}.".encode() + payload
+    digest = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
+    return {
+        "X-Chatwoot-Timestamp": timestamp,
+        "X-Chatwoot-Signature": f"sha256={digest}",
+    }
+
+
+def _valid_payload() -> dict[str, Any]:
+    """Return a valid message_created webhook payload."""
+    return {
+        "event": "message_created",
+        "account": {"id": 1},
+        "conversation": {
+            "id": 42,
+            "status": "open",
+            "inbox_id": 7,
+            "contact_id": 9,
+        },
+        "sender": {"id": 11, "type": "contact", "name": "Cliente"},
+        "message": {
+            "id": 101,
+            "content": "Hola",
+            "content_type": "text",
+            "private": False,
+        },
+    }
+
+
+@pytest.fixture(autouse=True)
+def reset_settings() -> None:
+    """Reset lazy settings around endpoint tests."""
+    settings.reset()
+
+
+@pytest.fixture
+def main_module(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Import backend.main with baseline environment variables present."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
+    monkeypatch.setenv("CHAT_API_KEY", "test-chat")
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setenv("CHATWOOT_API_URL", "https://chatwoot.test")
+    monkeypatch.setenv("CHATWOOT_AGENT_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("CHATWOOT_ACCOUNT_ID", "1")
+    monkeypatch.setenv("CHATWOOT_INBOX_ID", "7")
+    settings.reset()
+
+    import backend.main as main
+
+    return main
+
+
+@pytest.fixture
+def client(main_module: Any) -> TestClient:
+    """Return a TestClient for the FastAPI app."""
+    return TestClient(main_module.app)
+
+
+def test_chatwoot_webhook_disabled_does_not_dispatch(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disabled integration should return 503 before parsing or dispatching."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "false")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+
+    response = client.post("/webhook/chatwoot", content=b"not-json")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Chatwoot integration disabled"}
+    handler.handle_event.assert_not_awaited()
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_valid_signature_dispatches_handler(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Valid signed payloads should dispatch to ChatwootHandler."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    payload = _valid_payload()
+    body = json.dumps(payload).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accepted"}
+    handler.handle_event.assert_awaited_once()
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_accepts_real_timestamped_signature(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real Chatwoot AgentBot signatures include timestamp in HMAC input."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    payload = _valid_payload()
+    body = json.dumps(payload).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_chatwoot_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accepted"}
+    handler.handle_event.assert_awaited_once()
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_accepts_flat_message_created_payload(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real Chatwoot message webhooks put message fields at top level."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    payload = {
+        "event": "message_created",
+        "account": {"id": 1},
+        "id": 202,
+        "content": "Hola desde Chatwoot real",
+        "content_type": "text",
+        "message_type": "incoming",
+        "private": False,
+        "conversation": {
+            "id": 42,
+            "status": "open",
+            "inbox_id": 7,
+            "contact_inbox": {"contact_id": 9},
+        },
+        "sender": {"id": 11, "type": "contact", "name": "Cliente"},
+    }
+    body = json.dumps(payload).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_chatwoot_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    parsed_payload = handler.handle_event.await_args.args[0]
+    assert parsed_payload.message.id == 202
+    assert parsed_payload.message.content == "Hola desde Chatwoot real"
+    assert parsed_payload.conversation.contact_id == 9
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_normalizes_numeric_message_type(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chatwoot may serialize message_type as its Rails enum integer."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    payload = {
+        "event": "message_created",
+        "account": {"id": 1},
+        "id": 203,
+        "content": "Hola con enum numérico",
+        "content_type": "text",
+        "message_type": 0,
+        "private": False,
+        "conversation": {
+            "id": 42,
+            "status": "open",
+            "inbox_id": 7,
+            "contact_id": 9,
+        },
+        "sender": {"id": 11, "type": "Contact", "name": "Cliente"},
+    }
+    body = json.dumps(payload).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_chatwoot_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    parsed_payload = handler.handle_event.await_args.args[0]
+    assert parsed_payload.message.message_type == "incoming"
+    assert parsed_payload.sender.type == "contact"
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_infers_contact_sender_type(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real contact senders can omit the type discriminator entirely."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    payload = {
+        "event": "message_created",
+        "account": {"id": 1, "name": "Arte Soluciones Energéticas"},
+        "id": 204,
+        "content": "Hola, necesito una cotización",
+        "content_attributes": {},
+        "content_type": "text",
+        "message_type": "incoming",
+        "private": False,
+        "source_id": "whatsapp-message-id",
+        "conversation": {
+            "id": 42,
+            "status": "open",
+            "inbox_id": 7,
+            "contact_inbox": {"contact_id": 9},
+        },
+        "sender": {
+            "account": {"id": 1, "name": "Arte Soluciones Energéticas"},
+            "additional_attributes": {},
+            "avatar": "",
+            "blocked": False,
+            "custom_attributes": {},
+            "email": None,
+            "id": 9,
+            "identifier": None,
+            "name": "Cliente",
+            "phone_number": "+573000000000",
+            "thumbnail": "",
+        },
+    }
+    body = json.dumps(payload).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_chatwoot_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    parsed_payload = handler.handle_event.await_args.args[0]
+    assert parsed_payload.message.id == 204
+    assert parsed_payload.message.content == "Hola, necesito una cotización"
+    assert parsed_payload.sender.type == "contact"
+    assert parsed_payload.conversation.contact_id == 9
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_accepts_unknown_event_without_account(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real Chatwoot lifecycle payloads may omit account data."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    payload = {
+        "event": "conversation_opened",
+        "additional_attributes": {},
+        "messages": [],
+    }
+    body = json.dumps(payload).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_chatwoot_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accepted"}
+    handler.handle_event.assert_awaited_once()
+    parsed_payload = handler.handle_event.await_args.args[0]
+    assert parsed_payload.event == "conversation_opened"
+    assert parsed_payload.account == {}
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_invalid_signature_returns_401(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid HMAC signatures should be rejected."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+
+    response = client.post(
+        "/webhook/chatwoot",
+        json=_valid_payload(),
+        headers={"X-Chatwoot-Signature": "bad"},
+    )
+
+    assert response.status_code == 401
+    handler.handle_event.assert_not_awaited()
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_missing_secret_returns_401(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabled webhooks without a secret should fail closed."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    monkeypatch.delenv("CHATWOOT_WEBHOOK_SECRET", raising=False)
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    body = json.dumps(_valid_payload()).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 401
+    handler.handle_event.assert_not_awaited()
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_empty_body_valid_signature_returns_422(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty signed bodies should pass auth and fail payload validation."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    body = b""
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 422
+
+
+def test_chatwoot_webhook_empty_body_invalid_signature_returns_401(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty bodies with invalid signatures should fail auth."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=b"",
+        headers={"X-Chatwoot-Signature": "invalid"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_chatwoot_webhook_malformed_known_event_is_accepted_for_diagnostics(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Schema-drifted known events should not break Chatwoot webhook setup."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    body = b'{"event":"message_created"}'
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accepted"}
+    parsed_payload = handler.handle_event.await_args.args[0]
+    assert parsed_payload.event == "message_created"
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_webhook_non_object_payload_returns_422(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-object JSON remains invalid because Chatwoot sends objects."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    body = b"[]"
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 422
+
+
+def test_chatwoot_webhook_handler_exception_returns_500(
+    client: TestClient,
+    main_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Handler failures should return 500 so Chatwoot retries."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+    handler = AsyncMock()
+    handler.handle_event.side_effect = RuntimeError("boom")
+    main_module.app.dependency_overrides[main_module.get_chatwoot_handler] = lambda: (
+        handler
+    )
+    body = json.dumps(_valid_payload()).encode()
+
+    response = client.post(
+        "/webhook/chatwoot",
+        content=body,
+        headers=_signed_headers(body),
+    )
+
+    assert response.status_code == 500
+    main_module.app.dependency_overrides.clear()
+
+
+def test_chatwoot_health_disabled(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Disabled integration should report disabled status."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "false")
+    settings.reset()
+
+    response = client.get("/health/chatwoot")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "disabled"
+    assert response.json()["chatwoot_enabled"] is False
+
+
+def test_chatwoot_health_enabled_configured(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabled integration with config and local state should be healthy."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    settings.reset()
+
+    response = client.get("/health/chatwoot")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "healthy",
+        "chatwoot_enabled": True,
+        "chatwoot_api": "configured",
+        "webhook_secret": "configured",
+        "state_backend": "memory",
+        "durable_state": "memory",
+    }
+
+
+def test_chatwoot_health_enabled_production_without_durable_state_degrades(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production Chatwoot health degrades without DynamoDB-backed state."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("ALLOWED_CORS_ORIGINS", "https://app.example.com")
+    settings.reset()
+
+    response = client.get("/health/chatwoot")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["durable_state"] == "memory"
+
+
+def test_chatwoot_health_missing_chatwoot_config(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing Chatwoot API config should report degraded/not_configured."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    monkeypatch.setenv("CHATWOOT_API_URL", "")
+    monkeypatch.setenv("CHATWOOT_AGENT_BOT_TOKEN", "")
+    monkeypatch.delenv("CHATWOOT_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CHATWOOT_API_URL", raising=False)
+    settings.reset()
+
+    response = client.get("/health/chatwoot")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["chatwoot_api"] == "not_configured"

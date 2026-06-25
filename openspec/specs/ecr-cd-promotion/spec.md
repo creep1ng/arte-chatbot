@@ -1,17 +1,16 @@
-# Artifact CD Promotion Specification
+# ECR CD Promotion Specification
 
 ## Purpose
 
-Define how CI builds, gates, promotes, and deploys immutable artifacts, including
-the backend Lambda package and frontend/admin container images, with production
-deployment limited to `main`.
+Define how CI builds, gates, promotes, and deploys container images to ECS using
+ECR, with production deployment limited to `main`.
 
 ## Requirements
 
 ### Requirement: CI and Evaluation Gate Before Promotion
 
-Images and Lambda packages MUST be promoted to deployable releases only after CI
-checks, health checks, package checks, and the evaluation harness succeed.
+Images MUST be promoted to deployable ECR tags only after CI checks, health
+checks, and the evaluation harness succeed.
 
 #### Scenario: Successful gate promotes images
 
@@ -19,22 +18,14 @@ checks, health checks, package checks, and the evaluation harness succeed.
 - AND tests, health checks, and evaluation pass
 - WHEN the CI workflow reaches the promotion step
 - THEN immutable image tags are pushed or promoted in ECR
-- AND those tags are eligible for the remaining image-based delivery paths
-
-#### Scenario: Successful gate promotes Lambda package
-
-- GIVEN the backend Lambda package builds reproducibly
-- AND tests, package scan, health checks, and evaluation pass
-- WHEN the CI workflow reaches promotion
-- THEN the same immutable package is eligible for staging and production Lambda
-  aliases
+- AND those tags are eligible for ECS deployment
 
 #### Scenario: Failed evaluation blocks promotion
 
 - GIVEN the evaluation harness fails
 - WHEN the CI workflow continues to deployment-related steps
-- THEN no deployable production image tag or Lambda package is promoted
-- AND no production service update or Lambda alias promotion is triggered
+- THEN no deployable production image tag is promoted
+- AND no ECS service update is triggered
 
 ### Requirement: Production Deploys Only From Main
 
@@ -48,15 +39,15 @@ pass; forked pull requests MUST NOT deploy previews or read deployment secrets.
 - GIVEN CI runs on `main`
 - AND all gates pass
 - WHEN the deployment job executes
-- THEN the backend Lambda alias is updated only with the promoted package
-- AND any image-based production release paths use promoted immutable image tags
+- THEN ECS task definitions are registered with the promoted ECR image tags
+- AND production ECS services are updated
 
 #### Scenario: Pull request does not deploy production
 
 - GIVEN CI runs for a pull request branch
 - WHEN all build and evaluation gates pass
-- THEN production deployment is skipped
-- AND candidate artifacts are not treated as production releases
+- THEN production ECS deployment is skipped
+- AND any candidate image tags are not treated as production releases
 
 #### Scenario: Same-repository pull request deploys only preview
 
@@ -75,37 +66,29 @@ pass; forked pull requests MUST NOT deploy previews or read deployment secrets.
 
 ### Requirement: Immutable Image and Task Definition Promotion
 
-Deployments MUST reference immutable image identifiers, SHA-based tags, or
-immutable Lambda package/version identifiers. The workflow MUST publish Lambda
-versions or register task definition revisions before production traffic is
-updated.
+Deployments MUST reference immutable image identifiers or SHA-based tags, and the
+workflow MUST register new ECS task definition revisions before updating
+services.
 
 #### Scenario: SHA-tagged image deployed
 
 - GIVEN a successful `main` build creates images for a commit SHA
 - WHEN the deploy job renders task definitions
 - THEN backend and frontend containers reference the matching SHA-based ECR tags
-- AND any image-based services update to the new task definition revisions
-
-#### Scenario: Lambda version promoted
-
-- GIVEN a successful `main` build creates a Lambda package for a commit SHA
-- WHEN production promotion runs
-- THEN traffic points to the published version or alias for that package
+- AND ECS services update to the new task definition revisions
 
 #### Scenario: Rollback target remains identifiable
 
 - GIVEN a deployment has completed
 - WHEN rollback is needed
-- THEN the previous image tag, task definition revision, Lambda version, or alias
-  target can be identified
-- AND traffic can be reverted to that known version
+- THEN the previous image tag or task definition revision can be identified
+- AND the ECS service can be reverted to that known version
 
 ### Requirement: Deployment Credentials and Permissions
 
 The CD workflow MUST use short-lived AWS credentials and least-privilege
-permissions for ECR, Lambda, API Gateway, DynamoDB, IAM pass-role, logs, SSM, and
-Secrets Manager actions required by deployment.
+permissions for ECR, ECS, IAM pass-role, logs, SSM, and Secrets Manager actions
+required by deployment.
 
 #### Scenario: Workflow authenticates with OIDC
 
@@ -117,8 +100,8 @@ Secrets Manager actions required by deployment.
 
 #### Scenario: Excess permission not required
 
-- GIVEN the deployment role is scoped to Arte Chatbot deployment resources
-- WHEN the workflow promotes images or Lambda packages
+- GIVEN the deployment role is scoped to the Arte Chatbot deployment resources
+- WHEN the workflow pushes images and updates ECS services
 - THEN it completes without requiring administrator-wide AWS permissions
 
 #### Scenario: Preview smoke can read state evidence

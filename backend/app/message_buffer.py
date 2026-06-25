@@ -14,6 +14,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional
 
+from pydantic import BaseModel, Field
+
 from backend.app.state_repository import ChatbotStateRepository
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,85 @@ _pending_chat_responses: dict[str, tuple[str, datetime]] = {}
 
 # Sessions whose buffer was flushed and are being processed in background
 _processing_sessions: dict[str, datetime] = {}
+
+
+class BufferResult(BaseModel):
+    """Result of adding a message to a Chatwoot/local buffer."""
+
+    is_buffering: bool
+    joined_message: Optional[str] = None
+
+
+class BufferState(BaseModel):
+    """Chatwoot-facing buffer state DTO.
+
+    The repository stores timestamps as ``BufferMessage`` objects. Chatwoot
+    handlers only need the ordered text values for synchronous processing.
+    """
+
+    conversation_id: str
+    messages: list[str] = Field(default_factory=list)
+    is_flushing: bool = False
+
+
+class ChatwootMessageBuffer:
+    """Lambda-safe Chatwoot buffer backed by the shared state repository.
+
+    Production uses DynamoDB through ``ChatbotStateRepository``. Local/test mode
+    falls back to instance memory but still processes synchronously; it never
+    creates in-process debounce tasks.
+    """
+
+    def __init__(
+        self,
+        state_repository: Optional[ChatbotStateRepository] = None,
+    ) -> None:
+        self._state_repository = state_repository
+        self._local_buffers: dict[str, list[str]] = {}
+
+    async def add_message(
+        self,
+        conversation_id: str,
+        message: str,
+        window_seconds: int,
+    ) -> BufferState:
+        """Append a Chatwoot message and return current buffer state."""
+        del window_seconds
+        if self._state_repository is not None:
+            state = self._state_repository.append_buffer_message(
+                self._buffer_key(conversation_id),
+                message,
+            )
+            return BufferState(
+                conversation_id=conversation_id,
+                messages=[buffered.message for buffered in state.messages],
+            )
+
+        messages = self._local_buffers.setdefault(conversation_id, [])
+        messages.append(message)
+        return BufferState(conversation_id=conversation_id, messages=list(messages))
+
+    async def flush(self, conversation_id: str) -> Optional[str]:
+        """Flush and return joined Chatwoot messages for a conversation."""
+        if self._state_repository is not None:
+            buffer_key = self._buffer_key(conversation_id)
+            state = self._state_repository.get_buffer_state(buffer_key)
+            if not state.messages:
+                return None
+            joined = "\n".join(message.message for message in state.messages)
+            self._state_repository.clear_buffer_messages(buffer_key)
+            return joined
+
+        messages = self._local_buffers.pop(conversation_id, [])
+        return "\n".join(messages) if messages else None
+
+    async def flush_and_cancel(self, conversation_id: str) -> Optional[str]:
+        """Flush a conversation buffer after human-agent intervention."""
+        return await self.flush(conversation_id)
+
+    @staticmethod
+    def _buffer_key(conversation_id: str) -> str:
+        return f"chatwoot:{conversation_id}"
 
 
 def set_state_repository(

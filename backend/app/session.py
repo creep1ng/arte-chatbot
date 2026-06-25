@@ -5,7 +5,8 @@ Almacena el historial de conversaciones por session_id.
 
 from datetime import datetime
 import threading
-from typing import Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -46,13 +47,17 @@ class SessionManager:
         self,
         max_turns: int = 20,
         state_repository: Optional[ChatbotStateRepository] = None,
+        chatwoot_client: Optional[Any] = None,
     ):
         self.sessions: Dict[str, List[ChatTurn]] = {}
         self.profiles: Dict[str, str] = {}
         self.token_totals: Dict[str, TokenTotals] = {}
         self.session_owners: Dict[str, str] = {}
+        self._conversation_map: Dict[str, str] = {}
+        self._reverse_conversation_map: Dict[str, str] = {}
         self.max_turns = max_turns
         self.state_repository = state_repository
+        self._chatwoot = chatwoot_client
         self._lock = threading.Lock()
 
     def set_state_repository(
@@ -196,6 +201,9 @@ class SessionManager:
                 del self.token_totals[session_id]
             if session_id in self.session_owners:
                 del self.session_owners[session_id]
+            conversation_id = self._conversation_map.pop(session_id, None)
+            if conversation_id is not None:
+                self._reverse_conversation_map.pop(conversation_id, None)
 
     def set_user_profile(self, session_id: str, profile: str) -> None:
         """
@@ -286,6 +294,161 @@ class SessionManager:
             Número de sesiones activas
         """
         return len(self.sessions)
+
+    async def get_or_create_session_for_conversation(
+        self, conversation_id: str, account_id: int = 1
+    ) -> str:
+        """Return the session mapped to a Chatwoot conversation, creating it."""
+        if self.state_repository is not None:
+            existing = self.state_repository.get_chatwoot_session_id(
+                conversation_id,
+                account_id=account_id,
+            )
+            if existing is not None:
+                return existing
+            session_id = str(uuid.uuid4())
+            self.state_repository.map_chatwoot_conversation(
+                conversation_id,
+                session_id,
+                account_id=account_id,
+            )
+            return session_id
+
+        with self._lock:
+            existing = self._reverse_conversation_map.get(conversation_id)
+            if existing is not None:
+                return existing
+            session_id = str(uuid.uuid4())
+            self._conversation_map[session_id] = conversation_id
+            self._reverse_conversation_map[conversation_id] = session_id
+            return session_id
+
+    async def get_conversation_for_session(
+        self, session_id: str, account_id: int = 1
+    ) -> Optional[str]:
+        """Return the Chatwoot conversation ID for an internal session."""
+        del account_id
+        if self.state_repository is not None:
+            return self.state_repository.get_chatwoot_conversation_id(session_id)
+        with self._lock:
+            return self._conversation_map.get(session_id)
+
+    async def map_conversation(self, session_id: str, conversation_id: str) -> None:
+        """Backward-compatible async mapping helper."""
+        if self.state_repository is not None:
+            self.state_repository.map_chatwoot_conversation(conversation_id, session_id)
+            return
+        with self._lock:
+            self._conversation_map[session_id] = conversation_id
+            self._reverse_conversation_map[conversation_id] = session_id
+
+    async def get_conversation_id(self, session_id: str) -> Optional[str]:
+        """Backward-compatible alias for get_conversation_for_session."""
+        return await self.get_conversation_for_session(session_id)
+
+    async def get_session_id(self, conversation_id: str) -> Optional[str]:
+        """Return the session mapped to a Chatwoot conversation, if any."""
+        if self.state_repository is not None:
+            return self.state_repository.get_chatwoot_session_id(conversation_id)
+        with self._lock:
+            return self._reverse_conversation_map.get(conversation_id)
+
+    async def add_turn_async(
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        source_documents: List[str],
+    ) -> None:
+        """Async compatibility wrapper around the repository-aware sync API."""
+        self.add_turn(session_id, question, answer, source_documents)
+
+    async def get_history_async(
+        self, session_id: str, limit: int = 10
+    ) -> List[ChatTurn]:
+        """Return recent history and optionally hydrate from Chatwoot on misses."""
+        history = self.get_history(session_id)[-limit:]
+        if history or self._chatwoot is None:
+            return history
+
+        conversation_id = await self.get_conversation_for_session(session_id)
+        if conversation_id is None:
+            return history
+
+        data = await self._chatwoot.fetch_messages(
+            int(conversation_id), limit=limit * 2
+        )
+        await self.hydrate_history_from_chatwoot(session_id, data.get("payload", []))
+        return self.get_history(session_id)[-limit:]
+
+    async def hydrate_history_from_chatwoot(
+        self, session_id: str, messages: List[Dict[str, Any]]
+    ) -> None:
+        """Transform Chatwoot messages into ChatTurn entries and persist them."""
+        turns = self._parse_chatwoot_messages(messages)
+        for turn in turns[-self.max_turns :]:
+            await self.add_turn_async(
+                session_id,
+                turn.question,
+                turn.answer,
+                turn.source_documents,
+            )
+
+    def _parse_chatwoot_messages(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[ChatTurn]:
+        """Parse Chatwoot incoming/outgoing messages into conversation turns."""
+        turns: List[ChatTurn] = []
+        pending_question: Optional[str] = None
+
+        for message in messages:
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+
+            if self._is_incoming_message(message):
+                if pending_question is not None:
+                    turns.append(
+                        ChatTurn(
+                            question=pending_question,
+                            answer="",
+                            timestamp=datetime.now(),
+                            source_documents=[],
+                        )
+                    )
+                pending_question = content
+                continue
+
+            if pending_question is not None:
+                turns.append(
+                    ChatTurn(
+                        question=pending_question,
+                        answer=content,
+                        timestamp=datetime.now(),
+                        source_documents=[],
+                    )
+                )
+                pending_question = None
+
+        if pending_question is not None:
+            turns.append(
+                ChatTurn(
+                    question=pending_question,
+                    answer="",
+                    timestamp=datetime.now(),
+                    source_documents=[],
+                )
+            )
+        return turns
+
+    def _is_incoming_message(self, message: Dict[str, Any]) -> bool:
+        """Return true for Chatwoot contact/incoming messages."""
+        message_type = message.get("message_type")
+        sender = message.get("sender")
+        sender_type = message.get("sender_type")
+        if sender_type is None and isinstance(sender, dict):
+            sender_type = sender.get("type")
+        return message_type in ("incoming", 0) or sender_type == "contact"
 
 
 # Instancia global del gestor de sesiones

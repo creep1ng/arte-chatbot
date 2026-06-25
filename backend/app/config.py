@@ -10,6 +10,7 @@ import time.
 """
 
 import os
+import warnings
 from typing import Annotated, Any, Optional
 
 from pydantic import Field, field_validator, model_validator
@@ -132,6 +133,14 @@ class Settings(BaseSettings):
     chat_api_key_secret_ref: Optional[str] = Field(
         default=None,
         description="SSM/Secrets Manager reference for CHAT_API_KEY",
+    )
+    chatwoot_agent_bot_token_secret_ref: Optional[str] = Field(
+        default=None,
+        description="SSM/Secrets Manager reference for CHATWOOT_AGENT_BOT_TOKEN",
+    )
+    chatwoot_webhook_secret_ref: Optional[str] = Field(
+        default=None,
+        description="SSM/Secrets Manager reference for CHATWOOT_WEBHOOK_SECRET",
     )
 
     # Auth
@@ -262,6 +271,56 @@ class Settings(BaseSettings):
         description="Git commit hash for traceability in conversation logs",
     )
 
+    # Chatwoot
+    chatwoot_enabled: bool = Field(
+        default=False,
+        description="Enable Chatwoot integration",
+    )
+    chatwoot_api_url: Optional[str] = Field(
+        default=None,
+        description="URL of the Chatwoot instance (no trailing slash)",
+    )
+    chatwoot_agent_bot_token: Optional[str] = Field(
+        default=None,
+        description="AgentBot access token from Chatwoot for local development",
+    )
+    chatwoot_account_id: Optional[int] = Field(
+        default=None,
+        description="Numeric Chatwoot account ID",
+    )
+    chatwoot_inbox_id: Optional[int] = Field(
+        default=None,
+        description="Numeric Chatwoot inbox ID for WhatsApp",
+    )
+    chatwoot_webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Chatwoot webhook HMAC secret for local development",
+    )
+    chatwoot_handoff_team_id: Optional[int] = Field(
+        default=None,
+        description="Team ID for human escalation handoff",
+    )
+    chatwoot_bot_label: str = Field(
+        default="bot",
+        description="Label assigned by the bot",
+    )
+    chatwoot_escalated_label: str = Field(
+        default="escalated",
+        description="Label for escalated conversations",
+    )
+    chatwoot_technical_label: str = Field(
+        default="technical",
+        description="Label for technical conversations",
+    )
+    chatwoot_quote_label: str = Field(
+        default="quote",
+        description="Label for quote conversations",
+    )
+    chatwoot_order_label: str = Field(
+        default="order",
+        description="Label for order conversations",
+    )
+
     @field_validator("app_env", mode="before")
     @classmethod
     def _normalize_app_env(cls, value: str) -> str:
@@ -290,6 +349,19 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         if isinstance(value, list):
             return [str(origin).strip() for origin in value if str(origin).strip()]
+        return value
+
+    @field_validator(
+        "chatwoot_account_id",
+        "chatwoot_inbox_id",
+        "chatwoot_handoff_team_id",
+        mode="before",
+    )
+    @classmethod
+    def _parse_optional_int(cls, value: Any) -> Any:
+        """Treat empty optional integer settings as not configured."""
+        if value == "":
+            return None
         return value
 
     @model_validator(mode="after")
@@ -322,6 +394,38 @@ class Settings(BaseSettings):
             ZoneInfo(self.greeting_timezone)
         except (KeyError, ZoneInfoNotFoundError):
             raise ValueError(f"Invalid IANA timezone: {self.greeting_timezone}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_chatwoot_config(self) -> "Settings":
+        """Warn if Chatwoot is enabled but required fields are missing."""
+        if not self.chatwoot_enabled:
+            return self
+
+        missing: list[str] = []
+        if not self.chatwoot_api_url:
+            missing.append("CHATWOOT_API_URL")
+        if not (
+            self.chatwoot_agent_bot_token or self.chatwoot_agent_bot_token_secret_ref
+        ):
+            missing.append(
+                "CHATWOOT_AGENT_BOT_TOKEN or CHATWOOT_AGENT_BOT_TOKEN_SECRET_REF"
+            )
+        if self.chatwoot_account_id is None:
+            missing.append("CHATWOOT_ACCOUNT_ID")
+        if self.chatwoot_inbox_id is None:
+            missing.append("CHATWOOT_INBOX_ID")
+        if not (self.chatwoot_webhook_secret or self.chatwoot_webhook_secret_ref):
+            missing.append("CHATWOOT_WEBHOOK_SECRET or CHATWOOT_WEBHOOK_SECRET_REF")
+
+        if missing:
+            warnings.warn(
+                "Chatwoot is enabled but the following required settings are missing: "
+                + ", ".join(missing),
+                UserWarning,
+                stacklevel=2,
+            )
+
         return self
 
     @model_validator(mode="after")

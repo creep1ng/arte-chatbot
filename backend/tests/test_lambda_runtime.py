@@ -3,7 +3,10 @@
 import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
 import json
+import time
 from typing import Any, Optional
 
 import pytest
@@ -90,6 +93,19 @@ def _decode_response_body(response: dict[str, Any]) -> dict[str, Any]:
     return json.loads(body)
 
 
+def _chatwoot_signed_headers(payload: bytes, secret: str) -> dict[str, str]:
+    timestamp = str(int(time.time()))
+    signed_payload = f"{timestamp}.".encode("utf-8") + payload
+    digest = hmac.new(
+        secret.encode("utf-8"), signed_payload, hashlib.sha256
+    ).hexdigest()
+    return {
+        "content-type": "application/json",
+        "x-chatwoot-timestamp": timestamp,
+        "x-chatwoot-signature": f"sha256={digest}",
+    }
+
+
 def _restore_event_loop(previous_loop: Optional[asyncio.AbstractEventLoop]) -> None:
     """Restore a usable event loop after tests that intentionally clear it."""
     current_loop: Optional[asyncio.AbstractEventLoop]
@@ -162,6 +178,41 @@ def test_mangum_chat_rejects_missing_api_key_before_processing() -> None:
 
     assert response["statusCode"] == 401
     assert _decode_response_body(response)["detail"] == "Missing API key"
+
+
+def test_mangum_chatwoot_health_route_available_when_disabled() -> None:
+    """Lambda handler exposes Chatwoot health without requiring Chatwoot config."""
+    from backend.main import handler
+
+    response = handler(_http_api_v2_event("GET", "/health/chatwoot"), LambdaContext())
+
+    body = _decode_response_body(response)
+    assert response["statusCode"] == 200
+    assert body["status"] == "disabled"
+    assert body["chatwoot_enabled"] is False
+
+
+def test_mangum_chatwoot_webhook_rejects_invalid_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chatwoot webhook auth is enforced through the Lambda adapter."""
+    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "lambda-chatwoot-secret")
+    settings.reset()
+
+    from backend.main import handler
+
+    response = handler(
+        _http_api_v2_event(
+            "POST",
+            "/webhook/chatwoot",
+            body={"event": "conversation_opened"},
+            headers=_chatwoot_signed_headers(b'{"event":"conversation_opened"}', "bad"),
+        ),
+        LambdaContext(),
+    )
+
+    assert response["statusCode"] == 401
 
 
 def test_mangum_chat_http_api_event() -> None:

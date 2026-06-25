@@ -3,19 +3,16 @@
 ## Purpose
 
 Define guardrails for local-only staging so experiments cannot reuse or mutate
-production CI, Terraform state, AWS names, parameters, DNS records, or runtime
-secret/config namespaces. Serverless staging SHOULD deploy the same Lambda
-package candidate that passed CI/evaluation; legacy image-based staging MUST stay
-explicitly isolated when retained.
+production CI, Terraform state, Cloudflare tunnels, AWS names, or parameters.
+Staging SHOULD deploy the same ECR image candidate that passed PR CI/evaluation.
 
 ## Requirements
 
 ### Requirement: Local-only Staging Execution
 
-Local staging MUST be explicitly marked local-only and MUST NOT mutate production
-deployment workflows or production resources. CI MAY build, validate, and
-promote candidate artifacts, but any staging deploy path MUST use non-production
-names, endpoints, state, and credentials.
+Local staging MUST be explicitly marked local-only and MUST NOT run from CI or
+production deployment workflows. CI MAY build, validate, and promote PR
+candidate images to ECR, but CI MUST NOT create or update staging infrastructure.
 
 #### Scenario: Local staging runs from developer machine
 
@@ -45,9 +42,9 @@ but this is optional and MUST be explicit.
 
 #### Scenario: Developer deploys PR candidate from ECR
 
-- GIVEN CI promoted a PR candidate image tag or Lambda package
+- GIVEN CI promoted a PR candidate image tag to ECR
 - WHEN a developer runs the local staging deploy script with that tag
-- THEN Terraform renders staging with the provided immutable artifact
+- THEN Terraform renders the staging task definition with the provided ECR image
 - AND no production service is updated
 
 #### Scenario: Developer-provided local image tag
@@ -89,28 +86,26 @@ parameter paths, and tags from production.
 
 #### Scenario: Production names rejected
 
-- GIVEN a local staging plan contains a production service name, API route, DNS
-  record, state table, or parameter path
+- GIVEN a local staging plan contains a production service name, tunnel name, or
+  parameter path
 - WHEN validation runs
 - THEN the plan fails before apply
 
 ### Requirement: Isolated Tokens, Secrets, and Parameters
 
 Local staging MUST NOT reuse production Cloudflare tunnel tokens, Secrets
-Manager secrets, SSM parameters, API credentials, or Lambda runtime secret/config
-namespaces.
+Manager secrets, SSM parameters, or API credentials.
 
 #### Scenario: Local staging token is separate
 
-- GIVEN local staging needs a provider token, API credential, or legacy Tunnel
-  token
-- WHEN Terraform or the local staging runner resolves the credential
+- GIVEN local staging needs a Cloudflare tunnel token
+- WHEN Terraform or the local staging runner resolves the token
 - THEN it uses a local-staging-specific secret source
-- AND production credentials are not referenced
+- AND the production tunnel token is not referenced
 
 #### Scenario: Parameter prefix remains isolated
 
-- GIVEN local staging task or Lambda configuration is generated
+- GIVEN local staging task configuration is generated
 - WHEN SSM or Secrets Manager references are resolved
 - THEN every reference uses the local staging prefix or namespace
 - AND production parameter paths are rejected
@@ -118,13 +113,13 @@ namespaces.
 ### Requirement: No Production Mixing in Runtime Config
 
 Local staging runtime configuration MUST make environment mixing visible and
-fail fast when production hostnames, API URLs, buckets, service names, state
-tables, or origins are used without explicit approval.
+fail fast when production hostnames, buckets, service names, or origins are used
+without explicit approval.
 
 #### Scenario: Production origin detected
 
 - GIVEN local staging backend CORS origins are configured
-- WHEN a production frontend/admin origin appears in the local staging
+- WHEN a production Cloudflare frontend/admin origin appears in the local staging
   allowed-origin list
 - THEN validation fails before deployment
 
@@ -146,8 +141,8 @@ production.
 #### Scenario: Staging uses unique hostname
 
 - GIVEN a staging environment is created for a PR or candidate image
-- WHEN Terraform applies staging routing or exposes a direct endpoint
-- THEN the public hostname or endpoint includes non-production identity
+- WHEN Terraform applies Cloudflare routing
+- THEN the public hostname includes the staging identifier
 - AND it does not equal the production API, frontend, or admin hostname
 
 #### Scenario: Production URL rejected
@@ -156,10 +151,10 @@ production.
 - WHEN validation runs
 - THEN the deployment fails before mutating AWS or Cloudflare resources
 
-#### Scenario: Direct fallback is explicit
+#### Scenario: IPv4 fallback is explicit
 
-- GIVEN staging hostname creation is unavailable
-- WHEN a developer chooses direct endpoint testing
+- GIVEN Cloudflare staging hostname creation is unavailable
+- WHEN a developer chooses direct IPv4 testing
 - THEN the fallback is explicit and documented
 - AND it does not weaken production hostname or tunnel isolation
 

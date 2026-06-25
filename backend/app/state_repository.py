@@ -131,3 +131,22 @@ class ChatbotStateRepository(Protocol):
 
     def clear_processing(self, session_id: str) -> None:
         """Clear the processing marker for a session."""
+
+    def get_chatwoot_session_id(
+        self, conversation_id: str, account_id: int = 1
+    ) -> Optional[str]:
+        """Return the internal session mapped to a Chatwoot conversation."""
+
+    def map_chatwoot_conversation(
+        self, conversation_id: str, session_id: str, account_id: int = 1
+    ) -> None:
+        """Persist bidirectional Chatwoot conversation/session mapping."""
+
+    def get_chatwoot_conversation_id(self, session_id: str) -> Optional[str]:
+        """Return the Chatwoot conversation mapped to a session."""
+
+    def has_processed_chatwoot_message(self, message_id: str) -> bool:
+        """Return whether a Chatwoot message webhook was already processed."""
+
+    def mark_chatwoot_message_processed(self, message_id: str) -> bool:
+        """Persist a Chatwoot processed-message idempotency key."""
