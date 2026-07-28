@@ -1,0 +1,125 @@
+name: Feature request
+description: Propose a scoped user or technical capability for ARTE Chatbot
+title: "feat(scope): "
+labels:
+  - type:feature
+  - status:needs-review
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe one reviewable capability. Large features must be split into chained issues or technical stories.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched open and closed issues and found no duplicate.
+          required: true
+        - label: I understand this issue requires `status:approved` before implementation or a pull request begins.
+          required: true
+
+  - type: dropdown
+    id: story_type
+    attributes:
+      label: Story type
+      options:
+        - User story (US)
+        - Technical story (TS)
+        - Feature (FEAT)
+        - Architecture decision (ADR)
+        - Maintenance chore
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem description
+      description: Explain the user, operational, or engineering problem without prescribing unnecessary implementation details.
+      placeholder: Today, the system cannot...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed outcome
+      description: Describe the behavior or capability that should exist when this issue is complete.
+      placeholder: The system should...
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] The behavior is covered by automated tests.
+        - [ ] Failure modes are explicit.
+        - [ ] Configuration and documentation are updated when applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: Explicitly exclude adjacent features to protect review scope.
+      placeholder: This issue does not include...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: affected_area
+    attributes:
+      label: Affected area
+      options:
+        - Backend
+        - Catalog and data
+        - LLM and File Inputs
+        - Chatwoot integration
+        - Frontend
+        - Admin Panel
+        - Evaluation
+        - Infrastructure and CI/CD
+        - Documentation
+        - Cross-cutting architecture
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Link prerequisite issues, decisions, or external systems.
+      placeholder: Blocked by #...
+
+  - type: textarea
+    id: code_reference
+    attributes:
+      label: Existing code reference
+      description: Link a permanent commit, PR, recovery branch, or compare view if implementation already exists elsewhere.
+      placeholder: |
+        - Reference PR: ...
+        - Snapshot SHA: ...
+        - Reusable files: ...
+
+  - type: textarea
+    id: delivery
+    attributes:
+      label: Delivery and verification
+      description: Describe tests, preview/staging validation, migration, and rollback expectations.
+      placeholder: |
+        - Unit/integration tests:
+        - Preview or staging checks:
+        - Rollback or compatibility:
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Briefly record rejected approaches and their trade-offs.

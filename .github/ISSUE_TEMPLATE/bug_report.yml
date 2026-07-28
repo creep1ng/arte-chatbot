@@ -1,0 +1,116 @@
+name: Bug report
+description: Report a reproducible defect in ARTE Chatbot
+title: "fix(scope): "
+labels:
+  - type:bug
+  - status:needs-review
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a defect. Search existing issues first and keep the proposed fix limited to one reviewable behavior.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched open and closed issues and found no duplicate.
+          required: true
+        - label: I understand this issue requires `status:approved` before implementation or a pull request begins.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: Describe the defect and why it matters.
+      placeholder: The system currently...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest deterministic reproduction.
+      placeholder: |
+        1. Configure...
+        2. Send...
+        3. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: The system should...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: Instead, the system...
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable conditions required to consider the bug fixed.
+      placeholder: |
+        - [ ] The failing scenario is covered by a regression test.
+        - [ ] The expected behavior is restored.
+        - [ ] Existing behavior remains compatible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: State adjacent changes that must not be included in this issue.
+      placeholder: This issue does not redesign...
+    validations:
+      required: true
+
+  - type: textarea
+    id: code_reference
+    attributes:
+      label: Code reference
+      description: Add permanent commit, PR, file, or compare links when available.
+      placeholder: |
+        - Baseline SHA: ...
+        - Reference PR: ...
+        - Relevant files: ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove credentials, tokens, customer data, and other secrets.
+      render: shell
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - Local development
+        - Pull request preview
+        - Staging
+        - Production
+        - CI only
+        - Not environment-specific
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add sanitized screenshots, trade-offs, dependencies, or rollout notes.
