@@ -230,7 +230,7 @@ class LLMClient:
                 instructions=instructions,
                 input=user_input,
                 tools=tools,
-                max_output_tokens=2000,
+                max_output_tokens=settings.llm_max_output_tokens,
                 reasoning={"effort": "medium"},
                 prompt_cache_key=session_id,
             )
@@ -324,7 +324,7 @@ class LLMClient:
                         ],
                     }
                 ],
-                max_output_tokens=2000,
+                max_output_tokens=settings.llm_max_output_tokens,
                 reasoning={"effort": "medium"},
                 prompt_cache_key=session_id,
             )

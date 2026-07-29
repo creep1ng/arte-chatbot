@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.config import Settings
+from backend.app.context_budget_config import ContextBudgetConfig
 
 
 class TestDotenvIsolationConfig:
@@ -68,6 +69,100 @@ class TestConversationLoggingConfig:
         with patch.dict(os.environ, env, clear=True):
             settings = Settings()
             assert settings.git_commit_hash == "abc1234"
+
+
+class TestContextBudgetConfig:
+    """Tests for preliminary model-aware context budget settings."""
+
+    def test_context_budget_preliminary_defaults(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings()
+
+        assert settings.context_budget_ratio == 0.10
+        assert settings.context_hard_cap_tokens == 32_000
+        assert settings.llm_max_output_tokens == 2_000
+        assert settings.context_output_reserve_tokens == 2_000
+        assert settings.context_non_history_reserve_tokens == 12_000
+        assert settings.context_file_input_max_bytes == 5 * 1024 * 1024
+        assert settings.context_max_turns == 20
+
+    def test_context_budget_fields_are_configurable(self) -> None:
+        env = {
+            "CONTEXT_BUDGET_RATIO": "0.2",
+            "CONTEXT_HARD_CAP_TOKENS": "64000",
+            "LLM_MAX_OUTPUT_TOKENS": "4000",
+            "CONTEXT_OUTPUT_RESERVE_TOKENS": "5000",
+            "CONTEXT_NON_HISTORY_RESERVE_TOKENS": "16000",
+            "CONTEXT_FILE_INPUT_MAX_BYTES": "4194304",
+            "CONTEXT_MAX_TURNS": "12",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            settings = Settings()
+
+        assert settings.context_budget_ratio == 0.2
+        assert settings.context_hard_cap_tokens == 64_000
+        assert settings.llm_max_output_tokens == 4_000
+        assert settings.context_output_reserve_tokens == 5_000
+        assert settings.context_non_history_reserve_tokens == 16_000
+        assert settings.context_file_input_max_bytes == 4_194_304
+        assert settings.context_max_turns == 12
+
+    def test_output_reserve_must_be_below_hard_cap(self) -> None:
+        env = {
+            "CONTEXT_HARD_CAP_TOKENS": "2000",
+            "CONTEXT_OUTPUT_RESERVE_TOKENS": "2000",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with pytest.raises(ValidationError, match="CONTEXT_OUTPUT_RESERVE_TOKENS"):
+                Settings()
+
+    def test_max_output_must_fit_reserved_output_budget(self) -> None:
+        env = {
+            "LLM_MAX_OUTPUT_TOKENS": "2001",
+            "CONTEXT_OUTPUT_RESERVE_TOKENS": "2000",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with pytest.raises(ValidationError, match="LLM_MAX_OUTPUT_TOKENS"):
+                Settings()
+
+    def test_output_reserve_respects_known_model_capability(self) -> None:
+        env = {
+            "LLM_MODEL": "gpt-5.4-nano",
+            "CONTEXT_HARD_CAP_TOKENS": "200000",
+            "LLM_MAX_OUTPUT_TOKENS": "128001",
+            "CONTEXT_OUTPUT_RESERVE_TOKENS": "128001",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with pytest.raises(ValidationError, match="registered model output"):
+                Settings()
+
+    def test_file_input_byte_cap_cannot_exceed_upload_cap(self) -> None:
+        env = {
+            "MAX_PDF_BYTES": "1048576",
+            "CONTEXT_FILE_INPUT_MAX_BYTES": "1048577",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with pytest.raises(ValidationError, match="CONTEXT_FILE_INPUT_MAX_BYTES"):
+                Settings()
+
+    def test_context_budget_config_uses_validated_runtime_values(self) -> None:
+        env = {
+            "CONTEXT_BUDGET_RATIO": "0.25",
+            "CONTEXT_HARD_CAP_TOKENS": "48000",
+            "CONTEXT_OUTPUT_RESERVE_TOKENS": "3000",
+            "CONTEXT_NON_HISTORY_RESERVE_TOKENS": "9000",
+            "CONTEXT_MAX_TURNS": "8",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Settings().context_budget_config()
+
+        assert config == ContextBudgetConfig(
+            ratio=0.25,
+            hard_cap_tokens=48_000,
+            output_reserve_tokens=3_000,
+            non_history_reserve_tokens=9_000,
+            max_turns=8,
+        )
 
 
 class TestRuntimeCorsConfig:

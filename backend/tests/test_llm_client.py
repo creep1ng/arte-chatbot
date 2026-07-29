@@ -191,6 +191,33 @@ class TestLLMClientWithTools:
         assert "instructions" in call_kwargs
         assert call_kwargs["instructions"] == ARTE_SYSTEM_PROMPT
 
+    @patch.dict(
+        os.environ,
+        {"LLM_MAX_OUTPUT_TOKENS": "3210", "CONTEXT_OUTPUT_RESERVE_TOKENS": "3210"},
+        clear=True,
+    )
+    @patch("backend.app.llm_client.OpenAI")
+    def test_get_llm_response_with_tools_uses_configured_output_limit(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_client.responses.create.return_value = MagicMock(
+            output_text="Test",
+            output=[MagicMock(type="message")],
+            usage=None,
+        )
+        client = LLMClient(api_key="sk-test-key")
+
+        client.get_llm_response_with_tools(
+            message="Test",
+            session_id="test-session",
+        )
+
+        assert (
+            mock_client.responses.create.call_args.kwargs["max_output_tokens"] == 3210
+        )
+
     def test_get_llm_response_with_tools_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_tools raises error without API key."""
         client = LLMClient(api_key="")
@@ -294,6 +321,33 @@ class TestLLMClientWithToolsReturnsLLMResponse:
 
 class TestLLMClientWithFile:
     """Tests for get_llm_response_with_file method."""
+
+    @patch.dict(
+        os.environ,
+        {"LLM_MAX_OUTPUT_TOKENS": "3210", "CONTEXT_OUTPUT_RESERVE_TOKENS": "3210"},
+        clear=True,
+    )
+    @patch("backend.app.llm_client.OpenAI")
+    def test_get_llm_response_with_file_uses_configured_output_limit(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_client.responses.create.return_value = MagicMock(
+            output_text="Test",
+            usage=None,
+        )
+        client = LLMClient(api_key="sk-test-key")
+
+        client.get_llm_response_with_file(
+            message="Test",
+            file_id="file-123",
+            session_id="test-session",
+        )
+
+        assert (
+            mock_client.responses.create.call_args.kwargs["max_output_tokens"] == 3210
+        )
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_file_sends_message(
