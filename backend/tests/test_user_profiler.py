@@ -3,10 +3,11 @@ Unit tests for the user profile inference module.
 """
 
 from backend.app.user_profiler import (
-    infer_user_profile,
-    _extract_technical_score,
-    _extract_specificity_score,
     _extract_acronym_score,
+    _extract_specificity_score,
+    _extract_technical_score,
+    infer_user_profile,
+    should_recalibrate_user_profile,
 )
 from backend.app.session import SessionManager
 
@@ -135,6 +136,45 @@ class TestInferUserProfile:
         profile = infer_user_profile(history)
         assert profile == "intermedio"
 
+    def test_current_novice_message_is_included_on_first_turn(self):
+        """Test first-turn inference includes a separate current message."""
+        profile = infer_user_profile([], current_message="¿Qué es un panel solar?")
+
+        assert profile == "novato"
+
+    def test_current_intermediate_message_is_included_on_first_turn(self):
+        """Test an intermediate current message is classified on turn one."""
+        profile = infer_user_profile(
+            [], current_message="¿Cuánto cuesta un panel de 300W?"
+        )
+
+        assert profile == "intermedio"
+
+    def test_current_expert_message_is_included_on_first_turn(self):
+        """Test an expert current message is classified on turn one."""
+        profile = infer_user_profile(
+            [], current_message="¿Cuál es el Voc del JinkoSolar 460W a 25°C?"
+        )
+
+        assert profile == "experto"
+
+    def test_ambiguous_current_message_defaults_to_novice(self):
+        """Test an ambiguous but present first message is treated as novice."""
+        profile = infer_user_profile([], current_message="Hola")
+
+        assert profile == "novato"
+
+    def test_current_message_combines_with_history_once(self):
+        """Test the current message combines with stored history exactly once."""
+        history = [{"role": "user", "content": "¿Qué es un panel?"}]
+
+        profile = infer_user_profile(
+            history,
+            current_message="¿Cuál es el Voc del JinkoSolar 460W a 25°C?",
+        )
+
+        assert profile == "experto"
+
     def test_two_user_messages_combined(self):
         """Test that only first 2 user messages are analyzed."""
         history = [
@@ -242,6 +282,22 @@ class TestInferUserProfile:
         history_lower = [{"role": "user", "content": "panel solar básico"}]
         history_mixed = [{"role": "user", "content": "Panel Solar Básico"}]
         assert infer_user_profile(history_lower) == infer_user_profile(history_mixed)
+
+
+class TestProfileRecalibrationPolicy:
+    """Tests for the bounded two-message recalibration policy."""
+
+    def test_missing_stored_profile_is_always_inferred(self):
+        """Test legacy sessions without a profile remain compatible."""
+        assert should_recalibrate_user_profile(None, 4) is True
+
+    def test_stored_profile_is_recalibrated_before_second_message(self):
+        """Test a first-turn profile can be refined by the second message."""
+        assert should_recalibrate_user_profile("novato", 1) is True
+
+    def test_stored_profile_is_stable_after_two_messages(self):
+        """Test inference stops once the bounded window is complete."""
+        assert should_recalibrate_user_profile("experto", 2) is False
 
 
 class TestSessionManagerProfileIntegration:

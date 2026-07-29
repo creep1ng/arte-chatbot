@@ -5,7 +5,10 @@ conversation history analysis.
 """
 
 import re
-from typing import List, Dict
+from typing import Dict, List, Optional
+
+
+PROFILE_INFERENCE_MAX_USER_MESSAGES = 2
 
 PROFILE_INSTRUCTIONS = {
     "novato": "Explica con analogías simples. Evita siglas técnicas sin definirlas primero. Usa ejemplos cotidianos.",
@@ -240,7 +243,31 @@ def _extract_acronym_score(text: str) -> float:
     return min(score, 1.0)
 
 
-def infer_user_profile(history: List[Dict[str, str]]) -> str:
+def should_recalibrate_user_profile(
+    existing_profile: Optional[str], prior_user_message_count: int
+) -> bool:
+    """Return whether the bounded profile inference window is still open.
+
+    Profiles are inferred from at most the first two user messages. Recomputing
+    during that window lets the second message refine the first-turn result;
+    afterwards, the stored profile remains stable.
+
+    Args:
+        existing_profile: Profile currently stored for the session, if any.
+        prior_user_message_count: User messages stored before the current turn.
+
+    Returns:
+        True when the profile must be inferred or recalibrated.
+    """
+    return (
+        existing_profile is None
+        or prior_user_message_count < PROFILE_INFERENCE_MAX_USER_MESSAGES
+    )
+
+
+def infer_user_profile(
+    history: List[Dict[str, str]], current_message: Optional[str] = None
+) -> str:
     """
     Infer user expertise level based on conversation history.
 
@@ -251,17 +278,22 @@ def infer_user_profile(history: List[Dict[str, str]]) -> str:
 
     Args:
         history: List of conversation turns in format [{"role": "user", "content": "..."}].
-                 Only "user" role messages are analyzed.
+            Only "user" role messages are analyzed.
+        current_message: Current user message when it has not yet been persisted.
 
     Returns:
         One of "novato", "intermedio", or "experto".
     """
-    # Filter user messages only and take first 2
+    # Filter stored user messages before adding the not-yet-persisted current turn.
     user_messages = [
         turn.get("content", "")
         for turn in history
         if turn.get("role") == "user" and turn.get("content")
-    ][:2]
+    ]
+    if current_message:
+        user_messages.append(current_message)
+
+    user_messages = user_messages[:PROFILE_INFERENCE_MAX_USER_MESSAGES]
 
     # Default to intermedio if no user messages
     if not user_messages:
