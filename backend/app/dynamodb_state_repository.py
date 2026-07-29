@@ -202,34 +202,37 @@ class DynamoDBStateRepository:
 
     def set_pending_result(self, session_id: str, joined_message: str) -> None:
         """Persist a joined buffer result."""
-        state = self.get_buffer_state(session_id)
-        state.pending_result = joined_message
-        self._put_buffer_state(state)
+        self._table.update_item(
+            Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+            UpdateExpression="SET pending_result = :value, expires_at = :ttl",
+            ExpressionAttributeValues={
+                ":value": joined_message,
+                ":ttl": self._ttl(self._buffer_ttl_seconds),
+            },
+        )
 
     def pop_pending_result(self, session_id: str) -> Optional[str]:
-        """Consume and clear the pending joined buffer result."""
-        state = self.get_buffer_state(session_id)
-        result = state.pending_result
-        if result is not None:
-            state.pending_result = None
-            self._put_buffer_state(state)
-        return result
+        """Atomically consume a pending joined buffer result once."""
+        return self._pop_pending_string(session_id, "pending_result")
 
     def set_pending_chat_response(self, session_id: str, response_json: str) -> None:
         """Persist a completed chat response for polling."""
-        state = self.get_buffer_state(session_id)
-        state.pending_chat_response = response_json
-        self._put_buffer_state(state)
+        self._table.update_item(
+            Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+            UpdateExpression="SET pending_chat_response = :value, expires_at = :ttl",
+            ExpressionAttributeValues={
+                ":value": response_json,
+                ":ttl": self._ttl(self._buffer_ttl_seconds),
+            },
+        )
 
     def pop_pending_chat_response(self, session_id: str) -> Optional[str]:
-        """Consume and clear a pending chat response."""
-        state = self.get_buffer_state(session_id)
-        result = state.pending_chat_response
-        if result is not None:
-            state.pending_chat_response = None
-            state.processing_started_at = None
-            self._put_buffer_state(state)
-        return result
+        """Atomically consume a chat response and its processing marker once."""
+        return self._pop_pending_string(
+            session_id,
+            "pending_chat_response",
+            additional_remove="processing_started_at",
+        )
 
     def set_processing(self, session_id: str) -> None:
         """Mark a session as being processed."""
@@ -242,6 +245,39 @@ class DynamoDBStateRepository:
         state = self.get_buffer_state(session_id)
         state.processing_started_at = None
         self._put_buffer_state(state)
+
+    def _pop_pending_string(
+        self,
+        session_id: str,
+        attribute: str,
+        *,
+        additional_remove: Optional[str] = None,
+    ) -> Optional[str]:
+        attribute_names = {"#pending": attribute}
+        remove_expression = "#pending"
+        if additional_remove is not None:
+            attribute_names["#additional"] = additional_remove
+            remove_expression = "#pending, #additional"
+
+        try:
+            response = self._table.update_item(
+                Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+                UpdateExpression=f"REMOVE {remove_expression}",
+                ConditionExpression="attribute_type(#pending, :string_type)",
+                ExpressionAttributeNames=attribute_names,
+                ExpressionAttributeValues={":string_type": "S"},
+                ReturnValues="ALL_OLD",
+            )
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return None
+            raise
+
+        result = response["Attributes"][attribute]
+        return str(result)
 
     def _get_turns(self, session_id: str, max_turns: int) -> list[ChatTurn]:
         items: list[dict[str, Any]] = []
