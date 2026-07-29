@@ -19,7 +19,7 @@ def _client_with_auth(monkeypatch) -> TestClient:
     monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
     settings.reset()
     rate_limiter.reset()
-    app.dependency_overrides.clear()
+    monkeypatch.setattr(app, "dependency_overrides", {})
     return TestClient(app)
 
 
@@ -80,7 +80,7 @@ def test_rate_limit_returns_429(monkeypatch) -> None:
     monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
     settings.reset()
     rate_limiter.reset()
-    app.dependency_overrides.clear()
+    monkeypatch.setattr(app, "dependency_overrides", {})
     client = TestClient(app)
 
     headers = {"X-API-Key": "test-secret"}

@@ -115,9 +115,8 @@ def _lambda_test_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from backend.main import app
 
-    app.dependency_overrides.clear()
+    monkeypatch.setattr(app, "dependency_overrides", {})
     yield
-    app.dependency_overrides.clear()
     settings.reset()
 
 

@@ -27,8 +27,14 @@ def _bind_test_session(session_id: str) -> None:
     session_manager.bind_session(session_id, TEST_API_PRINCIPAL)
 
 
-# Override auth for unit tests
-app.dependency_overrides[verify_api_key] = lambda: TEST_API_KEY
+@pytest.fixture(autouse=True)
+def _chat_dependency_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every chat test an isolated authentication override."""
+    monkeypatch.setattr(
+        app,
+        "dependency_overrides",
+        {verify_api_key: lambda: TEST_API_KEY},
+    )
 
 
 class TestHealthEndpoint:
