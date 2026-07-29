@@ -1,9 +1,10 @@
 """Repository contracts and DTOs for Lambda-safe chatbot state."""
 
 from datetime import datetime
-from typing import Optional, Protocol, runtime_checkable
+from typing import Annotated, Optional, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import StringConstraints
 
 
 class StateRepositoryError(Exception):
@@ -48,6 +49,43 @@ class BufferMessage(BaseModel):
     timestamp: datetime
 
 
+class _FrozenModel(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+
+class ProcessingLease(_FrozenModel):
+    """Tokenized ownership of buffer processing until a UTC instant."""
+
+    token: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    expires_at: datetime
+
+    @field_validator("expires_at")
+    @classmethod
+    def _require_aware_expiry(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must be timezone-aware")
+        return value
+
+
+class ProcessingLeaseResult(_FrozenModel):
+    """Backend-neutral processing lease acquisition result."""
+
+    acquired: bool
+    lease: Optional[ProcessingLease] = None
+
+    @model_validator(mode="after")
+    def _require_consistent_lease(self) -> "ProcessingLeaseResult":
+        if self.acquired != (self.lease is not None):
+            raise ValueError("acquired must match lease presence")
+        return self
+
+
+class ProcessingLeaseReleaseResult(_FrozenModel):
+    """Backend-neutral processing lease release result."""
+
+    released: bool
+
+
 class BufferState(BaseModel):
     """Durable multi-message buffer and polling state."""
 
@@ -56,6 +94,7 @@ class BufferState(BaseModel):
     pending_result: Optional[str] = None
     pending_chat_response: Optional[str] = None
     processing_started_at: Optional[datetime] = None
+    processing_lease: Optional[ProcessingLease] = None
 
 
 class RateWindow(BaseModel):
@@ -79,8 +118,8 @@ class RateLimitDecision(BaseModel):
 class ChatbotStateRepository(Protocol):
     """Persistence boundary for Lambda-safe chatbot state."""
 
-    def get_session(self, session_id: str) -> SessionState:
-        """Return persisted session state or an empty state for missing sessions."""
+    def get_session(self, session_id: str, max_turns: int = 20) -> SessionState:
+        """Return persisted session state with at most the latest turns."""
 
     def append_turn(self, session_id: str, turn: ChatTurn) -> None:
         """Append one conversation turn."""
@@ -118,16 +157,36 @@ class ChatbotStateRepository(Protocol):
         """Persist a joined buffer result for polling."""
 
     def pop_pending_result(self, session_id: str) -> Optional[str]:
-        """Atomically consume a pending joined buffer result."""
+        """Consume a stored string once; return None when none is pending.
+
+        At most one concurrent caller receives the value. An empty string is a
+        pending value rather than absence.
+        """
 
     def set_pending_chat_response(self, session_id: str, response_json: str) -> None:
         """Persist a processed chat response for polling."""
 
     def pop_pending_chat_response(self, session_id: str) -> Optional[str]:
-        """Atomically consume a pending chat response."""
+        """Consume a stored string once and clear its processing marker.
+
+        At most one concurrent caller receives the stored string. An empty string
+        is a pending value; ``None`` means that no string was available. The
+        winning consume removes the marker in the same operation; an absent
+        response leaves the marker unchanged.
+        """
 
     def set_processing(self, session_id: str) -> None:
         """Mark a flushed session as being processed."""
 
     def clear_processing(self, session_id: str) -> None:
         """Clear the processing marker for a session."""
+
+    def try_acquire_processing_lease(
+        self, session_id: str, *, now: datetime, lease: ProcessingLease
+    ) -> ProcessingLeaseResult:
+        """Acquire processing ownership when no active lease exists."""
+
+    def release_processing_lease(
+        self, session_id: str, token: str
+    ) -> ProcessingLeaseReleaseResult:
+        """Release processing ownership only when the token matches."""

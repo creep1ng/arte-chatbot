@@ -12,6 +12,7 @@ flush due buffers instead of relying on ``asyncio.create_task`` after response.
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from threading import RLock
 from typing import Awaitable, Callable, Optional
 
 from backend.app.state_repository import ChatbotStateRepository
@@ -34,6 +35,10 @@ _pending_chat_responses: dict[str, tuple[str, datetime]] = {}
 
 # Sessions whose buffer was flushed and are being processed in background
 _processing_sessions: dict[str, datetime] = {}
+
+# Pending delivery and processing state share one lock so consumption and marker
+# cleanup are one in-process operation.
+_pending_state_lock = RLock()
 
 
 def set_state_repository(
@@ -86,8 +91,8 @@ async def add_to_buffer(
 async def flush_buffer(session_id: str) -> Optional[str]:
     """Flush buffer and return joined message. None if empty.
 
-    Also stores the result in _pending_results so callers can retrieve it
-    after the async window expiration callback fires.
+    Local mode clears stale pending delivery state before returning the joined
+    value to its caller. Repository mode stores the joined value for polling.
 
     Args:
         session_id: The session identifier.
@@ -106,19 +111,20 @@ async def flush_buffer(session_id: str) -> Optional[str]:
         _state_repository.clear_processing(session_id)
         return joined
 
-    messages = _buffer.pop(session_id, [])
+    buffered_entries = _buffer.pop(session_id, [])
     task = _buffer_tasks.pop(session_id, None)
     current_task = asyncio.current_task()
     if task and task is not current_task and not task.done():
         task.cancel()
-    if not messages:
+    if not buffered_entries:
         return None
-    joined = "\n".join(msg for msg, _ in messages)
+    joined = "\n".join(msg for msg, _ in buffered_entries)
     # Clean up stale state from previous flushes to prevent memory leaks
     # and avoid false "not_found" responses while background processing runs.
-    _pending_results.pop(session_id, None)
-    _pending_chat_responses.pop(session_id, None)
-    _processing_sessions.pop(session_id, None)
+    with _pending_state_lock:
+        _pending_results.pop(session_id, None)
+        _pending_chat_responses.pop(session_id, None)
+        _processing_sessions.pop(session_id, None)
     return joined
 
 
@@ -168,6 +174,9 @@ def clear_buffer(session_id: str) -> None:
     task = _buffer_tasks.pop(session_id, None)
     if task and not task.done():
         task.cancel()
+    with _pending_state_lock:
+        _pending_results.pop(session_id, None)
+        _processing_sessions.pop(session_id, None)
 
 
 def pop_pending_result(session_id: str) -> Optional[str]:
@@ -185,10 +194,21 @@ def pop_pending_result(session_id: str) -> Optional[str]:
     if _state_repository is not None:
         return _state_repository.pop_pending_result(session_id)
 
-    result = _pending_results.pop(session_id, None)
-    if result:
-        return result[0]
-    return None
+    with _pending_state_lock:
+        result = _pending_results.pop(session_id, None)
+        return result[0] if result is not None else None
+
+
+def set_pending_result(session_id: str, joined_message: str) -> None:
+    """Store a joined buffer result for consume-once polling."""
+    if _state_repository is not None:
+        _state_repository.set_pending_result(session_id, joined_message)
+        return
+    with _pending_state_lock:
+        _pending_results[session_id] = (
+            joined_message,
+            datetime.now(timezone.utc),
+        )
 
 
 def set_pending_chat_response(session_id: str, response_json: str) -> None:
@@ -201,7 +221,11 @@ def set_pending_chat_response(session_id: str, response_json: str) -> None:
     if _state_repository is not None:
         _state_repository.set_pending_chat_response(session_id, response_json)
         return
-    _pending_chat_responses[session_id] = (response_json, datetime.now(timezone.utc))
+    with _pending_state_lock:
+        _pending_chat_responses[session_id] = (
+            response_json,
+            datetime.now(timezone.utc),
+        )
 
 
 def pop_pending_chat_response(session_id: str) -> Optional[str]:
@@ -216,10 +240,12 @@ def pop_pending_chat_response(session_id: str) -> Optional[str]:
     if _state_repository is not None:
         return _state_repository.pop_pending_chat_response(session_id)
 
-    result = _pending_chat_responses.pop(session_id, None)
-    if result:
+    with _pending_state_lock:
+        result = _pending_chat_responses.pop(session_id, None)
+        if result is None:
+            return None
+        _processing_sessions.pop(session_id, None)
         return result[0]
-    return None
 
 
 def clear_pending_chat_response(session_id: str) -> None:
@@ -233,8 +259,9 @@ def clear_pending_chat_response(session_id: str) -> None:
         _state_repository.clear_processing(session_id)
         return
 
-    _pending_chat_responses.pop(session_id, None)
-    _processing_sessions.pop(session_id, None)
+    with _pending_state_lock:
+        _pending_chat_responses.pop(session_id, None)
+        _processing_sessions.pop(session_id, None)
 
 
 def set_processing(session_id: str) -> None:
@@ -246,7 +273,8 @@ def set_processing(session_id: str) -> None:
     if _state_repository is not None:
         _state_repository.set_processing(session_id)
         return
-    _processing_sessions[session_id] = datetime.now(timezone.utc)
+    with _pending_state_lock:
+        _processing_sessions[session_id] = datetime.now(timezone.utc)
 
 
 def clear_processing(session_id: str) -> None:
@@ -258,7 +286,8 @@ def clear_processing(session_id: str) -> None:
     if _state_repository is not None:
         _state_repository.clear_processing(session_id)
         return
-    _processing_sessions.pop(session_id, None)
+    with _pending_state_lock:
+        _processing_sessions.pop(session_id, None)
 
 
 def is_processing(session_id: str) -> bool:
@@ -275,7 +304,8 @@ def is_processing(session_id: str) -> bool:
             _state_repository.get_buffer_state(session_id).processing_started_at
             is not None
         )
-    return session_id in _processing_sessions
+    with _pending_state_lock:
+        return session_id in _processing_sessions
 
 
 def is_buffer_ready_to_flush(
@@ -297,10 +327,10 @@ def is_buffer_ready_to_flush(
         last_message_at = _to_utc(messages[-1].timestamp)
         return current_time >= last_message_at + timedelta(seconds=window_seconds)
 
-    messages = _buffer.get(session_id, [])
-    if not messages:
+    buffered_entries = _buffer.get(session_id, [])
+    if not buffered_entries:
         return False
-    last_message_at = _to_utc(messages[-1][1])
+    last_message_at = _to_utc(buffered_entries[-1][1])
     return current_time >= last_message_at + timedelta(seconds=window_seconds)
 
 

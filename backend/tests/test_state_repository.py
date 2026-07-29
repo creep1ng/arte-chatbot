@@ -1,15 +1,21 @@
 """Tests for Lambda-safe state repository contracts and DynamoDB behavior."""
 
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+from threading import Barrier, RLock
 from typing import Any
 
 import pytest
 from botocore.exceptions import ClientError
+from pydantic import ValidationError
 
 from backend.app.dynamodb_state_repository import DynamoDBStateRepository
 from backend.app.state_repository import (
     ChatTurn,
     OwnershipConflictError,
+    ProcessingLease,
+    ProcessingLeaseResult,
     TokenTotals,
 )
 
@@ -17,31 +23,80 @@ from backend.app.state_repository import (
 class FakeDynamoDBTable:
     """Small in-memory DynamoDB Table fake for repository unit tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, query_page_size: int | None = None) -> None:
         self.items: dict[tuple[str, str], dict[str, Any]] = {}
+        self.query_calls: list[dict[str, Any]] = []
+        self.query_page_size = query_page_size
+        self._lock = RLock()
 
     def get_item(self, Key: dict[str, str]) -> dict[str, Any]:
-        item = self.items.get((Key["PK"], Key["SK"]))
-        return {"Item": item.copy()} if item else {}
+        with self._lock:
+            item = self.items.get((Key["PK"], Key["SK"]))
+            return {"Item": deepcopy(item)} if item else {}
 
     def put_item(self, Item: dict[str, Any]) -> None:
-        self.items[(Item["PK"], Item["SK"])] = Item.copy()
+        with self._lock:
+            self.items[(Item["PK"], Item["SK"])] = deepcopy(Item)
 
     def query(
         self,
         KeyConditionExpression: str,
         ExpressionAttributeValues: dict[str, Any],
         ScanIndexForward: bool = True,
-    ) -> dict[str, list[dict[str, Any]]]:
-        del KeyConditionExpression
-        prefix = ExpressionAttributeValues[":prefix"]
-        pk = ExpressionAttributeValues[":pk"]
-        items = [
-            item.copy()
-            for (item_pk, item_sk), item in self.items.items()
-            if item_pk == pk and item_sk.startswith(prefix)
-        ]
-        return {"Items": sorted(items, key=lambda item: item["SK"])}
+        Limit: int | None = None,
+        ExclusiveStartKey: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        expected_expression = "PK = :pk AND begins_with(SK, :prefix)"
+        if KeyConditionExpression != expected_expression:
+            raise ValueError(
+                f"Unsupported key condition expression: {KeyConditionExpression}"
+            )
+
+        with self._lock:
+            self.query_calls.append(
+                {
+                    "ScanIndexForward": ScanIndexForward,
+                    "Limit": Limit,
+                    "ExclusiveStartKey": deepcopy(ExclusiveStartKey),
+                }
+            )
+            prefix = ExpressionAttributeValues[":prefix"]
+            pk = ExpressionAttributeValues[":pk"]
+            items = [
+                deepcopy(item)
+                for (item_pk, item_sk), item in self.items.items()
+                if item_pk == pk and item_sk.startswith(prefix)
+            ]
+            items = sorted(
+                items,
+                key=lambda item: item["SK"],
+                reverse=not ScanIndexForward,
+            )
+
+            if ExclusiveStartKey is not None:
+                start_index = next(
+                    index + 1
+                    for index, item in enumerate(items)
+                    if item["PK"] == ExclusiveStartKey["PK"]
+                    and item["SK"] == ExclusiveStartKey["SK"]
+                )
+                items = items[start_index:]
+
+            page_limit = Limit
+            if self.query_page_size is not None:
+                page_limit = min(
+                    Limit or self.query_page_size,
+                    self.query_page_size,
+                )
+
+            page_items = items[:page_limit]
+            response: dict[str, Any] = {"Items": page_items}
+            if page_limit is not None and len(items) > page_limit:
+                response["LastEvaluatedKey"] = {
+                    "PK": page_items[-1]["PK"],
+                    "SK": page_items[-1]["SK"],
+                }
+            return response
 
     def update_item(
         self,
@@ -52,53 +107,157 @@ class FakeDynamoDBTable:
         ConditionExpression: str | None = None,
         ReturnValues: str | None = None,
     ) -> dict[str, Any]:
-        del ReturnValues
+        if ReturnValues not in (None, "ALL_NEW"):
+            raise ValueError(f"Unsupported return values: {ReturnValues}")
+
         key = (Key["PK"], Key["SK"])
-        item = self.items.setdefault(key, {"PK": Key["PK"], "SK": Key["SK"]})
         names = ExpressionAttributeNames or {}
+        expression = " ".join(UpdateExpression.split())
 
-        if ConditionExpression and "owner" in names.values():
-            current_owner = item.get("owner")
-            new_owner = ExpressionAttributeValues[":owner"]
-            if current_owner is not None and current_owner != new_owner:
-                raise ClientError(
-                    {
-                        "Error": {
-                            "Code": "ConditionalCheckFailedException",
-                            "Message": "owner mismatch",
-                        }
-                    },
-                    "UpdateItem",
-                )
-
-        if "ADD" in UpdateExpression:
-            item["count" if "#count" in UpdateExpression else "input_tokens"] = int(
-                item.get("count" if "#count" in UpdateExpression else "input_tokens", 0)
-            ) + int(
-                ExpressionAttributeValues.get(
-                    ":one", ExpressionAttributeValues.get(":input", 0)
-                )
+        with self._lock:
+            item = deepcopy(self.items.get(key, {"PK": Key["PK"], "SK": Key["SK"]}))
+            self._evaluate_condition(
+                item, ConditionExpression, names, ExpressionAttributeValues
             )
-            if ":output" in ExpressionAttributeValues:
-                item["output_tokens"] = int(item.get("output_tokens", 0)) + int(
-                    ExpressionAttributeValues[":output"]
-                )
-                item["total_tokens"] = int(item.get("total_tokens", 0)) + int(
-                    ExpressionAttributeValues[":total"]
-                )
-            if ":started" in ExpressionAttributeValues:
-                item["window_started_at"] = ExpressionAttributeValues[":started"]
-                item["window_seconds"] = ExpressionAttributeValues[":window"]
-            item["expires_at"] = ExpressionAttributeValues[":ttl"]
-        else:
-            if ":owner" in ExpressionAttributeValues:
-                item["owner"] = ExpressionAttributeValues[":owner"]
-            if ":profile" in ExpressionAttributeValues:
-                item["profile"] = ExpressionAttributeValues[":profile"]
-            if ":ttl" in ExpressionAttributeValues:
-                item["expires_at"] = ExpressionAttributeValues[":ttl"]
+            self._apply_update(item, expression, names, ExpressionAttributeValues)
+            self.items[key] = deepcopy(item)
+            return {"Attributes": deepcopy(item)} if ReturnValues == "ALL_NEW" else {}
 
-        return {"Attributes": item.copy()}
+    @staticmethod
+    def _evaluate_condition(
+        item: dict[str, Any],
+        expression: str | None,
+        names: dict[str, str],
+        values: dict[str, Any],
+    ) -> None:
+        """Evaluate a supported condition before mutating the item."""
+        if expression is None:
+            return
+        if expression == "attribute_not_exists(#owner) OR #owner = :owner":
+            owner_name = names.get("#owner")
+            if owner_name != "owner":
+                raise ValueError("Unsupported owner attribute mapping")
+            if item.get(owner_name) not in (None, values[":owner"]):
+                FakeDynamoDBTable._conditional_failure("owner mismatch")
+            return
+        if expression == (
+            "attribute_not_exists(#lease_token) OR "
+            "attribute_not_exists(#lease_expires_at) OR "
+            "#lease_expires_at <= :now"
+        ):
+            token_name = names.get("#lease_token")
+            expiry_name = names.get("#lease_expires_at")
+            if token_name != "lease_token" or expiry_name != "lease_expires_at":
+                raise ValueError("Unsupported lease attribute mapping")
+            if (
+                token_name in item
+                and expiry_name in item
+                and item[expiry_name] > values[":now"]
+            ):
+                FakeDynamoDBTable._conditional_failure("active lease")
+            return
+        if expression == "#lease_token = :token":
+            token_name = names.get("#lease_token")
+            if token_name != "lease_token":
+                raise ValueError("Unsupported lease token mapping")
+            if item.get(token_name) != values[":token"]:
+                FakeDynamoDBTable._conditional_failure("token mismatch")
+            return
+        else:
+            raise ValueError(f"Unsupported condition expression: {expression}")
+
+    @staticmethod
+    def _conditional_failure(message: str) -> None:
+        raise ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": message}},
+            "UpdateItem",
+        )
+
+    @staticmethod
+    def _apply_update(
+        item: dict[str, Any],
+        expression: str,
+        names: dict[str, str],
+        values: dict[str, Any],
+    ) -> None:
+        """Apply one of the repository's supported update expressions."""
+        if expression == "SET #owner = :owner, expires_at = :ttl":
+            if names.get("#owner") != "owner":
+                raise ValueError("Unsupported owner attribute mapping")
+            item["owner"] = deepcopy(values[":owner"])
+            item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression == "SET profile = :profile, expires_at = :ttl":
+            item["profile"] = deepcopy(values[":profile"])
+            item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression == (
+            "SET expires_at = :ttl ADD input_tokens :input, "
+            "output_tokens :output, total_tokens :total"
+        ):
+            item["input_tokens"] = int(item.get("input_tokens", 0)) + int(
+                values[":input"]
+            )
+            item["output_tokens"] = int(item.get("output_tokens", 0)) + int(
+                values[":output"]
+            )
+            item["total_tokens"] = int(item.get("total_tokens", 0)) + int(
+                values[":total"]
+            )
+            item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression == (
+            "SET #lease_token = :token, #lease_expires_at = :lease_expires, "
+            "#processing_started_at = :started, #expires_at = :ttl"
+        ):
+            item[names["#lease_token"]] = deepcopy(values[":token"])
+            item[names["#lease_expires_at"]] = deepcopy(values[":lease_expires"])
+            item[names["#processing_started_at"]] = deepcopy(values[":started"])
+            item[names["#expires_at"]] = deepcopy(values[":ttl"])
+            return
+
+        if expression == (
+            "SET #expires_at = :ttl REMOVE #lease_token, #lease_expires_at, "
+            "#processing_started_at"
+        ):
+            item[names["#expires_at"]] = deepcopy(values[":ttl"])
+            for alias in (
+                "#lease_token",
+                "#lease_expires_at",
+                "#processing_started_at",
+            ):
+                item.pop(names[alias], None)
+            return
+
+        if expression == (
+            "SET window_started_at = :started, window_seconds = :window, "
+            "expires_at = :ttl ADD #count :one"
+        ):
+            if names.get("#count") != "count":
+                raise ValueError("Unsupported count attribute mapping")
+            item["window_started_at"] = deepcopy(values[":started"])
+            item["window_seconds"] = deepcopy(values[":window"])
+            item["expires_at"] = deepcopy(values[":ttl"])
+            item["count"] = int(item.get("count", 0)) + int(values[":one"])
+            return
+
+        if expression == (
+            "SET #messages = list_append(if_not_exists(#messages, :empty), "
+            ":message), #expires_at = :ttl"
+        ):
+            if names.get("#messages") != "messages":
+                raise ValueError("Unsupported messages attribute mapping")
+            if names.get("#expires_at") != "expires_at":
+                raise ValueError("Unsupported expiry attribute mapping")
+            existing_messages = deepcopy(item.get("messages", values[":empty"]))
+            item["messages"] = existing_messages + deepcopy(values[":message"])
+            item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        raise ValueError(f"Unsupported update expression: {expression}")
 
 
 @pytest.fixture()
@@ -111,6 +270,52 @@ def repository() -> DynamoDBStateRepository:
         buffer_ttl_seconds=600,
         rate_ttl_seconds=300,
     )
+
+
+def test_fake_dynamodb_table_isolates_nested_values() -> None:
+    """The fake does not leak mutable nested values across table boundaries."""
+    table = FakeDynamoDBTable()
+    source: dict[str, Any] = {
+        "PK": "SESSION#s1",
+        "SK": "BUFFER",
+        "messages": [{"message": "Hola"}],
+    }
+
+    table.put_item(Item=source)
+    source["messages"][0]["message"] = "mutated before read"
+    first_read = table.get_item(Key={"PK": "SESSION#s1", "SK": "BUFFER"})["Item"]
+    first_read["messages"][0]["message"] = "mutated after read"
+
+    second_read = table.get_item(Key={"PK": "SESSION#s1", "SK": "BUFFER"})["Item"]
+    assert second_read["messages"] == [{"message": "Hola"}]
+
+
+def test_fake_dynamodb_table_rejects_unsupported_expressions() -> None:
+    """Unsupported expressions fail loudly instead of producing false confidence."""
+    table = FakeDynamoDBTable()
+    key = {"PK": "SESSION#s1", "SK": "META"}
+
+    with pytest.raises(ValueError, match="Unsupported condition expression"):
+        table.update_item(
+            Key=key,
+            UpdateExpression="SET profile = :profile, expires_at = :ttl",
+            ConditionExpression="attribute_exists(profile)",
+            ExpressionAttributeValues={":profile": "expert", ":ttl": 1},
+        )
+    assert table.get_item(Key=key) == {}
+
+    with pytest.raises(ValueError, match="Unsupported update expression"):
+        table.update_item(
+            Key=key,
+            UpdateExpression="REMOVE profile",
+            ExpressionAttributeValues={},
+        )
+
+    with pytest.raises(ValueError, match="Unsupported key condition expression"):
+        table.query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": "SESSION#s1", ":prefix": "TURN#"},
+        )
 
 
 def test_session_survives_cold_start_with_new_repository_instance() -> None:
@@ -141,6 +346,77 @@ def test_session_survives_cold_start_with_new_repository_instance() -> None:
     assert state.token_totals.total_tokens == 5
 
 
+@pytest.mark.parametrize(
+    ("turn_count", "max_turns", "expected_questions"),
+    [
+        (2, 3, ["Q0", "Q1"]),
+        (3, 3, ["Q0", "Q1", "Q2"]),
+        (5, 3, ["Q2", "Q3", "Q4"]),
+    ],
+)
+def test_get_session_reads_only_latest_turns_in_chronological_order(
+    turn_count: int,
+    max_turns: int,
+    expected_questions: list[str],
+) -> None:
+    """The repository bounds reads while preserving consumer ordering."""
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table)
+    for index in range(turn_count):
+        repository.append_turn(
+            "s1",
+            ChatTurn(
+                question=f"Q{index}",
+                answer=f"A{index}",
+                timestamp=datetime(2026, 1, 1, 0, index, tzinfo=timezone.utc),
+            ),
+        )
+
+    state = repository.get_session("s1", max_turns=max_turns)
+
+    assert [turn.question for turn in state.turns] == expected_questions
+    assert table.query_calls == [
+        {
+            "ScanIndexForward": False,
+            "Limit": max_turns,
+            "ExclusiveStartKey": None,
+        }
+    ]
+
+
+def test_get_session_follows_dynamodb_pagination() -> None:
+    """The repository follows continuation keys until the turn limit is reached."""
+    table = FakeDynamoDBTable(query_page_size=2)
+    repository = DynamoDBStateRepository(table=table)
+    for index in range(5):
+        repository.append_turn(
+            "s1",
+            ChatTurn(
+                question=f"Q{index}",
+                answer=f"A{index}",
+                timestamp=datetime(2026, 1, 1, 0, index, tzinfo=timezone.utc),
+            ),
+        )
+
+    state = repository.get_session("s1", max_turns=3)
+
+    assert [turn.question for turn in state.turns] == ["Q2", "Q3", "Q4"]
+    assert [call["Limit"] for call in table.query_calls] == [3, 1]
+    assert table.query_calls[1]["ExclusiveStartKey"] is not None
+
+
+@pytest.mark.parametrize("max_turns", [0, -1])
+def test_get_session_rejects_non_positive_turn_limit(max_turns: int) -> None:
+    """Invalid limits fail before issuing a DynamoDB query."""
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table)
+
+    with pytest.raises(ValueError, match="max_turns must be greater than zero"):
+        repository.get_session("s1", max_turns=max_turns)
+
+    assert table.query_calls == []
+
+
 def test_bind_owner_allows_same_owner_and_rejects_conflict(
     repository: DynamoDBStateRepository,
 ) -> None:
@@ -165,6 +441,160 @@ def test_buffer_state_persists_pending_results(
     repository.set_pending_result("s1", "Hola\nmundo")
     assert repository.pop_pending_result("s1") == "Hola\nmundo"
     assert repository.pop_pending_result("s1") is None
+
+
+def test_append_buffer_message_refreshes_ttl_and_returns_utc_state() -> None:
+    """Atomic append returns the new durable state with UTC metadata."""
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table, buffer_ttl_seconds=600)
+
+    state = repository.append_buffer_message("s1", "Hola")
+
+    item = table.items[("SESSION#s1", "BUFFER")]
+    assert item["expires_at"] > int(datetime.now(timezone.utc).timestamp())
+    assert state.messages[0].message == "Hola"
+    assert state.messages[0].timestamp.tzinfo == timezone.utc
+
+
+def test_concurrent_buffer_appends_retain_each_message_exactly_once() -> None:
+    """Atomic appends do not overwrite a concurrently accepted message."""
+
+    class CoordinatedReadTable(FakeDynamoDBTable):
+        """Force legacy read/put writers to observe the same buffer state."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._buffer_read_barrier = Barrier(2)
+            self.coordinate_buffer_reads = True
+
+        def get_item(self, Key: dict[str, str]) -> dict[str, Any]:
+            response = super().get_item(Key)
+            if Key["SK"] == "BUFFER" and self.coordinate_buffer_reads:
+                self._buffer_read_barrier.wait(timeout=5)
+            return response
+
+    table = CoordinatedReadTable()
+    repository = DynamoDBStateRepository(table=table)
+    start_barrier = Barrier(2)
+
+    def append(message: str) -> None:
+        start_barrier.wait(timeout=5)
+        repository.append_buffer_message("s1", message)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(append, message) for message in ("Hola", "mundo")]
+        for future in futures:
+            future.result(timeout=5)
+
+    table.coordinate_buffer_reads = False
+    messages = [
+        buffered.message for buffered in repository.get_buffer_state("s1").messages
+    ]
+    assert len(messages) == 2
+    assert sorted(messages) == ["Hola", "mundo"]
+    assert messages.count("Hola") == 1
+    assert messages.count("mundo") == 1
+
+
+def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
+    repository: DynamoDBStateRepository,
+) -> None:
+    now = datetime(2026, 7, 29, microsecond=123456, tzinfo=timezone.utc)
+    start = Barrier(2)
+
+    def acquire(token: str):
+        start.wait(timeout=5)
+        return repository.try_acquire_processing_lease(
+            "s1",
+            now=now,
+            lease=ProcessingLease(token=token, expires_at=now + timedelta(seconds=60)),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(acquire, ("winner-a", "winner-b")))
+    assert sorted(result.acquired for result in results) == [False, True]
+    winner = next(result.lease for result in results if result.acquired)
+    assert winner is not None
+    assert winner.expires_at == now + timedelta(seconds=60)
+
+    replacement = ProcessingLease(
+        token="replacement", expires_at=now + timedelta(seconds=120)
+    )
+    assert not repository.try_acquire_processing_lease(
+        "s1", now=winner.expires_at - timedelta(microseconds=1), lease=replacement
+    ).acquired
+    takeover = repository.try_acquire_processing_lease(
+        "s1", now=winner.expires_at, lease=replacement
+    )
+    assert takeover.acquired and takeover.lease == replacement
+    assert repository.release_processing_lease("s1", winner.token).released is False
+    assert repository.get_buffer_state("s1").processing_lease == replacement
+    assert repository.release_processing_lease("s1", replacement.token).released is True
+    assert not repository.release_processing_lease("s1", replacement.token).released
+
+
+def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:
+    now = datetime.now(timezone.utc)
+    lease = ProcessingLease(token="owner", expires_at=now)
+
+    with pytest.raises(ValidationError):
+        ProcessingLease(token="", expires_at=now)
+    with pytest.raises(ValidationError):
+        ProcessingLease(token="owner", expires_at=now.replace(tzinfo=None))
+    with pytest.raises(ValidationError):
+        ProcessingLeaseResult(acquired=True)
+    with pytest.raises(ValidationError):
+        lease.token = "replacement"
+
+
+@pytest.mark.parametrize("missing", ["lease_token", "lease_expires_at"])
+def test_processing_lease_recovers_malformed_legacy_state(missing: str) -> None:
+    table = FakeDynamoDBTable()
+    item = {
+        "PK": "SESSION#s1",
+        "SK": "BUFFER",
+        "lease_token": "legacy",
+        "lease_expires_at": 9999999999,
+    }
+    item.pop(missing)
+    table.put_item(Item=item)
+    repository = DynamoDBStateRepository(table=table)
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="new", expires_at=now + timedelta(seconds=60))
+
+    assert repository.try_acquire_processing_lease("s1", now=now, lease=lease).acquired
+
+
+def test_buffer_state_without_lease_attributes_maps_as_legacy_state() -> None:
+    table = FakeDynamoDBTable()
+    table.put_item(Item={"PK": "SESSION#s1", "SK": "BUFFER"})
+
+    state = DynamoDBStateRepository(table=table).get_buffer_state("s1")
+
+    assert state.processing_lease is None
+
+
+def test_processing_lease_translates_only_conditional_errors() -> None:
+    class ErrorTable:
+        code = "ConditionalCheckFailedException"
+
+        def update_item(self, **kwargs: Any) -> dict[str, Any]:
+            raise ClientError({"Error": {"Code": self.code}}, "UpdateItem")
+
+    table = ErrorTable()
+    repository = DynamoDBStateRepository(table=table)
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="token", expires_at=now + timedelta(seconds=60))
+    assert not repository.try_acquire_processing_lease(
+        "s1", now=now, lease=lease
+    ).acquired
+    assert not repository.release_processing_lease("s1", "token").released
+
+    table.code = "ProvisionedThroughputExceededException"
+    with pytest.raises(ClientError):
+        repository.try_acquire_processing_lease("s1", now=now, lease=lease)
+    with pytest.raises(ClientError):
+        repository.release_processing_lease("s1", "token")
 
 
 def test_rate_limit_uses_shared_counter(repository: DynamoDBStateRepository) -> None:

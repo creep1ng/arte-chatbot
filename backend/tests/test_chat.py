@@ -27,8 +27,14 @@ def _bind_test_session(session_id: str) -> None:
     session_manager.bind_session(session_id, TEST_API_PRINCIPAL)
 
 
-# Override auth for unit tests
-app.dependency_overrides[verify_api_key] = lambda: TEST_API_KEY
+@pytest.fixture(autouse=True)
+def _chat_dependency_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every chat test an isolated authentication override."""
+    monkeypatch.setattr(
+        app,
+        "dependency_overrides",
+        {verify_api_key: lambda: TEST_API_KEY},
+    )
 
 
 class TestHealthEndpoint:
@@ -225,6 +231,30 @@ class TestChatEndpointUnit:
         assert add_kwargs["answer"] == "Mocked LLM Response"
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.session_manager")
+    def test_chat_infers_profile_from_current_first_message(
+        self, mock_session_manager, mock_llm
+    ) -> None:
+        """Test the first user message participates in profile inference."""
+        mock_llm.return_value = make_llm_response(text="Mocked LLM Response")
+        mock_session_manager.get_user_profile.return_value = None
+        mock_session_manager.get_history.return_value = []
+        _bind_test_session("first-profile-turn")
+
+        response = client.post(
+            "/chat",
+            json={
+                "message": "¿Cuál es el Voc del JinkoSolar 460W a 25°C?",
+                "session_id": "first-profile-turn",
+            },
+        )
+
+        assert response.status_code == 200
+        mock_session_manager.set_user_profile.assert_called_once_with(
+            "first-profile-turn", "experto"
+        )
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_escalation_message(self, mock_llm) -> None:
         """Test that escalation response includes the escalation message."""
         mock_llm.return_value = make_llm_response(
@@ -397,6 +427,7 @@ def chat_api_key():
 
 
 @pytest.mark.integration
+@pytest.mark.live
 def test_chat_status_200(chat_api_key):
     """Verify the /chat endpoint returns 200 for a valid request with auth header."""
     payload = {"message": "Hello", "session_id": str(uuid.uuid4())}
@@ -410,6 +441,7 @@ def test_chat_status_200(chat_api_key):
 
 
 @pytest.mark.integration
+@pytest.mark.live
 def test_chat_response_not_empty(api_key, chat_api_key):
     """Verify the response body is non-empty when the API key is available."""
     payload = {"message": "Test", "session_id": str(uuid.uuid4())}
@@ -423,6 +455,7 @@ def test_chat_response_not_empty(api_key, chat_api_key):
 
 
 @pytest.mark.integration
+@pytest.mark.live
 def test_session_id_uuid_format(api_key, chat_api_key):
     """Verify the returned session_id is a valid UUID."""
     session_id = str(uuid.uuid4())
@@ -442,6 +475,7 @@ def test_session_id_uuid_format(api_key, chat_api_key):
 
 
 @pytest.mark.integration
+@pytest.mark.live
 def test_openai_api_key_loaded_from_env(api_key):
     """Verify the OPENAI_API_KEY environment variable is set."""
     assert os.getenv("OPENAI_API_KEY") is not None, (

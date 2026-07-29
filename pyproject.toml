@@ -34,7 +34,10 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-markers = ["integration: marks tests as integration tests"]
+markers = [
+  "integration: marks tests as integration tests",
+  "live: marks tests that require a running service or external credentials",
+]
 
 [tool.arte_chatbot.lambda_package]
 build_command = "uv export --no-dev --format requirements-txt --output-file requirements.txt"

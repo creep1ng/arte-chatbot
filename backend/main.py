@@ -88,7 +88,11 @@ from backend.app.security import (
 from backend.app.session import session_manager
 from backend.app.state_repository import ChatbotStateRepository
 from backend.app.tools import get_tool_definitions, validate_s3_path
-from backend.app.user_profiler import PROFILE_INSTRUCTIONS, infer_user_profile
+from backend.app.user_profiler import (
+    PROFILE_INSTRUCTIONS,
+    infer_user_profile,
+    should_recalibrate_user_profile,
+)
 from backend.app.whatsapp_formatter import format_for_whatsapp
 from rag import (
     DEFAULT_ESCALATION_MESSAGE,
@@ -876,12 +880,12 @@ async def _process_chat_message(
         redact_text(message)[:100],
     )
 
-    # Infer user profile if not already inferred for this session
+    # Infer from the first turn and recalibrate once on the second user message.
     existing_profile = session_manager.get_user_profile(session_id)
-    if existing_profile is None:
-        history = session_manager.get_history(session_id)
+    history = session_manager.get_history(session_id)
+    if should_recalibrate_user_profile(existing_profile, len(history)):
         history_dicts = [{"role": "user", "content": turn.question} for turn in history]
-        inferred_profile = infer_user_profile(history_dicts)
+        inferred_profile = infer_user_profile(history_dicts, current_message=message)
         session_manager.set_user_profile(session_id, inferred_profile)
         logger.info(
             "User profile inferred: session_id=%s, profile=%s, turn_count=%d",
@@ -1755,7 +1759,7 @@ async def get_buffer_result(
     bind_or_validate_session(session_id, principal, is_new=False)
 
     chat_response_json = pop_pending_chat_response(session_id)
-    if chat_response_json:
+    if chat_response_json is not None:
         return BufferResultResponse(
             status="ready",
             session_id=session_id,
@@ -1771,7 +1775,7 @@ async def get_buffer_result(
             if joined_message:
                 await _on_buffer_window_expired(session_id, joined_message)
                 chat_response_json = pop_pending_chat_response(session_id)
-                if chat_response_json:
+                if chat_response_json is not None:
                     return BufferResultResponse(
                         status="ready",
                         session_id=session_id,

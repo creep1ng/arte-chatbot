@@ -7,7 +7,9 @@ Strict TDD: tests written BEFORE implementation.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Barrier
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -50,6 +52,9 @@ def _clean_buffer_state() -> None:
 
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
+        message_buffer._pending_results.clear()
+        message_buffer._pending_chat_responses.clear()
+        message_buffer._processing_sessions.clear()
     except ImportError:
         pass
     yield
@@ -58,6 +63,9 @@ def _clean_buffer_state() -> None:
 
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
+        message_buffer._pending_results.clear()
+        message_buffer._pending_chat_responses.clear()
+        message_buffer._processing_sessions.clear()
     except ImportError:
         pass
 
@@ -452,6 +460,65 @@ class TestDurableBufferState:
         assert repo.get_buffer_state("s1").processing_started_at is None
 
 
+class TestLocalPendingState:
+    """Local pending delivery matches the durable consume-once contract."""
+
+    @pytest.mark.parametrize("value", ["ready", ""])
+    def test_pending_result_is_consumed_once(self, value: str) -> None:
+        from backend.app import message_buffer
+
+        message_buffer.set_pending_result("s1", value)
+
+        assert message_buffer.pop_pending_result("s1") == value
+        assert message_buffer.pop_pending_result("s1") is None
+
+    @pytest.mark.parametrize("value", ['{"response":"ok"}', ""])
+    def test_pending_chat_response_is_consumed_once_and_clears_processing(
+        self, value: str
+    ) -> None:
+        from backend.app import message_buffer
+
+        message_buffer.set_processing("s1")
+        message_buffer.set_pending_chat_response("s1", value)
+
+        assert message_buffer.pop_pending_chat_response("s1") == value
+        assert message_buffer.is_processing("s1") is False
+        assert message_buffer.pop_pending_chat_response("s1") is None
+
+    def test_missing_chat_response_does_not_clear_processing(self) -> None:
+        from backend.app import message_buffer
+
+        message_buffer.set_processing("s1")
+
+        assert message_buffer.pop_pending_chat_response("s1") is None
+        assert message_buffer.is_processing("s1") is True
+
+    @pytest.mark.parametrize(
+        ("setter_name", "popper_name"),
+        [
+            ("set_pending_result", "pop_pending_result"),
+            ("set_pending_chat_response", "pop_pending_chat_response"),
+        ],
+    )
+    def test_concurrent_consumers_have_exactly_one_winner(
+        self, setter_name: str, popper_name: str
+    ) -> None:
+        from backend.app import message_buffer
+
+        getattr(message_buffer, setter_name)("s1", "ready")
+        barrier = Barrier(8)
+
+        def consume() -> str | None:
+            barrier.wait()
+            return getattr(message_buffer, popper_name)("s1")
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(lambda _: consume(), range(8)))
+
+        assert results.count("ready") == 1
+        assert results.count(None) == 7
+
+
 # ===========================================================================
 # Task 5.7 — Endpoint integration tests
 # ===========================================================================
@@ -488,7 +555,11 @@ class TestEndpointBufferIntegration:
         from backend.main import app
         from backend.app.auth import verify_api_key
 
-        app.dependency_overrides[verify_api_key] = lambda: "test_key"
+        monkeypatch.setattr(
+            app,
+            "dependency_overrides",
+            {verify_api_key: lambda: "test_key"},
+        )
         client = TestClient(app)
         return client, app
 
