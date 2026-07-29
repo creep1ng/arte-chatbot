@@ -1,6 +1,7 @@
 """DynamoDB implementation of the chatbot state repository."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import time
 from typing import Any, Optional
 
@@ -12,6 +13,9 @@ from backend.app.state_repository import (
     BufferState,
     ChatTurn,
     OwnershipConflictError,
+    ProcessingLease,
+    ProcessingLeaseReleaseResult,
+    ProcessingLeaseResult,
     RateLimitDecision,
     SessionState,
     TokenTotals,
@@ -186,24 +190,26 @@ class DynamoDBStateRepository:
         return self._buffer_state_from_item(session_id, item)
 
     def append_buffer_message(self, session_id: str, message: str) -> BufferState:
-        """Append using a messages-only write that preserves polling state.
-
-        This intentionally does not solve concurrent append-vs-append updates;
-        it only prevents the message snapshot from overwriting other fields.
-        """
-        state = self.get_buffer_state(session_id)
-        state.messages.append(
-            BufferMessage(message=message, timestamp=datetime.now(timezone.utc))
-        )
-        self._table.update_item(
+        """Atomically append a buffered input message and refresh its TTL."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        response = self._table.update_item(
             Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
-            UpdateExpression="SET messages = :messages, expires_at = :ttl",
+            UpdateExpression=(
+                "SET #messages = list_append(if_not_exists(#messages, :empty), "
+                ":message), #expires_at = :ttl"
+            ),
+            ExpressionAttributeNames={
+                "#messages": "messages",
+                "#expires_at": "expires_at",
+            },
             ExpressionAttributeValues={
-                ":messages": self._serialize_buffer_messages(state.messages),
+                ":empty": [],
+                ":message": [{"message": message, "timestamp": timestamp}],
                 ":ttl": self._ttl(self._buffer_ttl_seconds),
             },
+            ReturnValues="ALL_NEW",
         )
-        return state
+        return self._buffer_state_from_item(session_id, response.get("Attributes", {}))
 
     def clear_buffer_messages(self, session_id: str) -> None:
         """Clear accumulated buffer messages."""
@@ -304,6 +310,75 @@ class DynamoDBStateRepository:
         result = response["Attributes"][attribute]
         return str(result)
 
+    def try_acquire_processing_lease(
+        self, session_id: str, *, now: datetime, lease: ProcessingLease
+    ) -> ProcessingLeaseResult:
+        """Atomically acquire an absent or expired processing lease."""
+        now_utc = self._to_utc(now)
+        lease_expires = self._to_utc(lease.expires_at)
+        try:
+            response = self._table.update_item(
+                Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+                UpdateExpression=(
+                    "SET #lease_token = :token, #lease_expires_at = :lease_expires, "
+                    "#processing_started_at = :started, #expires_at = :ttl"
+                ),
+                ConditionExpression=(
+                    "attribute_not_exists(#lease_token) OR "
+                    "attribute_not_exists(#lease_expires_at) OR "
+                    "#lease_expires_at <= :now"
+                ),
+                ExpressionAttributeNames={
+                    "#lease_token": "lease_token",
+                    "#lease_expires_at": "lease_expires_at",
+                    "#processing_started_at": "processing_started_at",
+                    "#expires_at": "expires_at",
+                },
+                ExpressionAttributeValues={
+                    ":token": lease.token,
+                    ":lease_expires": self._epoch_seconds(lease_expires),
+                    ":started": now_utc.isoformat(),
+                    ":now": self._epoch_seconds(now_utc),
+                    ":ttl": self._ttl(self._buffer_ttl_seconds),
+                },
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as exc:
+            if self._is_conditional_failure(exc):
+                return ProcessingLeaseResult(acquired=False)
+            raise
+        state = self._buffer_state_from_item(session_id, response.get("Attributes", {}))
+        return ProcessingLeaseResult(acquired=True, lease=state.processing_lease)
+
+    def release_processing_lease(
+        self, session_id: str, token: str
+    ) -> ProcessingLeaseReleaseResult:
+        """Atomically release a processing lease owned by ``token``."""
+        try:
+            self._table.update_item(
+                Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+                UpdateExpression=(
+                    "SET #expires_at = :ttl REMOVE #lease_token, "
+                    "#lease_expires_at, #processing_started_at"
+                ),
+                ConditionExpression="#lease_token = :token",
+                ExpressionAttributeNames={
+                    "#lease_token": "lease_token",
+                    "#lease_expires_at": "lease_expires_at",
+                    "#processing_started_at": "processing_started_at",
+                    "#expires_at": "expires_at",
+                },
+                ExpressionAttributeValues={
+                    ":token": token,
+                    ":ttl": self._ttl(self._buffer_ttl_seconds),
+                },
+            )
+        except ClientError as exc:
+            if self._is_conditional_failure(exc):
+                return ProcessingLeaseReleaseResult(released=False)
+            raise
+        return ProcessingLeaseReleaseResult(released=True)
+
     def _get_turns(self, session_id: str, max_turns: int) -> list[ChatTurn]:
         items: list[dict[str, Any]] = []
         exclusive_start_key: Optional[dict[str, Any]] = None
@@ -352,16 +427,18 @@ class DynamoDBStateRepository:
         return value.astimezone(timezone.utc)
 
     @classmethod
-    def _serialize_buffer_messages(
-        cls, messages: list[BufferMessage]
-    ) -> list[dict[str, str]]:
-        return [
-            {
-                "message": message.message,
-                "timestamp": cls._to_utc(message.timestamp).isoformat(),
-            }
-            for message in messages
-        ]
+    def _epoch_seconds(cls, value: datetime) -> Decimal:
+        delta = cls._to_utc(value) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return Decimal(delta.days * 86400 + delta.seconds) + Decimal(
+            delta.microseconds
+        ) / Decimal(1_000_000)
+
+    @staticmethod
+    def _is_conditional_failure(exc: ClientError) -> bool:
+        return (
+            exc.response.get("Error", {}).get("Code")
+            == "ConditionalCheckFailedException"
+        )
 
     @staticmethod
     def _turn_from_item(item: dict[str, Any]) -> ChatTurn:
@@ -375,6 +452,8 @@ class DynamoDBStateRepository:
     @staticmethod
     def _buffer_state_from_item(session_id: str, item: dict[str, Any]) -> BufferState:
         processing_started_at = item.get("processing_started_at")
+        lease_token = item.get("lease_token")
+        lease_expires_at = item.get("lease_expires_at")
         return BufferState(
             session_id=session_id,
             messages=[
@@ -389,6 +468,17 @@ class DynamoDBStateRepository:
             processing_started_at=(
                 datetime.fromisoformat(processing_started_at)
                 if processing_started_at
+                else None
+            ),
+            processing_lease=(
+                ProcessingLease(
+                    token=lease_token,
+                    expires_at=datetime(1970, 1, 1, tzinfo=timezone.utc)
+                    + timedelta(
+                        microseconds=int(Decimal(str(lease_expires_at)) * 1_000_000)
+                    ),
+                )
+                if lease_token is not None and lease_expires_at is not None
                 else None
             ),
         )

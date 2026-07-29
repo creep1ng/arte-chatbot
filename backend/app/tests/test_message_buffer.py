@@ -555,7 +555,11 @@ class TestEndpointBufferIntegration:
         from backend.main import app
         from backend.app.auth import verify_api_key
 
-        app.dependency_overrides[verify_api_key] = lambda: "test_key"
+        monkeypatch.setattr(
+            app,
+            "dependency_overrides",
+            {verify_api_key: lambda: "test_key"},
+        )
         client = TestClient(app)
         return client, app
 

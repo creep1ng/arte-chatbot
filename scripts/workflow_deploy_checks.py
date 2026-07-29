@@ -4,8 +4,9 @@ The checks read repository files only. They intentionally avoid GitHub, AWS,
 Cloudflare, Docker, and Terraform calls so they can run safely in PR CI.
 """
 
-from pathlib import Path
 import re
+import shlex
+from pathlib import Path
 
 
 WORKFLOW_PATH = Path(".github/workflows/ci.yml")
@@ -33,6 +34,7 @@ def check_workflow_deploy(project_root: Path) -> list[str]:
     preview_comment_job = _job_block(workflow, "comment-lambda-preview")
 
     findings: list[str] = []
+    findings.extend(_check_deterministic_test_gate(workflow))
     findings.extend(
         _check_main_deploy_gates(
             workflow,
@@ -61,6 +63,68 @@ def check_workflow_deploy(project_root: Path) -> list[str]:
             local_python_version,
         )
     )
+    return findings
+
+
+def _check_deterministic_test_gate(workflow: str) -> list[str]:
+    """Require the complete offline suite before Lambda packaging."""
+    deterministic_job = _job_block(workflow, "test-deterministic")
+    lambda_package_job = _job_block(workflow, "lambda-package")
+    pytest_arguments = _inline_step_command_arguments(
+        deterministic_job,
+        "Run deterministic Python suites",
+        ["uv", "run", "pytest"],
+    )
+    deterministic_env = _job_environment(deterministic_job)
+    required_environment = {
+        "OPENAI_API_KEY": "test-openai-key",
+        "CHAT_API_KEY": "test-chat-key",
+        "AWS_ACCESS_KEY_ID": "testing",
+        "AWS_SECRET_ACCESS_KEY": "testing",
+        "AWS_SESSION_TOKEN": "testing",
+        "AWS_REGION": "us-east-1",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_BUCKET_NAME": "test-bucket",
+        "AWS_EC2_METADATA_DISABLED": "true",
+        "ARTE_CHATBOT_DISABLE_DOTENV": "1",
+    }
+    required_test_roots = {"backend/tests", "backend/app/tests", "rag/tests"}
+    has_live_exclusion = (
+        any(
+            pytest_arguments[index : index + 2] == ["-m", "not live"]
+            for index in range(len(pytest_arguments) - 1)
+        )
+        or "-m=not live" in pytest_arguments
+    )
+
+    findings: list[str] = []
+    if (
+        not deterministic_job
+        or "lint" not in _job_needs(deterministic_job)
+        or _inline_step_command_arguments(
+            deterministic_job,
+            "Install test dependencies",
+            ["uv", "sync"],
+        )
+        != ["--frozen", "--group", "dev"]
+        or not required_test_roots.issubset(pytest_arguments)
+        or not has_live_exclusion
+        or any(
+            deterministic_env.get(name) != value
+            for name, value in required_environment.items()
+        )
+    ):
+        findings.append(
+            "deterministic test job must run all Python test roots offline with fake credentials"
+        )
+
+    if (
+        not lambda_package_job
+        or not {"lint", "test-deterministic"}.issubset(_job_needs(lambda_package_job))
+        or _job_mapping_value(lambda_package_job, "if") is not None
+    ):
+        findings.append("lambda package job must depend on the deterministic test gate")
+
     return findings
 
 
@@ -429,6 +493,153 @@ def _job_block(workflow: str, job_name: str) -> str:
     )
     match = pattern.search(workflow)
     return match.group(0) if match else ""
+
+
+def _inline_step_command_arguments(
+    job: str, step_name: str, command_prefix: list[str]
+) -> list[str]:
+    """Return arguments for one named, fail-fast, inline command step."""
+    step = _named_job_step(job, step_name)
+    if (
+        not step
+        or step.get("run-style") != "inline"
+        or "continue-on-error" in step
+        or "shell" in step
+    ):
+        return []
+
+    command = step.get("run", "")
+    if _has_forbidden_shell_syntax(command):
+        return []
+
+    tokens = _shell_tokens(command)
+    prefix_length = len(command_prefix)
+    if tokens[:prefix_length] != command_prefix:
+        return []
+    arguments = tokens[prefix_length:]
+    if any(
+        arguments[index : index + prefix_length] == command_prefix
+        for index in range(len(arguments) - prefix_length + 1)
+    ):
+        return []
+    return arguments
+
+
+def _job_steps(job: str) -> list[dict[str, str]]:
+    """Extract minimal top-level fields for each workflow step in one job."""
+    lines = job.splitlines()
+    steps: list[dict[str, str]] = []
+    current_step: dict[str, str] | None = None
+    index = 0
+    while index < len(lines):
+        step_match = re.match(
+            r"^      - (?P<key>[a-zA-Z0-9_-]+):\s*(?P<value>.*)$", lines[index]
+        )
+        if step_match:
+            if current_step is not None:
+                steps.append(current_step)
+            current_step = {
+                step_match.group("key"): _yaml_scalar(step_match.group("value"))
+            }
+            index += 1
+            continue
+
+        field_match = re.match(
+            r"^        (?P<key>[a-zA-Z0-9_-]+):\s*(?P<value>.*)$", lines[index]
+        )
+        if current_step is None or not field_match:
+            index += 1
+            continue
+
+        key = field_match.group("key")
+        value = field_match.group("value").strip()
+        if key == "run" and value in {"|", "|-", ">", ">-"}:
+            block_lines: list[str] = []
+            index += 1
+            while index < len(lines):
+                line = lines[index]
+                if line.strip() and len(line) - len(line.lstrip()) <= 8:
+                    break
+                block_lines.append(line.strip())
+                index += 1
+            separator = " " if value.startswith(">") else "\n"
+            current_step["run"] = separator.join(block_lines)
+            current_step["run-style"] = value
+            continue
+
+        current_step[key] = _yaml_scalar(value)
+        if key == "run":
+            current_step["run-style"] = "inline"
+        index += 1
+
+    if current_step is not None:
+        steps.append(current_step)
+    return steps
+
+
+def _named_job_step(job: str, step_name: str) -> dict[str, str]:
+    """Return one uniquely named step or an empty mapping."""
+    matches = [step for step in _job_steps(job) if step.get("name") == step_name]
+    return matches[0] if len(matches) == 1 else {}
+
+
+def _yaml_scalar(value: str) -> str:
+    """Normalize one simple uncommented YAML scalar."""
+    tokens = _shell_tokens(value)
+    return tokens[0] if len(tokens) == 1 else value.strip()
+
+
+def _has_forbidden_shell_syntax(command: str) -> bool:
+    """Reject shell composition; this guard intentionally accepts one command only."""
+    forbidden_tokens = ("\n", ";", "&", "|", "$(", "`")
+    return any(token in command for token in forbidden_tokens)
+
+
+def _shell_tokens(command: str) -> list[str]:
+    """Split executable shell text while discarding shell comments."""
+    try:
+        return shlex.split(command, comments=True, posix=True)
+    except ValueError:
+        return []
+
+
+def _job_environment(job: str) -> dict[str, str]:
+    """Return the job-level env mapping, excluding steps and comments."""
+    lines = job.splitlines()
+    for index, line in enumerate(lines):
+        if line != "    env:":
+            continue
+        environment: dict[str, str] = {}
+        for child in lines[index + 1 :]:
+            if child.strip() and len(child) - len(child.lstrip()) <= 4:
+                break
+            match = re.match(r"^      (?P<name>[A-Z0-9_]+):\s*(?P<value>.+)$", child)
+            if match:
+                tokens = _shell_tokens(match.group("value"))
+                if len(tokens) == 1:
+                    environment[match.group("name")] = tokens[0]
+        return environment
+    return {}
+
+
+def _job_mapping_value(job: str, key: str) -> str | None:
+    """Return one uncommented top-level job mapping value."""
+    match = re.search(
+        rf"^    {re.escape(key)}:\s*(?P<value>[^#\n]*?)(?:\s+#.*)?$",
+        job,
+        re.MULTILINE,
+    )
+    return match.group("value").strip() if match else None
+
+
+def _job_needs(job: str) -> set[str]:
+    """Return inline job dependencies as exact names."""
+    value = _job_mapping_value(job, "needs")
+    if not value:
+        return set()
+    if value.startswith("[") and value.endswith("]"):
+        return {dependency.strip() for dependency in value[1:-1].split(",")}
+    return {value}
 
 
 def _read(path: Path) -> str:

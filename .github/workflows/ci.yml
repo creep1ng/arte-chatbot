@@ -63,6 +63,39 @@ jobs:
       - name: Check Python syntax
         run: python -m py_compile backend/main.py
 
+  test-deterministic:
+    name: Test Deterministic Python Suites
+    runs-on: ubuntu-latest
+    needs: lint
+    env:
+      OPENAI_API_KEY: test-openai-key
+      CHAT_API_KEY: test-chat-key
+      AWS_ACCESS_KEY_ID: testing
+      AWS_SECRET_ACCESS_KEY: testing
+      AWS_SESSION_TOKEN: testing
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_BUCKET_NAME: test-bucket
+      AWS_EC2_METADATA_DISABLED: "true"
+      ARTE_CHATBOT_DISABLE_DOTENV: "1"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install test dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Run deterministic Python suites
+        run: uv run pytest backend/tests backend/app/tests rag/tests -m "not live"
+
   build:
     name: Build Docker Images
     runs-on: ubuntu-latest
@@ -113,7 +146,7 @@ jobs:
   lambda-package:
     name: Test and Package Lambda Backend
     runs-on: ubuntu-latest
-    needs: lint
+    needs: [lint, test-deterministic]
     outputs:
       package-sha256: ${{ steps.package.outputs.sha256 }}
     steps:

@@ -114,6 +114,17 @@ class TestServerlessStateConfig:
             settings = Settings()
             assert settings.state_backend == "memory"
 
+    def test_processing_lease_defaults_to_sixty_seconds(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            assert Settings().buffer_processing_lease_seconds == 60
+
+    def test_processing_lease_rejects_non_positive_duration(self) -> None:
+        with patch.dict(
+            os.environ, {"BUFFER_PROCESSING_LEASE_SECONDS": "0"}, clear=True
+        ):
+            with pytest.raises(ValidationError):
+                Settings()
+
     def test_dynamodb_state_backend_requires_table_name(self) -> None:
         """DynamoDB state must fail fast when the table name is missing."""
         with patch.dict(os.environ, {"STATE_BACKEND": "dynamodb"}, clear=True):

@@ -1,9 +1,10 @@
 """Repository contracts and DTOs for Lambda-safe chatbot state."""
 
 from datetime import datetime
-from typing import Optional, Protocol, runtime_checkable
+from typing import Annotated, Optional, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import StringConstraints
 
 
 class StateRepositoryError(Exception):
@@ -48,6 +49,43 @@ class BufferMessage(BaseModel):
     timestamp: datetime
 
 
+class _FrozenModel(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+
+class ProcessingLease(_FrozenModel):
+    """Tokenized ownership of buffer processing until a UTC instant."""
+
+    token: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    expires_at: datetime
+
+    @field_validator("expires_at")
+    @classmethod
+    def _require_aware_expiry(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must be timezone-aware")
+        return value
+
+
+class ProcessingLeaseResult(_FrozenModel):
+    """Backend-neutral processing lease acquisition result."""
+
+    acquired: bool
+    lease: Optional[ProcessingLease] = None
+
+    @model_validator(mode="after")
+    def _require_consistent_lease(self) -> "ProcessingLeaseResult":
+        if self.acquired != (self.lease is not None):
+            raise ValueError("acquired must match lease presence")
+        return self
+
+
+class ProcessingLeaseReleaseResult(_FrozenModel):
+    """Backend-neutral processing lease release result."""
+
+    released: bool
+
+
 class BufferState(BaseModel):
     """Durable multi-message buffer and polling state."""
 
@@ -56,6 +94,7 @@ class BufferState(BaseModel):
     pending_result: Optional[str] = None
     pending_chat_response: Optional[str] = None
     processing_started_at: Optional[datetime] = None
+    processing_lease: Optional[ProcessingLease] = None
 
 
 class RateWindow(BaseModel):
@@ -141,3 +180,13 @@ class ChatbotStateRepository(Protocol):
 
     def clear_processing(self, session_id: str) -> None:
         """Clear the processing marker for a session."""
+
+    def try_acquire_processing_lease(
+        self, session_id: str, *, now: datetime, lease: ProcessingLease
+    ) -> ProcessingLeaseResult:
+        """Acquire processing ownership when no active lease exists."""
+
+    def release_processing_lease(
+        self, session_id: str, token: str
+    ) -> ProcessingLeaseReleaseResult:
+        """Release processing ownership only when the token matches."""
