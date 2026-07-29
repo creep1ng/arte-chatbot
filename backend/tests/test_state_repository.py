@@ -99,16 +99,13 @@ class FakeDynamoDBTable:
         names = ExpressionAttributeNames or {}
         ExpressionAttributeValues = ExpressionAttributeValues or {}
         with self._lock:
-            item = deepcopy(
-                self.items.get(key, {"PK": Key["PK"], "SK": Key["SK"]})
-            )
+            item = deepcopy(self.items.get(key, {"PK": Key["PK"], "SK": Key["SK"]}))
             old_item = deepcopy(item)
 
             if ConditionExpression == "attribute_type(#pending, :string_type)":
                 pending_attribute = names["#pending"]
-                if (
-                    ExpressionAttributeValues[":string_type"] != "S"
-                    or not isinstance(item.get(pending_attribute), str)
+                if ExpressionAttributeValues[":string_type"] != "S" or not isinstance(
+                    item.get(pending_attribute), str
                 ):
                     self._raise_conditional_failure("pending value is not a string")
             elif ConditionExpression and "owner" in names.values():
