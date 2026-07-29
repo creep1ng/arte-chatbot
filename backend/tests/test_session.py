@@ -5,6 +5,8 @@ Unit tests for the session management service.
 import threading
 from datetime import datetime
 
+import pytest
+
 from backend.app.dynamodb_state_repository import DynamoDBStateRepository
 from backend.app.session import SessionManager
 from backend.app.state_repository import ChatTurn, TokenTotals
@@ -23,6 +25,13 @@ def test_session_manager_custom_max_turns():
     """Test that SessionManager accepts custom max_turns."""
     sm = SessionManager(max_turns=5)
     assert sm.max_turns == 5
+
+
+@pytest.mark.parametrize("max_turns", [0, -1])
+def test_session_manager_rejects_non_positive_max_turns(max_turns: int):
+    """Test that SessionManager rejects invalid history limits."""
+    with pytest.raises(ValueError, match="max_turns must be greater than zero"):
+        SessionManager(max_turns=max_turns)
 
 
 def test_add_turn_creates_new_session():
