@@ -266,10 +266,7 @@ class DynamoDBStateRepository:
             if not exclusive_start_key:
                 break
 
-        return [
-            self._turn_from_item(item)
-            for item in reversed(items)
-        ]
+        return [self._turn_from_item(item) for item in reversed(items)]
 
     def _put_buffer_state(self, state: BufferState) -> None:
         self._table.put_item(
