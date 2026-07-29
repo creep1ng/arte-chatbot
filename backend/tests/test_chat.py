@@ -427,6 +427,7 @@ def chat_api_key():
 
 
 @pytest.mark.integration
+@pytest.mark.live
 def test_chat_status_200(chat_api_key):
     """Verify the /chat endpoint returns 200 for a valid request with auth header."""
     payload = {"message": "Hello", "session_id": str(uuid.uuid4())}
@@ -440,6 +441,7 @@ def test_chat_status_200(chat_api_key):
 
 
 @pytest.mark.integration
+@pytest.mark.live
 def test_chat_response_not_empty(api_key, chat_api_key):
     """Verify the response body is non-empty when the API key is available."""
     payload = {"message": "Test", "session_id": str(uuid.uuid4())}
@@ -453,6 +455,7 @@ def test_chat_response_not_empty(api_key, chat_api_key):
 
 
 @pytest.mark.integration
+@pytest.mark.live
 def test_session_id_uuid_format(api_key, chat_api_key):
     """Verify the returned session_id is a valid UUID."""
     session_id = str(uuid.uuid4())
@@ -472,6 +475,7 @@ def test_session_id_uuid_format(api_key, chat_api_key):
 
 
 @pytest.mark.integration
+@pytest.mark.live
 def test_openai_api_key_loaded_from_env(api_key):
     """Verify the OPENAI_API_KEY environment variable is set."""
     assert os.getenv("OPENAI_API_KEY") is not None, (
