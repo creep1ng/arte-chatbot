@@ -48,11 +48,14 @@ class DynamoDBStateRepository:
         self._buffer_ttl_seconds = buffer_ttl_seconds
         self._rate_ttl_seconds = rate_ttl_seconds
 
-    def get_session(self, session_id: str) -> SessionState:
+    def get_session(self, session_id: str, max_turns: int = 20) -> SessionState:
         """Return persisted session state or an empty state for cold starts."""
+        if max_turns < 1:
+            raise ValueError("max_turns must be greater than zero")
+
         meta = self._get_item(self._session_pk(session_id), "META")
         tokens = self.get_token_totals(session_id)
-        turns = self._get_turns(session_id)
+        turns = self._get_turns(session_id, max_turns)
         return SessionState(
             session_id=session_id,
             owner=meta.get("owner") if meta else None,
@@ -240,16 +243,30 @@ class DynamoDBStateRepository:
         state.processing_started_at = None
         self._put_buffer_state(state)
 
-    def _get_turns(self, session_id: str) -> list[ChatTurn]:
-        response = self._table.query(
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :prefix)",
-            ExpressionAttributeValues={
-                ":pk": self._session_pk(session_id),
-                ":prefix": "TURN#",
-            },
-            ScanIndexForward=True,
-        )
-        return [self._turn_from_item(item) for item in response.get("Items", [])]
+    def _get_turns(self, session_id: str, max_turns: int) -> list[ChatTurn]:
+        items: list[dict[str, Any]] = []
+        exclusive_start_key: Optional[dict[str, Any]] = None
+
+        while len(items) < max_turns:
+            query_options: dict[str, Any] = {
+                "KeyConditionExpression": "PK = :pk AND begins_with(SK, :prefix)",
+                "ExpressionAttributeValues": {
+                    ":pk": self._session_pk(session_id),
+                    ":prefix": "TURN#",
+                },
+                "ScanIndexForward": False,
+                "Limit": max_turns - len(items),
+            }
+            if exclusive_start_key is not None:
+                query_options["ExclusiveStartKey"] = exclusive_start_key
+
+            response = self._table.query(**query_options)
+            items.extend(response.get("Items", []))
+            exclusive_start_key = response.get("LastEvaluatedKey")
+            if not exclusive_start_key:
+                break
+
+        return [self._turn_from_item(item) for item in reversed(items)]
 
     def _put_buffer_state(self, state: BufferState) -> None:
         self._table.put_item(

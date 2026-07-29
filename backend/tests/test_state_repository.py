@@ -17,8 +17,10 @@ from backend.app.state_repository import (
 class FakeDynamoDBTable:
     """Small in-memory DynamoDB Table fake for repository unit tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, query_page_size: int | None = None) -> None:
         self.items: dict[tuple[str, str], dict[str, Any]] = {}
+        self.query_calls: list[dict[str, Any]] = []
+        self.query_page_size = query_page_size
 
     def get_item(self, Key: dict[str, str]) -> dict[str, Any]:
         item = self.items.get((Key["PK"], Key["SK"]))
@@ -32,8 +34,17 @@ class FakeDynamoDBTable:
         KeyConditionExpression: str,
         ExpressionAttributeValues: dict[str, Any],
         ScanIndexForward: bool = True,
-    ) -> dict[str, list[dict[str, Any]]]:
+        Limit: int | None = None,
+        ExclusiveStartKey: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         del KeyConditionExpression
+        self.query_calls.append(
+            {
+                "ScanIndexForward": ScanIndexForward,
+                "Limit": Limit,
+                "ExclusiveStartKey": ExclusiveStartKey,
+            }
+        )
         prefix = ExpressionAttributeValues[":prefix"]
         pk = ExpressionAttributeValues[":pk"]
         items = [
@@ -41,7 +52,31 @@ class FakeDynamoDBTable:
             for (item_pk, item_sk), item in self.items.items()
             if item_pk == pk and item_sk.startswith(prefix)
         ]
-        return {"Items": sorted(items, key=lambda item: item["SK"])}
+        items = sorted(
+            items,
+            key=lambda item: item["SK"],
+            reverse=not ScanIndexForward,
+        )
+        if ExclusiveStartKey is not None:
+            start_index = next(
+                index + 1
+                for index, item in enumerate(items)
+                if item["PK"] == ExclusiveStartKey["PK"]
+                and item["SK"] == ExclusiveStartKey["SK"]
+            )
+            items = items[start_index:]
+
+        page_limit = Limit
+        if self.query_page_size is not None:
+            page_limit = min(Limit or self.query_page_size, self.query_page_size)
+        page_items = items[:page_limit]
+        response: dict[str, Any] = {"Items": page_items}
+        if page_limit is not None and len(items) > page_limit:
+            response["LastEvaluatedKey"] = {
+                "PK": page_items[-1]["PK"],
+                "SK": page_items[-1]["SK"],
+            }
+        return response
 
     def update_item(
         self,
@@ -139,6 +174,77 @@ def test_session_survives_cold_start_with_new_repository_instance() -> None:
     assert state.profile == "experto"
     assert state.turns[0].source_documents == ["panel.pdf"]
     assert state.token_totals.total_tokens == 5
+
+
+@pytest.mark.parametrize(
+    ("turn_count", "max_turns", "expected_questions"),
+    [
+        (2, 3, ["Q0", "Q1"]),
+        (3, 3, ["Q0", "Q1", "Q2"]),
+        (5, 3, ["Q2", "Q3", "Q4"]),
+    ],
+)
+def test_get_session_reads_only_latest_turns_in_chronological_order(
+    turn_count: int,
+    max_turns: int,
+    expected_questions: list[str],
+) -> None:
+    """The repository bounds reads while preserving consumer ordering."""
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table)
+    for index in range(turn_count):
+        repository.append_turn(
+            "s1",
+            ChatTurn(
+                question=f"Q{index}",
+                answer=f"A{index}",
+                timestamp=datetime(2026, 1, 1, 0, index, tzinfo=timezone.utc),
+            ),
+        )
+
+    state = repository.get_session("s1", max_turns=max_turns)
+
+    assert [turn.question for turn in state.turns] == expected_questions
+    assert table.query_calls == [
+        {
+            "ScanIndexForward": False,
+            "Limit": max_turns,
+            "ExclusiveStartKey": None,
+        }
+    ]
+
+
+def test_get_session_follows_dynamodb_pagination() -> None:
+    """The repository follows continuation keys until the turn limit is reached."""
+    table = FakeDynamoDBTable(query_page_size=2)
+    repository = DynamoDBStateRepository(table=table)
+    for index in range(5):
+        repository.append_turn(
+            "s1",
+            ChatTurn(
+                question=f"Q{index}",
+                answer=f"A{index}",
+                timestamp=datetime(2026, 1, 1, 0, index, tzinfo=timezone.utc),
+            ),
+        )
+
+    state = repository.get_session("s1", max_turns=3)
+
+    assert [turn.question for turn in state.turns] == ["Q2", "Q3", "Q4"]
+    assert [call["Limit"] for call in table.query_calls] == [3, 1]
+    assert table.query_calls[1]["ExclusiveStartKey"] is not None
+
+
+@pytest.mark.parametrize("max_turns", [0, -1])
+def test_get_session_rejects_non_positive_turn_limit(max_turns: int) -> None:
+    """Invalid limits fail before issuing a DynamoDB query."""
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table)
+
+    with pytest.raises(ValueError, match="max_turns must be greater than zero"):
+        repository.get_session("s1", max_turns=max_turns)
+
+    assert table.query_calls == []
 
 
 def test_bind_owner_allows_same_owner_and_rejects_conflict(

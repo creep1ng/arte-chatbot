@@ -225,6 +225,30 @@ class TestChatEndpointUnit:
         assert add_kwargs["answer"] == "Mocked LLM Response"
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.session_manager")
+    def test_chat_infers_profile_from_current_first_message(
+        self, mock_session_manager, mock_llm
+    ) -> None:
+        """Test the first user message participates in profile inference."""
+        mock_llm.return_value = make_llm_response(text="Mocked LLM Response")
+        mock_session_manager.get_user_profile.return_value = None
+        mock_session_manager.get_history.return_value = []
+        _bind_test_session("first-profile-turn")
+
+        response = client.post(
+            "/chat",
+            json={
+                "message": "¿Cuál es el Voc del JinkoSolar 460W a 25°C?",
+                "session_id": "first-profile-turn",
+            },
+        )
+
+        assert response.status_code == 200
+        mock_session_manager.set_user_profile.assert_called_once_with(
+            "first-profile-turn", "experto"
+        )
+
+    @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_returns_escalation_message(self, mock_llm) -> None:
         """Test that escalation response includes the escalation message."""
         mock_llm.return_value = make_llm_response(
