@@ -186,13 +186,26 @@ class DynamoDBStateRepository:
         return self._buffer_state_from_item(session_id, item)
 
     def append_buffer_message(self, session_id: str, message: str) -> BufferState:
-        """Append a buffered input message."""
-        state = self.get_buffer_state(session_id)
-        state.messages.append(
-            BufferMessage(message=message, timestamp=datetime.now(timezone.utc))
+        """Atomically append a buffered input message and refresh its TTL."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        response = self._table.update_item(
+            Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+            UpdateExpression=(
+                "SET #messages = list_append(if_not_exists(#messages, :empty), "
+                ":message), #expires_at = :ttl"
+            ),
+            ExpressionAttributeNames={
+                "#messages": "messages",
+                "#expires_at": "expires_at",
+            },
+            ExpressionAttributeValues={
+                ":empty": [],
+                ":message": [{"message": message, "timestamp": timestamp}],
+                ":ttl": self._ttl(self._buffer_ttl_seconds),
+            },
+            ReturnValues="ALL_NEW",
         )
-        self._put_buffer_state(state)
-        return state
+        return self._buffer_state_from_item(session_id, response.get("Attributes", {}))
 
     def clear_buffer_messages(self, session_id: str) -> None:
         """Clear accumulated buffer messages."""
