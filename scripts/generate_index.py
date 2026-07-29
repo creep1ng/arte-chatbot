@@ -24,12 +24,17 @@ import logging
 import os
 import re
 import sys
+import uuid
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,233 @@ SUPPORTED_EXTENSIONS = {".pdf", ".PDF"}
 
 # Valid top-level categories
 VALID_CATEGORIES = {"paneles", "inversores", "controladores", "baterias"}
+
+
+# ---------------------------------------------------------------------------
+# Typed extraction boundary
+# ---------------------------------------------------------------------------
+
+
+class ClosedDTO(BaseModel):
+    """Base model for closed Structured Output contracts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExtractionStatus(str, Enum):
+    """Eligibility declared for a document extraction."""
+
+    NORMAL = "normal"
+    NEEDS_REVIEW = "needs_review"
+
+
+class TechnicalParameter(ClosedDTO):
+    """One closed, dynamically named technical parameter."""
+
+    name: str = Field(min_length=1)
+    value: str | int | float | bool
+
+
+class ExtractedVariant(ClosedDTO):
+    """One model variant extracted from a product-series PDF."""
+
+    modelo: str
+    parametros_clave: list[TechnicalParameter]
+
+
+class ExtractedProduct(ClosedDTO):
+    """Model-owned product metadata, including untrusted routing assertions."""
+
+    nombre_comercial: str
+    fabricante: str
+    descripcion: Optional[str]
+    url_fabricante: Optional[str]
+    version_ficha: Optional[str]
+    categoria: Optional[str]
+    subcategoria: Optional[str]
+    ruta_s3: Optional[str]
+    parametros_comunes: list[TechnicalParameter]
+    variantes: list[ExtractedVariant]
+
+
+class DocumentExtraction(ClosedDTO):
+    """Typed extraction result associated with one application-owned identity."""
+
+    document_id: str = Field(min_length=1)
+    status: ExtractionStatus
+    products: list[ExtractedProduct]
+    review_reasons: list[str]
+
+
+class ExtractionBatch(ClosedDTO):
+    """Typed result envelope for a complete extraction batch."""
+
+    documents: list[DocumentExtraction]
+
+
+@dataclass(frozen=True)
+class TrustedDocument:
+    """Application-owned source metadata for one uploaded PDF."""
+
+    s3_key: str
+    pdf_info: dict[str, Any]
+    file_id: str
+
+
+class ExtractionProtocolError(RuntimeError):
+    """Raised when extraction identities cannot be reconciled exactly."""
+
+
+class ExtractionNeedsReview(RuntimeError):
+    """Raised when reconciled content is not eligible for publication."""
+
+
+_DIAGNOSTIC_VALUES = (
+    "duplicate_expected_identity duplicate_identity identity_set_mismatch "
+    "model_marked_needs_review product_count_zero product_count_multiple zero_variants "
+    "routing_mismatch model_refusal response_incomplete missing_output_parsed "
+    "upload_failed response_parse_failed extraction_failed cleanup_failed"
+).split()
+DiagnosticCode = Enum(
+    "DiagnosticCode", {value.upper(): value for value in _DIAGNOSTIC_VALUES}, type=str
+)
+
+
+def _diagnostic(codes: DiagnosticCode | list[DiagnosticCode], sources: tuple[str, ...] = ()) -> str:
+    safe_codes = [codes] if isinstance(codes, DiagnosticCode) else codes
+    message = ",".join(code.value for code in safe_codes)
+    return f"{message}; sources={','.join(sources)}" if sources else message
+
+
+ReconciledProduct = tuple[ExtractedProduct, TrustedDocument]
+
+
+def build_trusted_map(
+    documents: list[TrustedDocument],
+    document_id_factory: Optional[Callable[[], str]] = None,
+) -> dict[str, TrustedDocument]:
+    """Assign one unique opaque identity to every trusted document.
+
+    Args:
+        documents: Uploaded documents carrying trusted source metadata.
+        document_id_factory: Optional injectable identity generator for tests.
+
+    Returns:
+        Trusted documents keyed by application-owned opaque identities.
+
+    Raises:
+        ExtractionProtocolError: If the identity generator returns a duplicate.
+    """
+    create_document_id = document_id_factory or (lambda: uuid.uuid4().hex)
+    trusted_map: dict[str, TrustedDocument] = {}
+
+    for document in documents:
+        document_id = create_document_id()
+        if document_id in trusted_map:
+            raise ExtractionProtocolError(_diagnostic(DiagnosticCode.DUPLICATE_EXPECTED_IDENTITY))
+        trusted_map[document_id] = document
+
+    return trusted_map
+
+
+def reconcile_batch(
+    parsed: ExtractionBatch,
+    trusted_map: dict[str, TrustedDocument],
+) -> list[ReconciledProduct]:
+    """Reconcile a typed batch against trusted identities without using position.
+
+    Args:
+        parsed: Schema-validated extraction envelope.
+        trusted_map: Application-owned source records keyed by opaque identity.
+
+    Returns:
+        Product/source pairs in response order.
+
+    Raises:
+        ExtractionProtocolError: If expected and returned identities differ.
+    """
+    _validate_identity_sets(parsed, trusted_map)
+
+    reconciled: list[ReconciledProduct] = []
+    for document in parsed.documents:
+        trusted = trusted_map[document.document_id]
+        reasons = _review_reasons(document, trusted)
+        if reasons:
+            raise ExtractionNeedsReview(_diagnostic(reasons, (trusted.s3_key,)))
+        reconciled.append((document.products[0], trusted))
+    return reconciled
+
+
+def _validate_identity_sets(
+    parsed: ExtractionBatch,
+    trusted_map: dict[str, TrustedDocument],
+) -> None:
+    """Reject duplicate or non-exact returned identity sets."""
+    returned_ids = [document.document_id for document in parsed.documents]
+    duplicate_ids = sorted(
+        document_id
+        for document_id, count in Counter(returned_ids).items()
+        if count > 1
+    )
+    if duplicate_ids:
+        raise ExtractionProtocolError(_diagnostic(DiagnosticCode.DUPLICATE_IDENTITY))
+
+    expected_ids = set(trusted_map)
+    actual_ids = set(returned_ids)
+    missing_ids = sorted(expected_ids - actual_ids)
+    unknown_ids = sorted(actual_ids - expected_ids)
+    if missing_ids or unknown_ids:
+        raise ExtractionProtocolError(
+            _diagnostic(DiagnosticCode.IDENTITY_SET_MISMATCH)
+        )
+
+
+def _review_reasons(
+    document: DocumentExtraction,
+    trusted: TrustedDocument,
+) -> list[DiagnosticCode]:
+    """Classify review-only extraction outcomes for one trusted source."""
+    reasons: list[DiagnosticCode] = []
+    if document.status == ExtractionStatus.NEEDS_REVIEW or document.review_reasons:
+        reasons.append(DiagnosticCode.MODEL_MARKED_NEEDS_REVIEW)
+
+    if not document.products:
+        reasons.append(DiagnosticCode.PRODUCT_COUNT_ZERO)
+        return reasons
+    if len(document.products) > 1:
+        reasons.append(DiagnosticCode.PRODUCT_COUNT_MULTIPLE)
+        return reasons
+
+    product = document.products[0]
+    if not product.variantes:
+        reasons.append(DiagnosticCode.ZERO_VARIANTS)
+
+    if _routing_mismatches(product, trusted):
+        reasons.append(DiagnosticCode.ROUTING_MISMATCH)
+
+    return reasons
+
+
+def _routing_mismatches(
+    product: ExtractedProduct,
+    trusted: TrustedDocument,
+) -> list[str]:
+    """Return model routing assertions that conflict with trusted source data."""
+    trusted_routing = {
+        "ruta_s3": trusted.s3_key,
+        "categoria": trusted.pdf_info.get("categoria"),
+        "subcategoria": trusted.pdf_info.get("subcategoria"),
+    }
+    model_routing = {
+        "ruta_s3": product.ruta_s3,
+        "categoria": product.categoria,
+        "subcategoria": product.subcategoria,
+    }
+    return sorted(
+        field
+        for field, asserted_value in model_routing.items()
+        if asserted_value is not None and asserted_value != trusted_routing[field]
+    )
 
 # ---------------------------------------------------------------------------
 # System prompt for AI extraction
@@ -359,7 +591,7 @@ def filter_new_pdfs(
 
 
 def extract_metadata_batch(
-    pdf_bytes_list: list[tuple[str, bytes, dict[str, str]]],
+    pdf_bytes_list: list[tuple[str, bytes, dict[str, Any]]],
     api_key: str,
     model: str = "gpt-4o",
 ) -> list[dict[str, Any]]:
@@ -371,70 +603,73 @@ def extract_metadata_batch(
         model: Model to use for extraction.
 
     Returns:
-        List of extracted product metadata dicts.
+        Publication-shaped product mappings with trusted source fields.
     """
     from openai import OpenAI
-
     client = OpenAI(api_key=api_key)
     file_ids: list[str] = []
-    s3_key_map: dict[str, str] = {}  # file_id -> s3_key
-
+    trusted_sources = tuple(source[0] for source in pdf_bytes_list)
+    error = lambda code: ExtractionProtocolError(_diagnostic(code, trusted_sources))  # noqa: E731
     try:
-        # Upload PDFs to OpenAI Files API
+        trusted_documents: list[TrustedDocument] = []
         for s3_key, pdf_bytes, pdf_info in pdf_bytes_list:
             file_obj = io.BytesIO(pdf_bytes)
             file_obj.name = pdf_info.get("nombre_comercial", "document") + ".pdf"
-
-            response = client.files.create(file=file_obj, purpose="user_data")
-            file_ids.append(response.id)
-            s3_key_map[response.id] = s3_key
-
-        # Build the user message with file references
-        user_message_parts = [
-            "Analiza las siguientes fichas técnicas PDF y extrae los metadatos "
-            "estructurados según el schema proporcionado en el system prompt.\n"
+            try:
+                uploaded = client.files.create(file=file_obj, purpose="user_data")
+            except Exception:
+                raise error(DiagnosticCode.UPLOAD_FAILED) from None
+            file_ids.append(uploaded.id)
+            trusted_documents.append(TrustedDocument(s3_key, pdf_info, uploaded.id))
+        trusted_map = build_trusted_map(trusted_documents)
+        content: list[dict[str, str]] = []
+        for document_id, trusted in trusted_map.items():
+            content += [
+                {"type": "input_text", "text": f"document_id: {document_id}"},
+                {"type": "input_file", "file_id": trusted.file_id},
+            ]
+        try:
+            response = client.responses.parse(
+                model=model,
+                instructions=EXTRACTION_SYSTEM_PROMPT,
+                input=[{"role": "user", "content": content}],
+                text_format=ExtractionBatch,
+            )
+        except Exception:
+            raise error(DiagnosticCode.RESPONSE_PARSE_FAILED) from None
+        if _response_has_refusal(response):
+            raise error(DiagnosticCode.MODEL_REFUSAL)
+        if response.status != "completed":
+            raise error(DiagnosticCode.RESPONSE_INCOMPLETE)
+        if response.output_parsed is None:
+            raise error(DiagnosticCode.MISSING_OUTPUT_PARSED)
+        products = {
+            trusted.file_id: product
+            for product, trusted in reconcile_batch(
+                response.output_parsed, trusted_map
+            )
+        }
+        return [
+            build_product_entry(products[trusted.file_id], trusted)
+            for trusted in trusted_map.values()
         ]
-
-        for file_id, s3_key in s3_key_map.items():
-            pdf_info = next((p for p in pdf_bytes_list if p[0] == s3_key), None)
-            if pdf_info:
-                info = pdf_info[2]
-                user_message_parts.append(
-                    f"- File ID: {file_id}\n"
-                    f"  Categoría: {info['categoria']}\n"
-                    f"  Subcategoría: {info.get('subcategoria') or 'N/A'}\n"
-                    f"  Nombre comercial (del archivo): {info['nombre_comercial']}"
-                )
-
-        user_message = "\n".join(user_message_parts)
-
-        # Build content list with file references
-        content: list[dict[str, Any]] = [{"type": "text", "text": user_message}]
-
-        # Call the LLM
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-
-        result_text = response.choices[0].message.content
-        result = json.loads(result_text)
-
-        return result.get("productos", [])
-
+    except (ExtractionNeedsReview, ExtractionProtocolError):
+        raise
+    except Exception:
+        raise error(DiagnosticCode.EXTRACTION_FAILED) from None
     finally:
         # Cleanup: delete uploaded files from OpenAI
         for file_id in file_ids:
             try:
                 client.files.delete(file_id)
-                logger.debug("Deleted OpenAI file: %s", file_id)
-            except Exception as e:
-                logger.warning("Failed to delete OpenAI file %s: %s", file_id, e)
+            except Exception:
+                logger.warning(_diagnostic(DiagnosticCode.CLEANUP_FAILED, trusted_sources))
+def _response_has_refusal(response: Any) -> bool:
+    for output in getattr(response, "output", None) or []:
+        for content in getattr(output, "content", None) or []:
+            if getattr(content, "type", None) == "refusal":
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -443,27 +678,49 @@ def extract_metadata_batch(
 
 
 def build_product_entry(
-    extracted: dict[str, Any],
-    pdf_info: dict[str, str],
+    extracted: ExtractedProduct | dict[str, Any],
+    trusted: TrustedDocument | dict[str, Any],
 ) -> dict[str, Any]:
-    """Build a complete product entry combining extracted metadata and S3 info.
+    """Build a catalog entry using routing fields only from trusted source data.
 
     Args:
-        extracted: Metadata extracted by the LLM.
-        pdf_info: Info from S3 discovery (s3_key, categoria, subcategoria, etc.).
+        extracted: Model-owned product metadata.
+        trusted: Application-owned source record. Discovery mappings remain
+            supported until the transport boundary adopts ``TrustedDocument``.
 
     Returns:
         A product dict conforming to the catalog_index schema.
     """
-    nombre_comercial = extracted.get("nombre_comercial", pdf_info["nombre_comercial"])
+    if isinstance(extracted, ExtractedProduct):
+        extracted_data = extracted.model_dump()
+        extracted_data["parametros_comunes"] = _technical_parameters_to_mapping(
+            extracted.parametros_comunes
+        )
+        extracted_data["variantes"] = [
+            {
+                "modelo": variant.modelo,
+                "parametros_clave": _technical_parameters_to_mapping(
+                    variant.parametros_clave
+                ),
+            }
+            for variant in extracted.variantes
+        ]
+    else:
+        extracted_data = extracted
+    pdf_info = trusted.pdf_info if isinstance(trusted, TrustedDocument) else trusted
+    s3_key = trusted.s3_key if isinstance(trusted, TrustedDocument) else pdf_info["s3_key"]
+
+    nombre_comercial = extracted_data.get(
+        "nombre_comercial", pdf_info["nombre_comercial"]
+    )
     producto_id = _slugify(nombre_comercial)
 
     entry: dict[str, Any] = {
         "id": producto_id,
         "nombre_comercial": nombre_comercial,
         "categoria": pdf_info["categoria"],
-        "fabricante": extracted.get("fabricante", "Desconocido"),
-        "ruta_s3": pdf_info["s3_key"],
+        "fabricante": extracted_data.get("fabricante", "Desconocido"),
+        "ruta_s3": s3_key,
         "fecha_ingesta": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -471,23 +728,30 @@ def build_product_entry(
     if pdf_info.get("subcategoria"):
         entry["subcategoria"] = pdf_info["subcategoria"]
 
-    if extracted.get("descripcion"):
-        entry["descripcion"] = extracted["descripcion"]
+    if extracted_data.get("descripcion"):
+        entry["descripcion"] = extracted_data["descripcion"]
 
-    if extracted.get("url_fabricante"):
-        entry["url_fabricante"] = extracted["url_fabricante"]
+    if extracted_data.get("url_fabricante"):
+        entry["url_fabricante"] = extracted_data["url_fabricante"]
 
-    if extracted.get("version_ficha"):
-        entry["version_ficha"] = extracted["version_ficha"]
+    if extracted_data.get("version_ficha"):
+        entry["version_ficha"] = extracted_data["version_ficha"]
 
     # Add parametros_comunes
-    if extracted.get("parametros_comunes"):
-        entry["parametros_comunes"] = extracted["parametros_comunes"]
+    if extracted_data.get("parametros_comunes"):
+        entry["parametros_comunes"] = extracted_data["parametros_comunes"]
 
     # Add variantes
-    entry["variantes"] = extracted.get("variantes", [])
+    entry["variantes"] = extracted_data.get("variantes", [])
 
     return entry
+
+
+def _technical_parameters_to_mapping(
+    parameters: list[TechnicalParameter],
+) -> dict[str, str | int | float | bool]:
+    """Convert closed extraction pairs to the publication mapping shape."""
+    return {parameter.name: parameter.value for parameter in parameters}
 
 
 def build_catalog_index(
