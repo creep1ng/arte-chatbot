@@ -980,6 +980,26 @@ async def _process_chat_message(
 
     source_docs: list[SourceDocument] = []
 
+    context_selection = session_manager.get_budgeted_context(
+        session_id=session_id,
+        model=llm_client.model,
+        config=settings.context_budget_config(),
+        system_prompt=system_prompt_with_profile,
+        tools=get_tool_definitions(),
+        current_message=expanded_query,
+    )
+    context_string = context_selection.context
+    decision = context_selection.decision
+    logger.info(
+        "Chat history selected: model=%s selected_turns=%d "
+        "selected_history_tokens=%d was_truncated=%s stop_reason=%s",
+        decision.model,
+        decision.selected_turns,
+        decision.selected_history_tokens,
+        decision.was_truncated,
+        decision.stop_reason,
+    )
+
     try:
         iteration = 0
         tool_results_summary = ""
@@ -997,15 +1017,9 @@ async def _process_chat_message(
                 session_id,
             )
 
-            context_string = session_manager.get_context_string(session_id)
-
             if iteration == 1:
                 user_input = expanded_query
-                if context_string:
-                    user_input = (
-                        f"Contexto de la conversación:\n{context_string}\n\n"
-                        f"Pregunta actual: {expanded_query}"
-                    )
+                request_context = context_string
             else:
                 user_input = (
                     f"Resultados de las herramientas invocadas anteriormente:\n"
@@ -1013,6 +1027,7 @@ async def _process_chat_message(
                     f"Pregunta original: {expanded_query}\n"
                     f"Considera los resultados anteriores y proporciona una respuesta final."
                 )
+                request_context = ""
 
             logger.debug(
                 "Calling LLM with tools: request_id=%s, session_id=%s, "
@@ -1027,7 +1042,7 @@ async def _process_chat_message(
                 message=user_input,
                 session_id=session_id,
                 system_prompt=system_prompt_with_profile,
-                context=context_string,
+                context=request_context,
             )
 
             last_output_text = llm_response.text
