@@ -15,6 +15,9 @@ from typing import Annotated, Any, Optional
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from backend.app.context_budget_config import ContextBudgetConfig
+from backend.app.model_capabilities import get_model_capabilities
+
 
 LOCAL_CORS_ORIGINS = [
     "http://localhost:3000",
@@ -57,6 +60,42 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
     llm_model: str = Field(default="gpt-5.4-nano", description="LLM model identifier")
+    llm_max_output_tokens: int = Field(
+        default=2000,
+        ge=1,
+        description="Maximum output tokens requested from the LLM",
+    )
+    context_budget_ratio: float = Field(
+        default=0.10,
+        gt=0.0,
+        le=1.0,
+        description="Preliminary share of model context considered for requests",
+    )
+    context_hard_cap_tokens: int = Field(
+        default=32_000,
+        ge=1,
+        description="Preliminary absolute cap for each LLM request",
+    )
+    context_output_reserve_tokens: int = Field(
+        default=2_000,
+        ge=1,
+        description="Tokens reserved for the configured LLM response limit",
+    )
+    context_non_history_reserve_tokens: int = Field(
+        default=12_000,
+        ge=0,
+        description="Reserve for system, tools, current input, and agent iterations",
+    )
+    context_file_input_max_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1024,
+        description="Guaranteed byte cap for PDFs sent in File Input requests",
+    )
+    context_max_turns: int = Field(
+        default=20,
+        ge=1,
+        description="Secondary ceiling on complete history turns",
+    )
     openai_timeout_seconds: float = Field(
         default=30.0,
         ge=1.0,
@@ -306,6 +345,42 @@ class Settings(BaseSettings):
                 f"msg_delay_max_ms ({self.msg_delay_max_ms})"
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_context_reserves(self) -> "Settings":
+        """Keep output generation within model and request budget limits."""
+        if self.context_output_reserve_tokens >= self.context_hard_cap_tokens:
+            raise ValueError(
+                "CONTEXT_OUTPUT_RESERVE_TOKENS must be less than "
+                "CONTEXT_HARD_CAP_TOKENS"
+            )
+        if self.llm_max_output_tokens > self.context_output_reserve_tokens:
+            raise ValueError(
+                "LLM_MAX_OUTPUT_TOKENS must not exceed CONTEXT_OUTPUT_RESERVE_TOKENS"
+            )
+        capabilities = get_model_capabilities(self.llm_model)
+        if (
+            capabilities is not None
+            and self.llm_max_output_tokens > capabilities.max_output_tokens
+        ):
+            raise ValueError(
+                "LLM_MAX_OUTPUT_TOKENS exceeds the registered model output limit"
+            )
+        if self.context_file_input_max_bytes > self.max_pdf_bytes:
+            raise ValueError(
+                "CONTEXT_FILE_INPUT_MAX_BYTES must not exceed MAX_PDF_BYTES"
+            )
+        return self
+
+    def context_budget_config(self) -> ContextBudgetConfig:
+        """Build the shared immutable context budget configuration."""
+        return ContextBudgetConfig(
+            ratio=self.context_budget_ratio,
+            hard_cap_tokens=self.context_hard_cap_tokens,
+            output_reserve_tokens=self.context_output_reserve_tokens,
+            non_history_reserve_tokens=self.context_non_history_reserve_tokens,
+            max_turns=self.context_max_turns,
+        )
 
     @model_validator(mode="after")
     def _validate_state_backend(self) -> "Settings":

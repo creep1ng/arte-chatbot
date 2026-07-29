@@ -139,7 +139,9 @@ _DIAGNOSTIC_VALUES = (
     "duplicate_expected_identity duplicate_identity identity_set_mismatch "
     "model_marked_needs_review product_count_zero product_count_multiple zero_variants "
     "routing_mismatch model_refusal response_incomplete missing_output_parsed "
-    "upload_failed response_parse_failed extraction_failed cleanup_failed"
+    "upload_failed response_parse_failed extraction_failed cleanup_failed "
+    "download_failed batch_incomplete catalog_conversion_failed "
+    "catalog_validation_failed local_save_failed s3_upload_failed"
 ).split()
 DiagnosticCode = Enum(
     "DiagnosticCode", {value.upper(): value for value in _DIAGNOSTIC_VALUES}, type=str
@@ -806,8 +808,7 @@ def validate_index(
     try:
         import jsonschema
     except ImportError:
-        logger.warning("jsonschema not installed, skipping validation")
-        return []
+        return [_diagnostic(DiagnosticCode.CATALOG_VALIDATION_FAILED)]
 
     try:
         with open(schema_path, "r", encoding="utf-8") as f:
@@ -856,6 +857,44 @@ def upload_to_s3(
     )
 
 
+def _publish_catalog(
+    catalog: dict[str, Any],
+    schema_path: str,
+    output_path: str,
+    s3_manager: Optional[S3Manager],
+    index_s3_key: str,
+    local_only: bool,
+    dry_run: bool,
+) -> int:
+    """Validate the complete catalog before performing any publication write."""
+    try:
+        validation_errors = validate_index(catalog, schema_path)
+    except Exception:
+        logger.error(_diagnostic(DiagnosticCode.CATALOG_VALIDATION_FAILED))
+        return 1
+    if validation_errors:
+        logger.error(_diagnostic(DiagnosticCode.CATALOG_VALIDATION_FAILED))
+        return 1
+
+    if dry_run:
+        print(json.dumps(catalog, indent=2, ensure_ascii=False))
+        return 0
+
+    try:
+        save_local(catalog, output_path)
+    except Exception:
+        logger.error(_diagnostic(DiagnosticCode.LOCAL_SAVE_FAILED))
+        return 1
+
+    if not local_only and s3_manager:
+        try:
+            upload_to_s3(catalog, s3_manager, index_s3_key)
+        except Exception:
+            logger.error(_diagnostic(DiagnosticCode.S3_UPLOAD_FAILED))
+            return 1
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -900,15 +939,11 @@ def run_pipeline(
 
     if not pdfs:
         logger.warning("No PDF files found. Nothing to process.")
-        # Still generate empty index for idempotency
         catalog = build_catalog_index([], None)
-        if not dry_run:
-            save_local(catalog, output_path)
-            if not local_only and s3_manager:
-                upload_to_s3(catalog, s3_manager, index_s3_key)
-        else:
-            print(json.dumps(catalog, indent=2, ensure_ascii=False))
-        return 0
+        return _publish_catalog(
+            catalog, schema_path, output_path, s3_manager, index_s3_key,
+            local_only, dry_run,
+        )
 
     # Step 2: Load existing index (from S3 or local)
     logger.info("Step 2: Loading existing index...")
@@ -947,12 +982,12 @@ def run_pipeline(
 
     if not new_pdfs:
         logger.info("No new PDFs to process. Index is up to date.")
-        # Save existing index to ensure consistency
-        if existing_index and not dry_run:
-            save_local(existing_index, output_path)
-            if not local_only and s3_manager:
-                upload_to_s3(existing_index, s3_manager, index_s3_key)
-        return 0
+        if existing_index is None:
+            return 0
+        return _publish_catalog(
+            existing_index, schema_path, output_path, s3_manager, index_s3_key,
+            local_only, dry_run,
+        )
 
     # Step 4: Batch and extract metadata with AI
     logger.info("Step 4: Extracting metadata with AI (batch size: %d)...", batch_size)
@@ -969,7 +1004,7 @@ def run_pipeline(
         )
 
         # Download PDFs for this batch
-        pdf_bytes_list: list[tuple[str, bytes, dict[str, str]]] = []
+        pdf_bytes_list: list[tuple[str, bytes, dict[str, Any]]] = []
         for pdf_info in batch:
             try:
                 if source_dir:
@@ -977,82 +1012,44 @@ def run_pipeline(
                 elif s3_manager:
                     pdf_bytes = s3_manager.download_pdf(pdf_info["s3_key"])
                 else:
-                    continue
+                    logger.error(_diagnostic(DiagnosticCode.DOWNLOAD_FAILED))
+                    return 1
 
                 pdf_bytes_list.append((pdf_info["s3_key"], pdf_bytes, pdf_info))
-            except Exception as e:
+            except Exception:
                 logger.error(
-                    "Failed to download %s: %s. Skipping.",
-                    pdf_info["s3_key"],
-                    e,
+                    _diagnostic(DiagnosticCode.DOWNLOAD_FAILED, (pdf_info["s3_key"],))
                 )
+                return 1
 
-        if not pdf_bytes_list:
-            continue
-
-        if dry_run:
-            logger.info("[DRY RUN] Would process %d PDFs with AI", len(pdf_bytes_list))
-            for _, _, info in pdf_bytes_list:
-                all_extracted.append(
-                    build_product_entry(
-                        {"nombre_comercial": info["nombre_comercial"], "variantes": []},
-                        info,
-                    )
-                )
-        else:
-            try:
-                extracted = extract_metadata_batch(pdf_bytes_list, api_key, model)
-                for ext_product, (_, _, pdf_info) in zip(extracted, pdf_bytes_list):
-                    entry = build_product_entry(ext_product, pdf_info)
-                    all_extracted.append(entry)
-            except Exception as e:
-                logger.error("AI extraction failed for batch: %s", e)
-                logger.info("Falling back to basic entry creation for this batch")
-                for _, _, info in pdf_bytes_list:
-                    all_extracted.append(
-                        build_product_entry(
-                            {
-                                "nombre_comercial": info["nombre_comercial"],
-                                "variantes": [],
-                            },
-                            info,
-                        )
-                    )
+        try:
+            extracted = extract_metadata_batch(pdf_bytes_list, api_key, model)
+        except Exception:
+            sources = tuple(item["s3_key"] for item in batch)
+            logger.error(_diagnostic(DiagnosticCode.EXTRACTION_FAILED, sources))
+            return 1
+        if len(extracted) != len(batch):
+            sources = tuple(item["s3_key"] for item in batch)
+            logger.error(_diagnostic(DiagnosticCode.BATCH_INCOMPLETE, sources))
+            return 1
+        all_extracted.extend(extracted)
 
     logger.info("Extracted metadata for %d products", len(all_extracted))
 
     # Step 5: Build final catalog index
     logger.info("Step 5: Building catalog index...")
-    catalog = build_catalog_index(all_extracted, existing_index)
+    try:
+        catalog = build_catalog_index(all_extracted, existing_index)
+    except Exception:
+        logger.error(_diagnostic(DiagnosticCode.CATALOG_CONVERSION_FAILED))
+        return 1
 
-    # Step 6: Validate
-    logger.info("Step 6: Validating against schema...")
-    validation_errors = validate_index(catalog, schema_path)
-    if validation_errors:
-        logger.warning("Schema validation errors found:")
-        for err in validation_errors:
-            logger.warning("  - %s", err)
-        logger.warning("Proceeding despite validation errors (review output manually)")
-    else:
-        logger.info("Schema validation passed")
-
-    # Step 7: Save
-    if dry_run:
-        logger.info("[DRY RUN] Would save catalog index")
-        print(json.dumps(catalog, indent=2, ensure_ascii=False))
-    else:
-        logger.info("Step 7: Saving catalog index...")
-        save_local(catalog, output_path)
-
-        if not local_only and s3_manager:
-            try:
-                upload_to_s3(catalog, s3_manager, index_s3_key)
-            except Exception as e:
-                logger.error(
-                    "Failed to upload to S3: %s. Local copy saved at: %s",
-                    e,
-                    output_path,
-                )
+    result = _publish_catalog(
+        catalog, schema_path, output_path, s3_manager, index_s3_key,
+        local_only, dry_run,
+    )
+    if result:
+        return result
 
     logger.info(
         "Pipeline complete. Total products in index: %d",
