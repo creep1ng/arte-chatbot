@@ -1,6 +1,9 @@
 """Tests for Lambda-safe state repository contracts and DynamoDB behavior."""
 
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timezone
+from threading import Barrier, RLock
 from typing import Any
 
 import pytest
@@ -21,13 +24,16 @@ class FakeDynamoDBTable:
         self.items: dict[tuple[str, str], dict[str, Any]] = {}
         self.query_calls: list[dict[str, Any]] = []
         self.query_page_size = query_page_size
+        self._lock = RLock()
 
     def get_item(self, Key: dict[str, str]) -> dict[str, Any]:
-        item = self.items.get((Key["PK"], Key["SK"]))
-        return {"Item": item.copy()} if item else {}
+        with self._lock:
+            item = self.items.get((Key["PK"], Key["SK"]))
+            return {"Item": deepcopy(item)} if item else {}
 
     def put_item(self, Item: dict[str, Any]) -> None:
-        self.items[(Item["PK"], Item["SK"])] = Item.copy()
+        with self._lock:
+            self.items[(Item["PK"], Item["SK"])] = deepcopy(Item)
 
     def query(
         self,
@@ -37,46 +43,57 @@ class FakeDynamoDBTable:
         Limit: int | None = None,
         ExclusiveStartKey: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        del KeyConditionExpression
-        self.query_calls.append(
-            {
-                "ScanIndexForward": ScanIndexForward,
-                "Limit": Limit,
-                "ExclusiveStartKey": ExclusiveStartKey,
-            }
-        )
-        prefix = ExpressionAttributeValues[":prefix"]
-        pk = ExpressionAttributeValues[":pk"]
-        items = [
-            item.copy()
-            for (item_pk, item_sk), item in self.items.items()
-            if item_pk == pk and item_sk.startswith(prefix)
-        ]
-        items = sorted(
-            items,
-            key=lambda item: item["SK"],
-            reverse=not ScanIndexForward,
-        )
-        if ExclusiveStartKey is not None:
-            start_index = next(
-                index + 1
-                for index, item in enumerate(items)
-                if item["PK"] == ExclusiveStartKey["PK"]
-                and item["SK"] == ExclusiveStartKey["SK"]
+        expected_expression = "PK = :pk AND begins_with(SK, :prefix)"
+        if KeyConditionExpression != expected_expression:
+            raise ValueError(
+                f"Unsupported key condition expression: {KeyConditionExpression}"
             )
-            items = items[start_index:]
 
-        page_limit = Limit
-        if self.query_page_size is not None:
-            page_limit = min(Limit or self.query_page_size, self.query_page_size)
-        page_items = items[:page_limit]
-        response: dict[str, Any] = {"Items": page_items}
-        if page_limit is not None and len(items) > page_limit:
-            response["LastEvaluatedKey"] = {
-                "PK": page_items[-1]["PK"],
-                "SK": page_items[-1]["SK"],
-            }
-        return response
+        with self._lock:
+            self.query_calls.append(
+                {
+                    "ScanIndexForward": ScanIndexForward,
+                    "Limit": Limit,
+                    "ExclusiveStartKey": deepcopy(ExclusiveStartKey),
+                }
+            )
+            prefix = ExpressionAttributeValues[":prefix"]
+            pk = ExpressionAttributeValues[":pk"]
+            items = [
+                deepcopy(item)
+                for (item_pk, item_sk), item in self.items.items()
+                if item_pk == pk and item_sk.startswith(prefix)
+            ]
+            items = sorted(
+                items,
+                key=lambda item: item["SK"],
+                reverse=not ScanIndexForward,
+            )
+
+            if ExclusiveStartKey is not None:
+                start_index = next(
+                    index + 1
+                    for index, item in enumerate(items)
+                    if item["PK"] == ExclusiveStartKey["PK"]
+                    and item["SK"] == ExclusiveStartKey["SK"]
+                )
+                items = items[start_index:]
+
+            page_limit = Limit
+            if self.query_page_size is not None:
+                page_limit = min(
+                    Limit or self.query_page_size,
+                    self.query_page_size,
+                )
+
+            page_items = items[:page_limit]
+            response: dict[str, Any] = {"Items": page_items}
+            if page_limit is not None and len(items) > page_limit:
+                response["LastEvaluatedKey"] = {
+                    "PK": page_items[-1]["PK"],
+                    "SK": page_items[-1]["SK"],
+                }
+            return response
 
     def update_item(
         self,
@@ -87,53 +104,114 @@ class FakeDynamoDBTable:
         ConditionExpression: str | None = None,
         ReturnValues: str | None = None,
     ) -> dict[str, Any]:
-        del ReturnValues
+        if ReturnValues not in (None, "ALL_NEW"):
+            raise ValueError(f"Unsupported return values: {ReturnValues}")
+
         key = (Key["PK"], Key["SK"])
-        item = self.items.setdefault(key, {"PK": Key["PK"], "SK": Key["SK"]})
         names = ExpressionAttributeNames or {}
+        expression = " ".join(UpdateExpression.split())
 
-        if ConditionExpression and "owner" in names.values():
-            current_owner = item.get("owner")
-            new_owner = ExpressionAttributeValues[":owner"]
-            if current_owner is not None and current_owner != new_owner:
-                raise ClientError(
-                    {
-                        "Error": {
-                            "Code": "ConditionalCheckFailedException",
-                            "Message": "owner mismatch",
-                        }
-                    },
-                    "UpdateItem",
-                )
-
-        if "ADD" in UpdateExpression:
-            item["count" if "#count" in UpdateExpression else "input_tokens"] = int(
-                item.get("count" if "#count" in UpdateExpression else "input_tokens", 0)
-            ) + int(
-                ExpressionAttributeValues.get(
-                    ":one", ExpressionAttributeValues.get(":input", 0)
-                )
+        with self._lock:
+            item = deepcopy(
+                self.items.get(key, {"PK": Key["PK"], "SK": Key["SK"]})
             )
-            if ":output" in ExpressionAttributeValues:
-                item["output_tokens"] = int(item.get("output_tokens", 0)) + int(
-                    ExpressionAttributeValues[":output"]
-                )
-                item["total_tokens"] = int(item.get("total_tokens", 0)) + int(
-                    ExpressionAttributeValues[":total"]
-                )
-            if ":started" in ExpressionAttributeValues:
-                item["window_started_at"] = ExpressionAttributeValues[":started"]
-                item["window_seconds"] = ExpressionAttributeValues[":window"]
-            item["expires_at"] = ExpressionAttributeValues[":ttl"]
-        else:
-            if ":owner" in ExpressionAttributeValues:
-                item["owner"] = ExpressionAttributeValues[":owner"]
-            if ":profile" in ExpressionAttributeValues:
-                item["profile"] = ExpressionAttributeValues[":profile"]
-            if ":ttl" in ExpressionAttributeValues:
-                item["expires_at"] = ExpressionAttributeValues[":ttl"]
+            self._evaluate_condition(
+                item, ConditionExpression, names, ExpressionAttributeValues
+            )
+            self._apply_update(item, expression, names, ExpressionAttributeValues)
+            self.items[key] = deepcopy(item)
+            return {"Attributes": deepcopy(item)} if ReturnValues == "ALL_NEW" else {}
 
-        return {"Attributes": item.copy()}
+    @staticmethod
+    def _evaluate_condition(
+        item: dict[str, Any],
+        expression: str | None,
+        names: dict[str, str],
+        values: dict[str, Any],
+    ) -> None:
+        """Evaluate a supported condition before mutating the item."""
+        if expression is None:
+            return
+        if expression != "attribute_not_exists(#owner) OR #owner = :owner":
+            raise ValueError(f"Unsupported condition expression: {expression}")
+
+        owner_name = names.get("#owner")
+        if owner_name != "owner":
+            raise ValueError("Unsupported owner attribute mapping")
+        current_owner = item.get(owner_name)
+        if current_owner is not None and current_owner != values[":owner"]:
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ConditionalCheckFailedException",
+                        "Message": "owner mismatch",
+                    }
+                },
+                "UpdateItem",
+            )
+
+    @staticmethod
+    def _apply_update(
+        item: dict[str, Any],
+        expression: str,
+        names: dict[str, str],
+        values: dict[str, Any],
+    ) -> None:
+        """Apply one of the repository's supported update expressions."""
+        if expression == "SET #owner = :owner, expires_at = :ttl":
+            if names.get("#owner") != "owner":
+                raise ValueError("Unsupported owner attribute mapping")
+            item["owner"] = deepcopy(values[":owner"])
+            item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression == "SET profile = :profile, expires_at = :ttl":
+            item["profile"] = deepcopy(values[":profile"])
+            item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression == (
+            "SET expires_at = :ttl ADD input_tokens :input, "
+            "output_tokens :output, total_tokens :total"
+        ):
+            item["input_tokens"] = int(item.get("input_tokens", 0)) + int(
+                values[":input"]
+            )
+            item["output_tokens"] = int(item.get("output_tokens", 0)) + int(
+                values[":output"]
+            )
+            item["total_tokens"] = int(item.get("total_tokens", 0)) + int(
+                values[":total"]
+            )
+            item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression == (
+            "SET window_started_at = :started, window_seconds = :window, "
+            "expires_at = :ttl ADD #count :one"
+        ):
+            if names.get("#count") != "count":
+                raise ValueError("Unsupported count attribute mapping")
+            item["window_started_at"] = deepcopy(values[":started"])
+            item["window_seconds"] = deepcopy(values[":window"])
+            item["expires_at"] = deepcopy(values[":ttl"])
+            item["count"] = int(item.get("count", 0)) + int(values[":one"])
+            return
+
+        if expression == (
+            "SET #messages = list_append(if_not_exists(#messages, :empty), "
+            ":message), #expires_at = :ttl"
+        ):
+            if names.get("#messages") != "messages":
+                raise ValueError("Unsupported messages attribute mapping")
+            if names.get("#expires_at") != "expires_at":
+                raise ValueError("Unsupported expiry attribute mapping")
+            existing_messages = deepcopy(item.get("messages", values[":empty"]))
+            item["messages"] = existing_messages + deepcopy(values[":message"])
+            item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        raise ValueError(f"Unsupported update expression: {expression}")
 
 
 @pytest.fixture()
@@ -146,6 +224,52 @@ def repository() -> DynamoDBStateRepository:
         buffer_ttl_seconds=600,
         rate_ttl_seconds=300,
     )
+
+
+def test_fake_dynamodb_table_isolates_nested_values() -> None:
+    """The fake does not leak mutable nested values across table boundaries."""
+    table = FakeDynamoDBTable()
+    source: dict[str, Any] = {
+        "PK": "SESSION#s1",
+        "SK": "BUFFER",
+        "messages": [{"message": "Hola"}],
+    }
+
+    table.put_item(Item=source)
+    source["messages"][0]["message"] = "mutated before read"
+    first_read = table.get_item(Key={"PK": "SESSION#s1", "SK": "BUFFER"})["Item"]
+    first_read["messages"][0]["message"] = "mutated after read"
+
+    second_read = table.get_item(Key={"PK": "SESSION#s1", "SK": "BUFFER"})["Item"]
+    assert second_read["messages"] == [{"message": "Hola"}]
+
+
+def test_fake_dynamodb_table_rejects_unsupported_expressions() -> None:
+    """Unsupported expressions fail loudly instead of producing false confidence."""
+    table = FakeDynamoDBTable()
+    key = {"PK": "SESSION#s1", "SK": "META"}
+
+    with pytest.raises(ValueError, match="Unsupported condition expression"):
+        table.update_item(
+            Key=key,
+            UpdateExpression="SET profile = :profile, expires_at = :ttl",
+            ConditionExpression="attribute_exists(profile)",
+            ExpressionAttributeValues={":profile": "expert", ":ttl": 1},
+        )
+    assert table.get_item(Key=key) == {}
+
+    with pytest.raises(ValueError, match="Unsupported update expression"):
+        table.update_item(
+            Key=key,
+            UpdateExpression="REMOVE profile",
+            ExpressionAttributeValues={},
+        )
+
+    with pytest.raises(ValueError, match="Unsupported key condition expression"):
+        table.query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": "SESSION#s1", ":prefix": "TURN#"},
+        )
 
 
 def test_session_survives_cold_start_with_new_repository_instance() -> None:
@@ -271,6 +395,59 @@ def test_buffer_state_persists_pending_results(
     repository.set_pending_result("s1", "Hola\nmundo")
     assert repository.pop_pending_result("s1") == "Hola\nmundo"
     assert repository.pop_pending_result("s1") is None
+
+
+def test_append_buffer_message_refreshes_ttl_and_returns_utc_state() -> None:
+    """Atomic append returns the new durable state with UTC metadata."""
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table, buffer_ttl_seconds=600)
+
+    state = repository.append_buffer_message("s1", "Hola")
+
+    item = table.items[("SESSION#s1", "BUFFER")]
+    assert item["expires_at"] > int(datetime.now(timezone.utc).timestamp())
+    assert state.messages[0].message == "Hola"
+    assert state.messages[0].timestamp.tzinfo == timezone.utc
+
+
+def test_concurrent_buffer_appends_retain_each_message_exactly_once() -> None:
+    """Atomic appends do not overwrite a concurrently accepted message."""
+
+    class CoordinatedReadTable(FakeDynamoDBTable):
+        """Force legacy read/put writers to observe the same buffer state."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._buffer_read_barrier = Barrier(2)
+            self.coordinate_buffer_reads = True
+
+        def get_item(self, Key: dict[str, str]) -> dict[str, Any]:
+            response = super().get_item(Key)
+            if Key["SK"] == "BUFFER" and self.coordinate_buffer_reads:
+                self._buffer_read_barrier.wait(timeout=5)
+            return response
+
+    table = CoordinatedReadTable()
+    repository = DynamoDBStateRepository(table=table)
+    start_barrier = Barrier(2)
+
+    def append(message: str) -> None:
+        start_barrier.wait(timeout=5)
+        repository.append_buffer_message("s1", message)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(append, message) for message in ("Hola", "mundo")]
+        for future in futures:
+            future.result(timeout=5)
+
+    table.coordinate_buffer_reads = False
+    messages = [
+        buffered.message for buffered in repository.get_buffer_state("s1").messages
+    ]
+    assert len(messages) == 2
+    assert sorted(messages) == ["Hola", "mundo"]
+    assert messages.count("Hola") == 1
+    assert messages.count("mundo") == 1
 
 
 def test_rate_limit_uses_shared_counter(repository: DynamoDBStateRepository) -> None:
