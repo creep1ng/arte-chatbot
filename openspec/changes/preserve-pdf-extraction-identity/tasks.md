@@ -41,7 +41,7 @@ Chain strategy: stacked-to-main
 
 ## Phase 3: Publication Gate (Unit 3)
 
-- [ ] 3.1 RED — Add pipeline tests proving `needs_review`, download/extraction/protocol, conversion, and schema-validation failures return non-zero and call neither `save_local()` nor `upload_to_s3()`.
-- [ ] 3.2 GREEN — Update `run_pipeline()` to accumulate only complete normal batches, validate the full catalog, and publish atomically only after every gate succeeds.
-- [ ] 3.3 RED/GREEN — Adapt the successful local pipeline test to keyed results and prove only validated eligible entries publish with trusted routing fields.
-- [ ] 3.4 REFACTOR — Run `uv run pytest scripts/tests/test_generate_index.py` and `uv run ruff check scripts/generate_index.py scripts/tests/test_generate_index.py`; remove positional/fallback paths.
+- [x] 3.1 RED — Add pipeline tests proving `needs_review`, download/extraction/protocol, conversion, and schema-validation failures return non-zero and call neither `save_local()` nor `upload_to_s3()`.
+- [x] 3.2 GREEN — Update `run_pipeline()` to accumulate only complete normal batches, validate the full catalog, and publish atomically only after every gate succeeds.
+- [x] 3.3 RED/GREEN — Adapt the successful local pipeline test to keyed results and prove only validated eligible entries publish with trusted routing fields.
+- [x] 3.4 REFACTOR — Run `uv run pytest scripts/tests/test_generate_index.py` and `uv run ruff check scripts/generate_index.py scripts/tests/test_generate_index.py`; remove positional/fallback paths.
