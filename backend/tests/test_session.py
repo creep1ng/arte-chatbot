@@ -4,11 +4,13 @@ Unit tests for the session management service.
 
 import threading
 from datetime import datetime
+from unittest.mock import patch
 
 import pytest
 
 from backend.app.dynamodb_state_repository import DynamoDBStateRepository
-from backend.app.session import SessionManager
+from backend.app.config import settings
+from backend.app.session import SessionManager, session_manager
 from backend.app.state_repository import ChatTurn, TokenTotals
 from backend.tests.test_state_repository import FakeDynamoDBTable
 
@@ -32,6 +34,32 @@ def test_session_manager_rejects_non_positive_max_turns(max_turns: int):
     """Test that SessionManager rejects invalid history limits."""
     with pytest.raises(ValueError, match="max_turns must be greater than zero"):
         SessionManager(max_turns=max_turns)
+
+
+def test_global_session_manager_uses_configured_context_turn_ceiling() -> None:
+    """Configured context turns cannot exceed globally retained history."""
+    assert session_manager.max_turns == settings.context_max_turns
+
+
+@patch("backend.app.session.select_history")
+def test_budgeted_context_uses_ordered_ceiling_candidates(mock_select) -> None:
+    manager = SessionManager(max_turns=2)
+    for number in range(3):
+        manager.add_turn("session", str(number), "respuesta")
+
+    manager.get_budgeted_context(
+        session_id="session",
+        model="gpt-5.4-nano",
+        config=settings.context_budget_config(),
+        system_prompt="system",
+        tools=[],
+        current_message="actual",
+    )
+
+    assert [turn.question for turn in mock_select.call_args.kwargs["turns"]] == [
+        "1",
+        "2",
+    ]
 
 
 def test_add_turn_creates_new_session():
