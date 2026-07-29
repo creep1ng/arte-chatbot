@@ -79,8 +79,8 @@ class RateLimitDecision(BaseModel):
 class ChatbotStateRepository(Protocol):
     """Persistence boundary for Lambda-safe chatbot state."""
 
-    def get_session(self, session_id: str) -> SessionState:
-        """Return persisted session state or an empty state for missing sessions."""
+    def get_session(self, session_id: str, max_turns: int = 20) -> SessionState:
+        """Return persisted session state with at most the latest turns."""
 
     def append_turn(self, session_id: str, turn: ChatTurn) -> None:
         """Append one conversation turn."""

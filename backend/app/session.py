@@ -47,6 +47,9 @@ class SessionManager:
         max_turns: int = 20,
         state_repository: Optional[ChatbotStateRepository] = None,
     ):
+        if max_turns < 1:
+            raise ValueError("max_turns must be greater than zero")
+
         self.sessions: Dict[str, List[ChatTurn]] = {}
         self.profiles: Dict[str, str] = {}
         self.token_totals: Dict[str, TokenTotals] = {}
@@ -139,7 +142,9 @@ class SessionManager:
             Lista de turnos de la sesión, ordenados cronológicamente
         """
         if self.state_repository is not None:
-            state = self.state_repository.get_session(session_id)
+            state = self.state_repository.get_session(
+                session_id, max_turns=self.max_turns
+            )
             return [
                 ChatTurn(
                     question=turn.question,
@@ -147,7 +152,7 @@ class SessionManager:
                     timestamp=turn.timestamp,
                     source_documents=turn.source_documents,
                 )
-                for turn in state.turns[-self.max_turns :]
+                for turn in state.turns
             ]
         return self.sessions.get(session_id, [])
 
