@@ -112,6 +112,11 @@ class Settings(BaseSettings):
         ge=60,
         description="TTL for persisted buffer items in seconds",
     )
+    buffer_processing_lease_seconds: int = Field(
+        default=60,
+        ge=1,
+        description="Exclusive buffer processing lease duration in seconds",
+    )
     rate_limit_ttl_seconds: int = Field(
         default=24 * 60 * 60,
         ge=60,

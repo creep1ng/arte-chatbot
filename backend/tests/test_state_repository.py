@@ -2,17 +2,20 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Barrier, RLock
 from typing import Any
 
 import pytest
 from botocore.exceptions import ClientError
+from pydantic import ValidationError
 
 from backend.app.dynamodb_state_repository import DynamoDBStateRepository
 from backend.app.state_repository import (
     ChatTurn,
     OwnershipConflictError,
+    ProcessingLease,
+    ProcessingLeaseResult,
     TokenTotals,
 )
 
@@ -130,23 +133,45 @@ class FakeDynamoDBTable:
         """Evaluate a supported condition before mutating the item."""
         if expression is None:
             return
-        if expression != "attribute_not_exists(#owner) OR #owner = :owner":
+        if expression == "attribute_not_exists(#owner) OR #owner = :owner":
+            owner_name = names.get("#owner")
+            if owner_name != "owner":
+                raise ValueError("Unsupported owner attribute mapping")
+            if item.get(owner_name) not in (None, values[":owner"]):
+                FakeDynamoDBTable._conditional_failure("owner mismatch")
+            return
+        if expression == (
+            "attribute_not_exists(#lease_token) OR "
+            "attribute_not_exists(#lease_expires_at) OR "
+            "#lease_expires_at <= :now"
+        ):
+            token_name = names.get("#lease_token")
+            expiry_name = names.get("#lease_expires_at")
+            if token_name != "lease_token" or expiry_name != "lease_expires_at":
+                raise ValueError("Unsupported lease attribute mapping")
+            if (
+                token_name in item
+                and expiry_name in item
+                and item[expiry_name] > values[":now"]
+            ):
+                FakeDynamoDBTable._conditional_failure("active lease")
+            return
+        if expression == "#lease_token = :token":
+            token_name = names.get("#lease_token")
+            if token_name != "lease_token":
+                raise ValueError("Unsupported lease token mapping")
+            if item.get(token_name) != values[":token"]:
+                FakeDynamoDBTable._conditional_failure("token mismatch")
+            return
+        else:
             raise ValueError(f"Unsupported condition expression: {expression}")
 
-        owner_name = names.get("#owner")
-        if owner_name != "owner":
-            raise ValueError("Unsupported owner attribute mapping")
-        current_owner = item.get(owner_name)
-        if current_owner is not None and current_owner != values[":owner"]:
-            raise ClientError(
-                {
-                    "Error": {
-                        "Code": "ConditionalCheckFailedException",
-                        "Message": "owner mismatch",
-                    }
-                },
-                "UpdateItem",
-            )
+    @staticmethod
+    def _conditional_failure(message: str) -> None:
+        raise ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": message}},
+            "UpdateItem",
+        )
 
     @staticmethod
     def _apply_update(
@@ -182,6 +207,29 @@ class FakeDynamoDBTable:
                 values[":total"]
             )
             item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression == (
+            "SET #lease_token = :token, #lease_expires_at = :lease_expires, "
+            "#processing_started_at = :started, #expires_at = :ttl"
+        ):
+            item[names["#lease_token"]] = deepcopy(values[":token"])
+            item[names["#lease_expires_at"]] = deepcopy(values[":lease_expires"])
+            item[names["#processing_started_at"]] = deepcopy(values[":started"])
+            item[names["#expires_at"]] = deepcopy(values[":ttl"])
+            return
+
+        if expression == (
+            "SET #expires_at = :ttl REMOVE #lease_token, #lease_expires_at, "
+            "#processing_started_at"
+        ):
+            item[names["#expires_at"]] = deepcopy(values[":ttl"])
+            for alias in (
+                "#lease_token",
+                "#lease_expires_at",
+                "#processing_started_at",
+            ):
+                item.pop(names[alias], None)
             return
 
         if expression == (
@@ -446,6 +494,107 @@ def test_concurrent_buffer_appends_retain_each_message_exactly_once() -> None:
     assert sorted(messages) == ["Hola", "mundo"]
     assert messages.count("Hola") == 1
     assert messages.count("mundo") == 1
+
+
+def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
+    repository: DynamoDBStateRepository,
+) -> None:
+    now = datetime(2026, 7, 29, microsecond=123456, tzinfo=timezone.utc)
+    start = Barrier(2)
+
+    def acquire(token: str):
+        start.wait(timeout=5)
+        return repository.try_acquire_processing_lease(
+            "s1",
+            now=now,
+            lease=ProcessingLease(token=token, expires_at=now + timedelta(seconds=60)),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(acquire, ("winner-a", "winner-b")))
+    assert sorted(result.acquired for result in results) == [False, True]
+    winner = next(result.lease for result in results if result.acquired)
+    assert winner is not None
+    assert winner.expires_at == now + timedelta(seconds=60)
+
+    replacement = ProcessingLease(
+        token="replacement", expires_at=now + timedelta(seconds=120)
+    )
+    assert not repository.try_acquire_processing_lease(
+        "s1", now=winner.expires_at - timedelta(microseconds=1), lease=replacement
+    ).acquired
+    takeover = repository.try_acquire_processing_lease(
+        "s1", now=winner.expires_at, lease=replacement
+    )
+    assert takeover.acquired and takeover.lease == replacement
+    assert repository.release_processing_lease("s1", winner.token).released is False
+    assert repository.get_buffer_state("s1").processing_lease == replacement
+    assert repository.release_processing_lease("s1", replacement.token).released is True
+    assert not repository.release_processing_lease("s1", replacement.token).released
+
+
+def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:
+    now = datetime.now(timezone.utc)
+    lease = ProcessingLease(token="owner", expires_at=now)
+
+    with pytest.raises(ValidationError):
+        ProcessingLease(token="", expires_at=now)
+    with pytest.raises(ValidationError):
+        ProcessingLease(token="owner", expires_at=now.replace(tzinfo=None))
+    with pytest.raises(ValidationError):
+        ProcessingLeaseResult(acquired=True)
+    with pytest.raises(ValidationError):
+        lease.token = "replacement"
+
+
+@pytest.mark.parametrize("missing", ["lease_token", "lease_expires_at"])
+def test_processing_lease_recovers_malformed_legacy_state(missing: str) -> None:
+    table = FakeDynamoDBTable()
+    item = {
+        "PK": "SESSION#s1",
+        "SK": "BUFFER",
+        "lease_token": "legacy",
+        "lease_expires_at": 9999999999,
+    }
+    item.pop(missing)
+    table.put_item(Item=item)
+    repository = DynamoDBStateRepository(table=table)
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="new", expires_at=now + timedelta(seconds=60))
+
+    assert repository.try_acquire_processing_lease("s1", now=now, lease=lease).acquired
+
+
+def test_buffer_state_without_lease_attributes_maps_as_legacy_state() -> None:
+    table = FakeDynamoDBTable()
+    table.put_item(Item={"PK": "SESSION#s1", "SK": "BUFFER"})
+
+    state = DynamoDBStateRepository(table=table).get_buffer_state("s1")
+
+    assert state.processing_lease is None
+
+
+def test_processing_lease_translates_only_conditional_errors() -> None:
+    class ErrorTable:
+        code = "ConditionalCheckFailedException"
+
+        def update_item(self, **kwargs: Any) -> dict[str, Any]:
+            raise ClientError({"Error": {"Code": self.code}}, "UpdateItem")
+
+    table = ErrorTable()
+    repository = DynamoDBStateRepository(table=table)
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="token", expires_at=now + timedelta(seconds=60))
+    assert not repository.try_acquire_processing_lease(
+        "s1", now=now, lease=lease
+    ).acquired
+    assert not repository.release_processing_lease("s1", "token").released
+
+    table.code = "ProvisionedThroughputExceededException"
+    with pytest.raises(ClientError):
+        repository.try_acquire_processing_lease("s1", now=now, lease=lease)
+    with pytest.raises(ClientError):
+        repository.release_processing_lease("s1", "token")
 
 
 def test_rate_limit_uses_shared_counter(repository: DynamoDBStateRepository) -> None:
