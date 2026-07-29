@@ -254,9 +254,7 @@ class DynamoDBStateRepository:
         """Mark a session as being processed."""
         self._table.update_item(
             Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
-            UpdateExpression=(
-                "SET processing_started_at = :value, expires_at = :ttl"
-            ),
+            UpdateExpression=("SET processing_started_at = :value, expires_at = :ttl"),
             ExpressionAttributeValues={
                 ":value": datetime.now(timezone.utc).isoformat(),
                 ":ttl": self._ttl(self._buffer_ttl_seconds),

@@ -208,9 +208,8 @@ class MessageInterleavingTable(ProcessingInterleavingTable):
 
     def update_item(self, **kwargs: Any) -> dict[str, Any]:
         update_expression = str(kwargs["UpdateExpression"])
-        if (
-            current_thread().name == "processing-race"
-            and update_expression.startswith("SET messages = :messages")
+        if current_thread().name == "processing-race" and update_expression.startswith(
+            "SET messages = :messages"
         ):
             self.processing_mutation_started.set()
             assert self.allow_processing_mutation.wait(timeout=2)
