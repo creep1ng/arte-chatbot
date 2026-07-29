@@ -107,7 +107,7 @@ class FakeDynamoDBTable:
         ConditionExpression: str | None = None,
         ReturnValues: str | None = None,
     ) -> dict[str, Any]:
-        if ReturnValues not in (None, "ALL_NEW"):
+        if ReturnValues not in (None, "ALL_NEW", "ALL_OLD"):
             raise ValueError(f"Unsupported return values: {ReturnValues}")
 
         key = (Key["PK"], Key["SK"])
@@ -116,12 +116,17 @@ class FakeDynamoDBTable:
 
         with self._lock:
             item = deepcopy(self.items.get(key, {"PK": Key["PK"], "SK": Key["SK"]}))
+            old_item = deepcopy(item)
             self._evaluate_condition(
                 item, ConditionExpression, names, ExpressionAttributeValues
             )
             self._apply_update(item, expression, names, ExpressionAttributeValues)
             self.items[key] = deepcopy(item)
-            return {"Attributes": deepcopy(item)} if ReturnValues == "ALL_NEW" else {}
+            if ReturnValues == "ALL_NEW":
+                return {"Attributes": deepcopy(item)}
+            if ReturnValues == "ALL_OLD":
+                return {"Attributes": old_item}
+            return {}
 
     @staticmethod
     def _evaluate_condition(
@@ -132,6 +137,13 @@ class FakeDynamoDBTable:
     ) -> None:
         """Evaluate a supported condition before mutating the item."""
         if expression is None:
+            return
+        if expression == "attribute_type(#pending, :string_type)":
+            pending_name = names.get("#pending")
+            if values.get(":string_type") != "S" or not isinstance(
+                item.get(pending_name), str
+            ):
+                FakeDynamoDBTable._conditional_failure("pending value is not a string")
             return
         if expression == "attribute_not_exists(#owner) OR #owner = :owner":
             owner_name = names.get("#owner")
@@ -191,6 +203,20 @@ class FakeDynamoDBTable:
         if expression == "SET profile = :profile, expires_at = :ttl":
             item["profile"] = deepcopy(values[":profile"])
             item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression in (
+            "SET pending_result = :value, expires_at = :ttl",
+            "SET pending_chat_response = :value, expires_at = :ttl",
+        ):
+            pending_name = expression.split()[1]
+            item[pending_name] = deepcopy(values[":value"])
+            item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression in ("REMOVE #pending", "REMOVE #pending, #additional"):
+            for alias in expression.removeprefix("REMOVE ").split(", "):
+                item.pop(names.get(alias, alias), None)
             return
 
         if expression == (
@@ -441,6 +467,132 @@ def test_buffer_state_persists_pending_results(
     repository.set_pending_result("s1", "Hola\nmundo")
     assert repository.pop_pending_result("s1") == "Hola\nmundo"
     assert repository.pop_pending_result("s1") is None
+
+
+@pytest.mark.parametrize(
+    ("setter_name", "popper_name", "attribute"),
+    [
+        ("set_pending_result", "pop_pending_result", "pending_result"),
+        (
+            "set_pending_chat_response",
+            "pop_pending_chat_response",
+            "pending_chat_response",
+        ),
+    ],
+)
+@pytest.mark.parametrize("value", ["ready", ""])
+def test_pending_strings_are_delivered_exactly_once(
+    repository: DynamoDBStateRepository,
+    setter_name: str,
+    popper_name: str,
+    attribute: str,
+    value: str,
+) -> None:
+    """Stored strings, including empty strings, are consumed only once."""
+    setter = getattr(repository, setter_name)
+    popper = getattr(repository, popper_name)
+
+    assert popper("s1") is None
+    setter("s1", value)
+
+    assert popper("s1") == value
+    assert popper("s1") is None
+    assert getattr(repository.get_buffer_state("s1"), attribute) is None
+
+
+@pytest.mark.parametrize(
+    ("setter_name", "popper_name"),
+    [
+        ("set_pending_result", "pop_pending_result"),
+        ("set_pending_chat_response", "pop_pending_chat_response"),
+    ],
+)
+def test_concurrent_pending_consumers_have_exactly_one_winner(
+    repository: DynamoDBStateRepository,
+    setter_name: str,
+    popper_name: str,
+) -> None:
+    """A conditional remove gives one winner under concurrent polling."""
+    getattr(repository, setter_name)("s1", "ready")
+    barrier = Barrier(8)
+
+    def consume() -> str | None:
+        barrier.wait()
+        return getattr(repository, popper_name)("s1")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: consume(), range(8)))
+
+    assert results.count("ready") == 1
+    assert results.count(None) == 7
+
+
+def test_chat_response_winner_removes_processing_marker_and_preserves_other_fields(
+    repository: DynamoDBStateRepository,
+) -> None:
+    """Winning chat consumption jointly removes only response and processing."""
+    repository.append_buffer_message("s1", "keep me")
+    repository.set_pending_result("s1", "keep result")
+    repository.set_processing("s1")
+    repository.set_pending_chat_response("s1", "response")
+
+    assert repository.pop_pending_chat_response("s1") == "response"
+
+    state = repository.get_buffer_state("s1")
+    assert state.processing_started_at is None
+    assert state.pending_result == "keep result"
+    assert [message.message for message in state.messages] == ["keep me"]
+
+
+def test_missing_chat_response_does_not_clear_processing_marker(
+    repository: DynamoDBStateRepository,
+) -> None:
+    """A losing chat poll cannot clear processing without consuming a value."""
+    repository.set_processing("s1")
+
+    assert repository.pop_pending_chat_response("s1") is None
+    assert repository.get_buffer_state("s1").processing_started_at is not None
+
+
+def test_historical_null_pending_value_is_absent() -> None:
+    """Legacy DynamoDB NULL values are not treated as consumable strings."""
+    table = FakeDynamoDBTable()
+    table.items[("SESSION#s1", "BUFFER")] = {
+        "PK": "SESSION#s1",
+        "SK": "BUFFER",
+        "pending_result": None,
+    }
+    repository = DynamoDBStateRepository(table=table)
+
+    assert repository.pop_pending_result("s1") is None
+    assert table.items[("SESSION#s1", "BUFFER")]["pending_result"] is None
+
+
+def test_pending_pop_propagates_non_conditional_client_errors() -> None:
+    """Only absence conditions are translated to None."""
+
+    class FailingTable(FakeDynamoDBTable):
+        def update_item(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ProvisionedThroughputExceededException",
+                        "Message": "throttled",
+                    }
+                },
+                "UpdateItem",
+            )
+
+    repository = DynamoDBStateRepository(table=FailingTable())
+
+    with pytest.raises(ClientError) as exc_info:
+        repository.pop_pending_result("s1")
+
+    assert (
+        exc_info.value.response["Error"]["Code"]
+        == "ProvisionedThroughputExceededException"
+    )
 
 
 def test_append_buffer_message_refreshes_ttl_and_returns_utc_state() -> None:
