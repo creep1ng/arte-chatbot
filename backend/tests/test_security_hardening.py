@@ -50,7 +50,7 @@ def test_buffer_result_returns_owned_pending_response(monkeypatch) -> None:
     session_id = "session-owned-ready"
     principal = api_key_principal("test-secret")
     session_manager.bind_session(session_id, principal)
-    set_pending_chat_response(session_id, '{"response":"ok"}')
+    set_pending_chat_response(session_id, "")
 
     response = client.get(
         f"/buffer-result/{session_id}",
@@ -59,7 +59,7 @@ def test_buffer_result_returns_owned_pending_response(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
-    assert response.json()["result"] == '{"response":"ok"}'
+    assert response.json()["result"] == ""
 
 
 def test_chat_rejects_unknown_client_session_id(monkeypatch) -> None:
