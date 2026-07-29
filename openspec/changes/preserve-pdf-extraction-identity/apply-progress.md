@@ -4,10 +4,10 @@
 
 - Mode: Strict TDD
 - Delivery: stacked-to-main
-- Current unit: Unit 1 implementation complete; PR separation pending
-- Scope: tasks 1.1–1.5 only
-- Verification status: PASS WITH WARNINGS
-- PR gate: split 633-line Unit 1 into PR 1A/1B/1C before commit or PR
+- Current unit: Unit 2 verification corrections complete
+- Scope: cumulative tasks 1.1–2.5; active slice tasks 2.1–2.5
+- Verification status: PASS WITH RUFF UNAVAILABLE
+- PR gate: Unit 2 autonomous at 400 changed lines; no `size:exception`
 - Rollback boundary: each slice reverts independently
 
 ## Required PR Separation
@@ -34,6 +34,11 @@ PR 1C; PR 3 starts from `main` after PR 2.
 - [x] 1.3 RED — Trusted routing, cardinality, variants, and mismatch tests.
 - [x] 1.4 GREEN — Review classification and trusted-only conversion.
 - [x] 1.5 REFACTOR — Consolidated typed helpers with behavior preserved.
+- [x] 2.1 RED — Mocked adjacent opaque-ID/File Input request pairs and out-of-order output.
+- [x] 2.2 GREEN — Migrated extraction to Files uploads and Responses Structured Outputs.
+- [x] 2.3 RED — Covered refusal, incomplete, absent parsed output, parse/API, and cleanup failures.
+- [x] 2.4 GREEN — Added source-specific fail-closed response validation without fallbacks.
+- [x] 2.5 REFACTOR — Verified OpenAI 1.68.0 supports `responses.parse(text_format=...)`.
 
 ## TDD Cycle Evidence
 
@@ -44,6 +49,11 @@ PR 1C; PR 3 starts from `main` after PR 2.
 | 1.3 | `scripts/tests/test_generate_index.py` | Unit | 9/9 identity tests | 4 failed and 1 passed before classification/conversion | 5/5 classification/conversion tests passed in 1.4 | Normal variants, zero, multiple, mismatch, and trusted precedence | 14/14 Unit 1 tests passed after typed helper consolidation |
 | 1.4 | `scripts/tests/test_generate_index.py` | Unit | 9/9 identity tests | Tests from 1.3 preceded production code | 5/5 classification/conversion tests passed | Cardinality and routing mismatch take distinct paths | 14/14 Unit 1 tests passed after `_review_reasons()`/routing helper cleanup |
 | 1.5 | `scripts/tests/test_generate_index.py` | Unit/refactor | 44/44 approval baseline | N/A — behavior-preserving refactor | 14/14 focused tests passed | Existing 14-case Unit 1 matrix preserved | 44/44 final tests passed |
+| 2.1 | `scripts/tests/test_generate_index.py` | Unit/SDK request | 51/51 baseline | Initial transport RED plus correction RED (8 failed, 1 passed) preceded fixes | Upload bytes/purpose, no Chat Completions, adjacent opaque pairs, and reversed output pass | Two uploads and partial-upload cleanup covered | 9/9 focused tests passed |
+| 2.2 | `scripts/tests/test_generate_index.py` | Unit/transport | 51/51 baseline | Real pipeline probe reproduced tuple caller failure and `Desconocido` fallback | Typed reconciliation converts internally to input-ordered legacy mappings | Reversed model output and realistic caller probe pass | 9/9 focused tests passed |
+| 2.3 | `scripts/tests/test_generate_index.py` | Unit/failure policy | Original failure matrix | Central-policy RED: 10 failed, 2 passed; incomplete reason, returned IDs, and external classes leaked | Central `DiagnosticCode` policy emits only application codes and trusted S3 keys | Refusal/incomplete/output/API/upload/parse/cleanup sentinels covered | 19/19 focused tests passed |
+| 2.4 | `scripts/tests/test_generate_index.py` | Unit/fail closed | Focused transport safety net | Sensitive returned IDs and external details appeared in exceptions/logs | Identity/review/transport failures use stable application codes | No model output or external message/class is observable | 58/58 script tests passed |
+| 2.5 | `scripts/tests/test_generate_index.py` | Unit/refactor/compatibility | OpenAI 1.68.0 probe | N/A — behavior-preserving refactor | Minimum SDK and safe legacy caller contract preserved | Full project regression passes | 617 passed, 3 skipped |
 
 ## Verification
 
@@ -60,8 +70,6 @@ PR 1C; PR 3 starts from `main` after PR 2.
 
 ## Remaining
 
-- Separate completed Unit 1 into PR 1A/1B/1C before any commit or PR.
-- Unit 2 / tasks 2.1–2.5: Responses API and real File Inputs.
 - Unit 3 / tasks 3.1–3.4: fail-closed pipeline publication gate.
 
 ## Verification Correction: Deep Structured Output Closure

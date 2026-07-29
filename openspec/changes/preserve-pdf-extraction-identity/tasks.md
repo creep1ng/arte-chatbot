@@ -33,11 +33,11 @@ Chain strategy: stacked-to-main
 
 ## Phase 2: File Inputs and Responses API (Unit 2)
 
-- [ ] 2.1 RED — Mock `client.files` and `client.responses.parse` to require adjacent opaque-ID `input_text` plus real `input_file` content and order-independent parsed output.
-- [ ] 2.2 GREEN — Replace Chat Completions JSON mode in `extract_metadata_batch()` with uploads, trusted map, `responses.parse(..., text_format=ExtractionBatch)`, reconciliation, and `finally` cleanup.
-- [ ] 2.3 RED — Cover refusal, incomplete status/reason, absent parsed output, schema/parse error, API error, and warning-only cleanup failure.
-- [ ] 2.4 GREEN — Fail closed with source-specific diagnostics for every unacceptable response; never synthesize fallback entries.
-- [ ] 2.5 REFACTOR — Verify the minimum OpenAI constraint; update `pyproject.toml` and `uv.lock` only if `responses.parse` requires it.
+- [x] 2.1 RED — Mock `client.files` and `client.responses.parse` to require adjacent opaque-ID `input_text` plus real `input_file` content and order-independent parsed output.
+- [x] 2.2 GREEN — Replace Chat Completions JSON mode in `extract_metadata_batch()` with uploads, trusted map, `responses.parse(..., text_format=ExtractionBatch)`, reconciliation, and `finally` cleanup.
+- [x] 2.3 RED — Cover refusal, incomplete status/reason, absent parsed output, schema/parse error, API error, and warning-only cleanup failure.
+- [x] 2.4 GREEN — Fail closed with source-specific diagnostics for every unacceptable response; never synthesize fallback entries.
+- [x] 2.5 REFACTOR — Verify the minimum OpenAI constraint; update `pyproject.toml` and `uv.lock` only if `responses.parse` requires it.
 
 ## Phase 3: Publication Gate (Unit 3)
 

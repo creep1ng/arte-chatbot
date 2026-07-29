@@ -135,6 +135,23 @@ class ExtractionNeedsReview(RuntimeError):
     """Raised when reconciled content is not eligible for publication."""
 
 
+_DIAGNOSTIC_VALUES = (
+    "duplicate_expected_identity duplicate_identity identity_set_mismatch "
+    "model_marked_needs_review product_count_zero product_count_multiple zero_variants "
+    "routing_mismatch model_refusal response_incomplete missing_output_parsed "
+    "upload_failed response_parse_failed extraction_failed cleanup_failed"
+).split()
+DiagnosticCode = Enum(
+    "DiagnosticCode", {value.upper(): value for value in _DIAGNOSTIC_VALUES}, type=str
+)
+
+
+def _diagnostic(codes: DiagnosticCode | list[DiagnosticCode], sources: tuple[str, ...] = ()) -> str:
+    safe_codes = [codes] if isinstance(codes, DiagnosticCode) else codes
+    message = ",".join(code.value for code in safe_codes)
+    return f"{message}; sources={','.join(sources)}" if sources else message
+
+
 ReconciledProduct = tuple[ExtractedProduct, TrustedDocument]
 
 
@@ -160,9 +177,7 @@ def build_trusted_map(
     for document in documents:
         document_id = create_document_id()
         if document_id in trusted_map:
-            raise ExtractionProtocolError(
-                f"duplicate expected document_id: {document_id}"
-            )
+            raise ExtractionProtocolError(_diagnostic(DiagnosticCode.DUPLICATE_EXPECTED_IDENTITY))
         trusted_map[document_id] = document
 
     return trusted_map
@@ -187,20 +202,12 @@ def reconcile_batch(
     _validate_identity_sets(parsed, trusted_map)
 
     reconciled: list[ReconciledProduct] = []
-    review_findings: list[str] = []
     for document in parsed.documents:
         trusted = trusted_map[document.document_id]
         reasons = _review_reasons(document, trusted)
         if reasons:
-            review_findings.append(
-                f"{document.document_id} ({trusted.s3_key}): {', '.join(reasons)}"
-            )
-            continue
+            raise ExtractionNeedsReview(_diagnostic(reasons, (trusted.s3_key,)))
         reconciled.append((document.products[0], trusted))
-
-    if review_findings:
-        raise ExtractionNeedsReview("; ".join(review_findings))
-
     return reconciled
 
 
@@ -216,9 +223,7 @@ def _validate_identity_sets(
         if count > 1
     )
     if duplicate_ids:
-        raise ExtractionProtocolError(
-            f"duplicate returned document_id values: {duplicate_ids}"
-        )
+        raise ExtractionProtocolError(_diagnostic(DiagnosticCode.DUPLICATE_IDENTITY))
 
     expected_ids = set(trusted_map)
     actual_ids = set(returned_ids)
@@ -226,35 +231,32 @@ def _validate_identity_sets(
     unknown_ids = sorted(actual_ids - expected_ids)
     if missing_ids or unknown_ids:
         raise ExtractionProtocolError(
-            "identity set mismatch: "
-            f"missing={missing_ids}, unknown/extra={unknown_ids}"
+            _diagnostic(DiagnosticCode.IDENTITY_SET_MISMATCH)
         )
 
 
 def _review_reasons(
     document: DocumentExtraction,
     trusted: TrustedDocument,
-) -> list[str]:
+) -> list[DiagnosticCode]:
     """Classify review-only extraction outcomes for one trusted source."""
-    reasons = list(document.review_reasons)
-    if document.status == ExtractionStatus.NEEDS_REVIEW and not reasons:
-        reasons.append("model marked needs_review")
+    reasons: list[DiagnosticCode] = []
+    if document.status == ExtractionStatus.NEEDS_REVIEW or document.review_reasons:
+        reasons.append(DiagnosticCode.MODEL_MARKED_NEEDS_REVIEW)
 
-    product_count = len(document.products)
-    if product_count == 0:
-        reasons.append("zero products")
+    if not document.products:
+        reasons.append(DiagnosticCode.PRODUCT_COUNT_ZERO)
         return reasons
-    if product_count > 1:
-        reasons.append("multiple products")
+    if len(document.products) > 1:
+        reasons.append(DiagnosticCode.PRODUCT_COUNT_MULTIPLE)
         return reasons
 
     product = document.products[0]
     if not product.variantes:
-        reasons.append("product has zero variants")
+        reasons.append(DiagnosticCode.ZERO_VARIANTS)
 
-    mismatched_fields = _routing_mismatches(product, trusted)
-    if mismatched_fields:
-        reasons.append(f"routing mismatch: {mismatched_fields}")
+    if _routing_mismatches(product, trusted):
+        reasons.append(DiagnosticCode.ROUTING_MISMATCH)
 
     return reasons
 
@@ -589,7 +591,7 @@ def filter_new_pdfs(
 
 
 def extract_metadata_batch(
-    pdf_bytes_list: list[tuple[str, bytes, dict[str, str]]],
+    pdf_bytes_list: list[tuple[str, bytes, dict[str, Any]]],
     api_key: str,
     model: str = "gpt-4o",
 ) -> list[dict[str, Any]]:
@@ -601,70 +603,73 @@ def extract_metadata_batch(
         model: Model to use for extraction.
 
     Returns:
-        List of extracted product metadata dicts.
+        Publication-shaped product mappings with trusted source fields.
     """
     from openai import OpenAI
-
     client = OpenAI(api_key=api_key)
     file_ids: list[str] = []
-    s3_key_map: dict[str, str] = {}  # file_id -> s3_key
-
+    trusted_sources = tuple(source[0] for source in pdf_bytes_list)
+    error = lambda code: ExtractionProtocolError(_diagnostic(code, trusted_sources))  # noqa: E731
     try:
-        # Upload PDFs to OpenAI Files API
+        trusted_documents: list[TrustedDocument] = []
         for s3_key, pdf_bytes, pdf_info in pdf_bytes_list:
             file_obj = io.BytesIO(pdf_bytes)
             file_obj.name = pdf_info.get("nombre_comercial", "document") + ".pdf"
-
-            response = client.files.create(file=file_obj, purpose="user_data")
-            file_ids.append(response.id)
-            s3_key_map[response.id] = s3_key
-
-        # Build the user message with file references
-        user_message_parts = [
-            "Analiza las siguientes fichas técnicas PDF y extrae los metadatos "
-            "estructurados según el schema proporcionado en el system prompt.\n"
+            try:
+                uploaded = client.files.create(file=file_obj, purpose="user_data")
+            except Exception:
+                raise error(DiagnosticCode.UPLOAD_FAILED) from None
+            file_ids.append(uploaded.id)
+            trusted_documents.append(TrustedDocument(s3_key, pdf_info, uploaded.id))
+        trusted_map = build_trusted_map(trusted_documents)
+        content: list[dict[str, str]] = []
+        for document_id, trusted in trusted_map.items():
+            content += [
+                {"type": "input_text", "text": f"document_id: {document_id}"},
+                {"type": "input_file", "file_id": trusted.file_id},
+            ]
+        try:
+            response = client.responses.parse(
+                model=model,
+                instructions=EXTRACTION_SYSTEM_PROMPT,
+                input=[{"role": "user", "content": content}],
+                text_format=ExtractionBatch,
+            )
+        except Exception:
+            raise error(DiagnosticCode.RESPONSE_PARSE_FAILED) from None
+        if _response_has_refusal(response):
+            raise error(DiagnosticCode.MODEL_REFUSAL)
+        if response.status != "completed":
+            raise error(DiagnosticCode.RESPONSE_INCOMPLETE)
+        if response.output_parsed is None:
+            raise error(DiagnosticCode.MISSING_OUTPUT_PARSED)
+        products = {
+            trusted.file_id: product
+            for product, trusted in reconcile_batch(
+                response.output_parsed, trusted_map
+            )
+        }
+        return [
+            build_product_entry(products[trusted.file_id], trusted)
+            for trusted in trusted_map.values()
         ]
-
-        for file_id, s3_key in s3_key_map.items():
-            pdf_info = next((p for p in pdf_bytes_list if p[0] == s3_key), None)
-            if pdf_info:
-                info = pdf_info[2]
-                user_message_parts.append(
-                    f"- File ID: {file_id}\n"
-                    f"  Categoría: {info['categoria']}\n"
-                    f"  Subcategoría: {info.get('subcategoria') or 'N/A'}\n"
-                    f"  Nombre comercial (del archivo): {info['nombre_comercial']}"
-                )
-
-        user_message = "\n".join(user_message_parts)
-
-        # Build content list with file references
-        content: list[dict[str, Any]] = [{"type": "text", "text": user_message}]
-
-        # Call the LLM
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-
-        result_text = response.choices[0].message.content
-        result = json.loads(result_text)
-
-        return result.get("productos", [])
-
+    except (ExtractionNeedsReview, ExtractionProtocolError):
+        raise
+    except Exception:
+        raise error(DiagnosticCode.EXTRACTION_FAILED) from None
     finally:
         # Cleanup: delete uploaded files from OpenAI
         for file_id in file_ids:
             try:
                 client.files.delete(file_id)
-                logger.debug("Deleted OpenAI file: %s", file_id)
-            except Exception as e:
-                logger.warning("Failed to delete OpenAI file %s: %s", file_id, e)
+            except Exception:
+                logger.warning(_diagnostic(DiagnosticCode.CLEANUP_FAILED, trusted_sources))
+def _response_has_refusal(response: Any) -> bool:
+    for output in getattr(response, "output", None) or []:
+        for content in getattr(output, "content", None) or []:
+            if getattr(content, "type", None) == "refusal":
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------

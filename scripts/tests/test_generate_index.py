@@ -5,7 +5,7 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from pydantic import ValidationError
@@ -29,6 +29,7 @@ from generate_index import (
     build_catalog_index,
     build_product_entry,
     build_trusted_map,
+    extract_metadata_batch,
     filter_new_pdfs,
     list_local_pdfs,
     reconcile_batch,
@@ -323,7 +324,7 @@ class TestTrustedMap:
     def test_duplicate_expected_ids_fail_closed(self) -> None:
         documents = [_trusted_document("Series A"), _trusted_document("Series B")]
 
-        with pytest.raises(ExtractionProtocolError, match="duplicate expected"):
+        with pytest.raises(ExtractionProtocolError, match="duplicate_expected_identity"):
             build_trusted_map(documents, document_id_factory=lambda: "same-id")
 
 
@@ -358,18 +359,18 @@ class TestReconcileBatch:
         ]
 
     @pytest.mark.parametrize(
-        ("expected_ids", "returned_ids", "message"),
+        ("expected_ids", "returned_ids"),
         [
-            (("doc-a", "doc-b"), ("doc-a",), "missing"),
-            (("doc-a",), ("doc-a", "doc-extra"), "extra"),
-            (("doc-a", "doc-b"), ("doc-a", "doc-unknown"), "unknown"),
+            (("doc-a", "doc-b"), ("doc-a",)),
+            (("doc-a",), ("doc-a", "PRIVATE EXTRA ID")),
+            (("doc-a", "doc-b"), ("doc-a", "PRIVATE UNKNOWN ID")),
         ],
     )
     def test_identity_set_anomalies_fail_closed(
         self,
         expected_ids: tuple[str, ...],
         returned_ids: tuple[str, ...],
-        message: str,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         trusted_map = {
             document_id: _trusted_document(f"Series {index}")
@@ -379,8 +380,14 @@ class TestReconcileBatch:
             documents=[_document_extraction(document_id) for document_id in returned_ids]
         )
 
-        with pytest.raises(ExtractionProtocolError, match=message):
+        with pytest.raises(ExtractionProtocolError) as raised:
             reconcile_batch(parsed, trusted_map)
+
+        diagnostics = str(raised.value) + caplog.text
+        assert "identity_set_mismatch" in diagnostics
+        assert all(
+            value not in diagnostics for value in set(returned_ids) - set(expected_ids)
+        )
 
     def test_duplicate_returned_id_fails_closed(self) -> None:
         trusted_map = {"doc-a": _trusted_document("Series A")}
@@ -391,7 +398,7 @@ class TestReconcileBatch:
             ]
         )
 
-        with pytest.raises(ExtractionProtocolError, match="duplicate returned"):
+        with pytest.raises(ExtractionProtocolError, match="duplicate_identity"):
             reconcile_batch(parsed, trusted_map)
 
 
@@ -430,14 +437,22 @@ class TestExtractionClassification:
             "Tiger Pro 470W",
         ]
 
-    def test_zero_products_needs_review(self) -> None:
-        document = _document_extraction("doc-a").model_copy(update={"products": []})
-
-        with pytest.raises(ExtractionNeedsReview, match="zero products"):
+    def test_model_review_text_is_safe(self, caplog: pytest.LogCaptureFixture) -> None:
+        document = _document_extraction("doc-a").model_copy(
+            update={
+                "status": ExtractionStatus.NEEDS_REVIEW, "products": [],
+                "review_reasons": ["PRIVATE MODEL MESSAGE"],
+            }
+        )
+        with pytest.raises(ExtractionNeedsReview) as raised:
             reconcile_batch(
                 ExtractionBatch(documents=[document]),
                 {"doc-a": _trusted_document("Jinko Tiger Pro")},
             )
+        diagnostic = str(raised.value) + caplog.text
+        assert "model_marked_needs_review" in diagnostic
+        assert "product_count_zero" in diagnostic
+        assert "PRIVATE MODEL MESSAGE" not in diagnostic
 
     def test_product_with_zero_variants_needs_review(self) -> None:
         product = _extracted_product().model_copy(update={"variantes": []})
@@ -445,7 +460,7 @@ class TestExtractionClassification:
             update={"products": [product]}
         )
 
-        with pytest.raises(ExtractionNeedsReview, match="zero variants"):
+        with pytest.raises(ExtractionNeedsReview, match="zero_variants"):
             reconcile_batch(
                 ExtractionBatch(documents=[document]),
                 {"doc-a": _trusted_document("Jinko Tiger Pro")},
@@ -461,7 +476,7 @@ class TestExtractionClassification:
             }
         )
 
-        with pytest.raises(ExtractionNeedsReview, match="multiple products"):
+        with pytest.raises(ExtractionNeedsReview, match="product_count_multiple"):
             reconcile_batch(
                 ExtractionBatch(documents=[document]),
                 {"doc-a": _trusted_document("Jinko Tiger Pro")},
@@ -479,7 +494,7 @@ class TestExtractionClassification:
             update={"products": [product]}
         )
 
-        with pytest.raises(ExtractionNeedsReview, match="routing mismatch"):
+        with pytest.raises(ExtractionNeedsReview, match="routing_mismatch"):
             reconcile_batch(
                 ExtractionBatch(documents=[document]),
                 {"doc-a": _trusted_document("Jinko Tiger Pro")},
@@ -506,6 +521,162 @@ class TestTrustedProductConversion:
             "tipo_celda": "monocristalino"
         }
         assert entry["variantes"][0]["parametros_clave"] == {"potencia_w": 460}
+
+
+class TestExtractMetadataBatch:
+    @staticmethod
+    def _sources(*names: str) -> list[tuple[str, bytes, dict[str, Any]]]:
+        return [
+            (document.s3_key, f"%PDF-{name}".encode(), document.pdf_info)
+            for name in names
+            for document in [_trusted_document(name)]
+        ]
+    @classmethod
+    def _response(
+        cls, kwargs: dict[str, Any], failure: str = "", sensitive: str = "",
+        reverse: bool = False,
+    ) -> MagicMock:
+        document_ids = cls._document_ids(kwargs)
+        documents = [
+            _document_extraction(value, f"Series {chr(65 + index)}")
+            for index, value in enumerate(document_ids)
+        ]
+        if reverse:
+            documents.reverse()
+        response = MagicMock(
+            status="incomplete" if failure == "incomplete" else "completed",
+            output_parsed=ExtractionBatch(documents=documents),
+            output=(
+                [object(), MagicMock(content=[MagicMock(type="refusal", refusal=sensitive)])]
+                if failure == "refusal"
+                else []
+            ),
+            incomplete_details=MagicMock(reason=sensitive),
+        )
+        if failure == "missing_parsed":
+            response.output_parsed = None
+        return response
+    @staticmethod
+    def _document_ids(kwargs: dict[str, Any]) -> list[str]:
+        return [
+            item["text"].removeprefix("document_id: ")
+            for item in kwargs["input"][0]["content"][::2]
+        ]
+    @patch("openai.OpenAI")
+    def test_file_inputs_and_pipeline_contract(
+        self, openai_factory: MagicMock
+    ) -> None:
+        client = openai_factory.return_value
+        client.files.create.side_effect = [
+            MagicMock(id="file-series-a"),
+            MagicMock(id="file-series-b"),
+        ]
+        client.responses.parse.side_effect = lambda **kwargs: self._response(
+            kwargs, reverse=True
+        )
+        extracted = extract_metadata_batch(
+            self._sources("Series A", "Series B"), "test-key", "gpt-4o"
+        )
+        content = client.responses.parse.call_args.kwargs["input"][0]["content"]
+        pairs = list(zip(content[::2], content[1::2]))
+        assert all(
+            text["type"] == "input_text"
+            and text["text"].startswith("document_id: ")
+            and "Series" not in text["text"]
+            for text, _ in pairs
+        )
+        assert [item for _, item in pairs] == [
+            {"type": "input_file", "file_id": "file-series-a"},
+            {"type": "input_file", "file_id": "file-series-b"},
+        ]
+        assert [entry["ruta_s3"] for entry in extracted] == [
+            "raw/paneles/Series A.pdf",
+            "raw/paneles/Series B.pdf",
+        ]
+        assert client.responses.parse.call_args.kwargs["text_format"] is ExtractionBatch
+        assert client.chat.completions.create.call_count == 0
+        assert [
+            (upload.kwargs["file"].getvalue(), upload.kwargs["purpose"])
+            for upload in client.files.create.call_args_list
+        ] == [(b"%PDF-Series A", "user_data"), (b"%PDF-Series B", "user_data")]
+        assert client.files.delete.call_args_list == [
+            call("file-series-a"), call("file-series-b")
+        ]
+        client.files.create.side_effect = None
+        client.files.create.return_value = MagicMock(id="file-series-a")
+        with (
+            patch("generate_index.list_local_pdfs", return_value=[self._sources("Series A")[0][2]]),
+            patch("generate_index.download_local_pdf", return_value=b"%PDF-A"),
+            patch("generate_index.save_local") as save,
+        ):
+            from generate_index import run_pipeline
+            result = run_pipeline(
+                None, "source", "raw/", "output", "index", "schema", 1,
+                True, False, True, "test-key", "gpt-4o"
+            )
+        catalog = save.call_args.args[0]
+        assert result == 0 and catalog["productos"][0]["fabricante"] == "Jinko"
+    @pytest.mark.parametrize(
+        ("failure", "diagnostic", "sensitive"),
+        [
+            ("refusal", "model_refusal", "private refusal payload"),
+            ("incomplete", "response_incomplete", "PRIVATE INCOMPLETE REASON"),
+            ("missing_parsed", "missing_output_parsed", ""),
+            ("parse", "response_parse_failed", "private schema payload"),
+            ("api", "response_parse_failed", "private API payload"),
+        ],
+    )
+    @patch("openai.OpenAI")
+    def test_response_failures_are_safe(
+        self,
+        openai_factory: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+        failure: str, diagnostic: str, sensitive: str,
+    ) -> None:
+        client = openai_factory.return_value
+        client.files.create.return_value = MagicMock(id="file-series-a")
+        if failure in {"parse", "api"}:
+            error_type = type(f"PRIVATE_{failure.upper()}_ERROR", (Exception,), {})
+            client.responses.parse.side_effect = error_type(sensitive)
+        else:
+            client.responses.parse.side_effect = lambda **kwargs: self._response(
+                kwargs, failure, sensitive
+            )
+        with pytest.raises(ExtractionProtocolError) as raised:
+            extract_metadata_batch(self._sources("Series A"), "test-key")
+        diagnostics = str(raised.value) + caplog.text
+        assert "raw/paneles/Series A.pdf" in diagnostics and diagnostic in diagnostics
+        assert not sensitive or sensitive not in diagnostics
+        assert "PRIVATE_" not in diagnostics
+        client.files.delete.assert_called_once_with("file-series-a")
+    @patch("openai.OpenAI")
+    def test_external_failures_use_stable_codes_and_preserve_cleanup(
+        self, openai_factory: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = openai_factory.return_value
+        error_type = type("PRIVATE_UPLOAD_ERROR", (Exception,), {})
+        client.files.create.side_effect = [
+            MagicMock(id="file-series-a"),
+            error_type("private upload payload"),
+        ]
+        with pytest.raises(ExtractionProtocolError, match="upload_failed") as raised:
+            extract_metadata_batch(self._sources("Series A", "Series B"), "test-key")
+        client.files.delete.assert_called_once_with("file-series-a")
+        assert "PRIVATE_" not in str(raised.value) + caplog.text
+        assert "private upload payload" not in str(raised.value) + caplog.text
+        client.files.create.side_effect = None
+        client.responses.parse.side_effect = error_type("private primary payload")
+        client.files.delete.side_effect = error_type("private cleanup payload")
+        with pytest.raises(ExtractionProtocolError, match="response_parse_failed") as raised:
+            extract_metadata_batch(self._sources("Series A"), "test-key")
+        diagnostics = str(raised.value) + caplog.text
+        assert "private primary payload" not in diagnostics
+        assert "private cleanup payload" not in diagnostics
+        assert "cleanup_failed" in caplog.text and "PRIVATE_" not in diagnostics
+        client.responses.parse.side_effect = lambda **kwargs: self._response(kwargs)
+        assert extract_metadata_batch(self._sources("Series A"), "test-key")[0][
+            "fabricante"
+        ] == "Jinko"
 
 
 # ---------------------------------------------------------------------------
