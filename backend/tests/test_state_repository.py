@@ -316,8 +316,16 @@ class ProcessingInterleavingTable(FakeDynamoDBTable):
             assert self.allow_processing_mutation.wait(timeout=2)
         return response
 
-    def update_item(self, **kwargs: Any) -> dict[str, Any]:
-        update_expression = str(kwargs["UpdateExpression"])
+    def update_item(
+        self,
+        Key: dict[str, str],
+        UpdateExpression: str,
+        ExpressionAttributeValues: dict[str, Any],
+        ExpressionAttributeNames: dict[str, str] | None = None,
+        ConditionExpression: str | None = None,
+        ReturnValues: str | None = None,
+    ) -> dict[str, Any]:
+        update_expression = UpdateExpression
         is_processing_update = (
             update_expression.startswith("SET processing_started_at")
             or "REMOVE processing_started_at" in update_expression
@@ -325,21 +333,43 @@ class ProcessingInterleavingTable(FakeDynamoDBTable):
         if current_thread().name == "processing-race" and is_processing_update:
             self.processing_mutation_started.set()
             assert self.allow_processing_mutation.wait(timeout=2)
-        return super().update_item(**kwargs)
+        return super().update_item(
+            Key,
+            UpdateExpression,
+            ExpressionAttributeValues,
+            ExpressionAttributeNames,
+            ConditionExpression,
+            ReturnValues,
+        )
 
 
 class MessageInterleavingTable(ProcessingInterleavingTable):
     """Pause a message mutation after its read or before its field update."""
 
-    def update_item(self, **kwargs: Any) -> dict[str, Any]:
-        update_expression = str(kwargs["UpdateExpression"])
+    def update_item(
+        self,
+        Key: dict[str, str],
+        UpdateExpression: str,
+        ExpressionAttributeValues: dict[str, Any],
+        ExpressionAttributeNames: dict[str, str] | None = None,
+        ConditionExpression: str | None = None,
+        ReturnValues: str | None = None,
+    ) -> dict[str, Any]:
+        update_expression = UpdateExpression
         is_message_update = update_expression.startswith(
             "SET messages = :messages"
         ) or update_expression.startswith("SET #messages = list_append")
         if current_thread().name == "processing-race" and is_message_update:
             self.processing_mutation_started.set()
             assert self.allow_processing_mutation.wait(timeout=2)
-        return super().update_item(**kwargs)
+        return super().update_item(
+            Key,
+            UpdateExpression,
+            ExpressionAttributeValues,
+            ExpressionAttributeNames,
+            ConditionExpression,
+            ReturnValues,
+        )
 
 
 def run_paused_buffer_mutation(
