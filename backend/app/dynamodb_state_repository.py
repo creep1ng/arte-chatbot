@@ -205,9 +205,7 @@ class DynamoDBStateRepository:
             },
             ReturnValues="ALL_NEW",
         )
-        return self._buffer_state_from_item(
-            session_id, response.get("Attributes", {})
-        )
+        return self._buffer_state_from_item(session_id, response.get("Attributes", {}))
 
     def clear_buffer_messages(self, session_id: str) -> None:
         """Clear accumulated buffer messages."""

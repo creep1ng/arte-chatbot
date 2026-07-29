@@ -112,9 +112,7 @@ class FakeDynamoDBTable:
         expression = " ".join(UpdateExpression.split())
 
         with self._lock:
-            item = deepcopy(
-                self.items.get(key, {"PK": Key["PK"], "SK": Key["SK"]})
-            )
+            item = deepcopy(self.items.get(key, {"PK": Key["PK"], "SK": Key["SK"]}))
             self._evaluate_condition(
                 item, ConditionExpression, names, ExpressionAttributeValues
             )
