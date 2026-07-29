@@ -4,10 +4,10 @@
 
 - Mode: Strict TDD
 - Delivery: stacked-to-main
-- Current unit: Unit 2 verification corrections complete
-- Scope: cumulative tasks 1.1–2.5; active slice tasks 2.1–2.5
-- Verification status: PASS WITH RUFF UNAVAILABLE
-- PR gate: Unit 2 autonomous at 400 changed lines; no `size:exception`
+- Current unit: Unit 3 publication gate complete after fresh verification corrections
+- Scope: cumulative tasks 1.1–3.4
+- Verification status: PASS; environmental Ruff warning recorded
+- PR gate: final stacked-to-main slice under 400 changed lines; no `size:exception`
 - Rollback boundary: each slice reverts independently
 
 ## Required PR Separation
@@ -39,6 +39,10 @@ PR 1C; PR 3 starts from `main` after PR 2.
 - [x] 2.3 RED — Covered refusal, incomplete, absent parsed output, parse/API, and cleanup failures.
 - [x] 2.4 GREEN — Added source-specific fail-closed response validation without fallbacks.
 - [x] 2.5 REFACTOR — Verified OpenAI 1.68.0 supports `responses.parse(text_format=...)`.
+- [x] 3.1 RED — Covered review, download, extraction/protocol, conversion, incomplete-batch, and schema failures with zero writes.
+- [x] 3.2 GREEN — Added complete-batch accumulation and full-catalog pre-write validation.
+- [x] 3.3 RED/GREEN — Adapted local success to Unit 2 publication mappings and trusted routing.
+- [x] 3.4 REFACTOR — Removed positional/fallback paths; functional verification passes.
 
 ## TDD Cycle Evidence
 
@@ -54,6 +58,10 @@ PR 1C; PR 3 starts from `main` after PR 2.
 | 2.3 | `scripts/tests/test_generate_index.py` | Unit/failure policy | Original failure matrix | Central-policy RED: 10 failed, 2 passed; incomplete reason, returned IDs, and external classes leaked | Central `DiagnosticCode` policy emits only application codes and trusted S3 keys | Refusal/incomplete/output/API/upload/parse/cleanup sentinels covered | 19/19 focused tests passed |
 | 2.4 | `scripts/tests/test_generate_index.py` | Unit/fail closed | Focused transport safety net | Sensitive returned IDs and external details appeared in exceptions/logs | Identity/review/transport failures use stable application codes | No model output or external message/class is observable | 58/58 script tests passed |
 | 2.5 | `scripts/tests/test_generate_index.py` | Unit/refactor/compatibility | OpenAI 1.68.0 probe | N/A — behavior-preserving refactor | Minimum SDK and safe legacy caller contract preserved | Full project regression passes | 617 passed, 3 skipped |
+| 3.1 | `scripts/tests/test_generate_index.py` | Pipeline | 65/65 correction baseline | Missing-validator pipeline case failed 1/8 and printed output before fix | 8/8 fail closed with no writes or print | Review/download/extraction/protocol/conversion/incomplete/schema/validator paths | Stable diagnostics expose no external payloads |
+| 3.2 | `scripts/tests/test_generate_index.py` | Pipeline | 58/58 baseline | 3.1 tests and incomplete-batch case preceded code | Complete mappings accumulate; every failure returns nonzero | Validation precedes dry/local/S3 publication | Extracted `_publish_catalog()` gate |
+| 3.3 | `scripts/tests/test_generate_index.py` | Integration | Failure gate green | Legacy success contract failed schema validation | Publication-shaped Unit 2 mappings pass | Four exact product/route pairs across two batches | Explicit S3-key mapping; pipeline conversion forbidden |
+| 3.4 | `scripts/tests/test_generate_index.py` | Regression/refactor | 65/65 focused | Dry-run and missing-validator regressions failed before fixes | 66 focused and 644 project tests pass | Four targeted validator/conversion/schema probes pass | Ruff unavailable is environmental, not functional |
 
 ## Verification
 
@@ -70,7 +78,16 @@ PR 1C; PR 3 starts from `main` after PR 2.
 
 ## Remaining
 
-- Unit 3 / tasks 3.1–3.4: fail-closed pipeline publication gate.
+- None — ready for fresh SDD verify; Ruff availability remains an environmental warning.
+
+## Unit 3 Verification
+
+- `uv run pytest scripts/tests/test_generate_index.py`: 66 passed.
+- `uv run pytest`: 644 passed, 3 skipped.
+- Validator/conversion/schema probes: 4 passed.
+- Exact Ruff command unavailable (`Failed to spawn: ruff`); no fallback used.
+- `git diff --check`: passed; intentional Unit 3 diff remains below 400 lines.
+- Write atomicity ends at the pre-write gate: an S3 failure can follow a successful local save; no cross-store rollback or S3 transaction is claimed.
 
 ## Verification Correction: Deep Structured Output Closure
 

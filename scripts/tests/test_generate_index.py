@@ -33,6 +33,7 @@ from generate_index import (
     filter_new_pdfs,
     list_local_pdfs,
     reconcile_batch,
+    run_pipeline,
     save_local,
     validate_index,
 )
@@ -564,7 +565,7 @@ class TestExtractMetadataBatch:
         ]
     @patch("openai.OpenAI")
     def test_file_inputs_and_pipeline_contract(
-        self, openai_factory: MagicMock
+        self, openai_factory: MagicMock, schema_path: str
     ) -> None:
         client = openai_factory.return_value
         client.files.create.side_effect = [
@@ -609,9 +610,8 @@ class TestExtractMetadataBatch:
             patch("generate_index.download_local_pdf", return_value=b"%PDF-A"),
             patch("generate_index.save_local") as save,
         ):
-            from generate_index import run_pipeline
             result = run_pipeline(
-                None, "source", "raw/", "output", "index", "schema", 1,
+                None, "source", "raw/", "output", "index", schema_path, 1,
                 True, False, True, "test-key", "gpt-4o"
             )
         catalog = save.call_args.args[0]
@@ -977,6 +977,61 @@ class TestValidateIndex:
 # ---------------------------------------------------------------------------
 
 
+class TestPipelinePublicationGate:
+    @pytest.mark.parametrize(
+        "failure",
+        ("needs_review", "download", "extraction", "protocol", "conversion",
+         "incomplete_batch", "schema", "validator"),
+    )
+    def test_failure_aborts_before_any_publication(
+        self, failure: str, caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        pdf_info = _trusted_document("Series A").pdf_info
+        failures: dict[str, Exception] = {
+            "needs_review": ExtractionNeedsReview("model_marked_needs_review"),
+            "extraction": RuntimeError("PRIVATE EXTRACTION ERROR"),
+            "protocol": ExtractionProtocolError("identity_set_mismatch"),
+        }
+        extracted = [] if failure == "incomplete_batch" else [
+            build_product_entry(_extracted_product("Series A"), pdf_info)]
+
+        def validation(catalog: dict[str, Any], schema_path: str) -> list[str]:
+            if failure == "validator":
+                with patch.dict(sys.modules, {"jsonschema": None}):
+                    return validate_index(catalog, schema_path)
+            return ["PRIVATE SCHEMA ERROR"] if failure == "schema" else []
+
+        download_error = OSError("PRIVATE DOWNLOAD ERROR") if failure == "download" else None
+        conversion = ValueError("PRIVATE CONVERSION ERROR") if failure == "conversion" else build_catalog_index
+        with (
+            patch("generate_index.list_local_pdfs", return_value=[pdf_info]),
+            patch(
+                "generate_index.download_local_pdf",
+                side_effect=download_error, return_value=b"%PDF-A",
+            ),
+            patch("generate_index.extract_metadata_batch",
+                  side_effect=failures.get(failure), return_value=extracted),
+            patch("generate_index.validate_index", side_effect=validation),
+            patch("generate_index.build_catalog_index", side_effect=conversion),
+            patch("generate_index.save_local") as save,
+            patch("generate_index.upload_to_s3") as upload,
+        ):
+            result = run_pipeline(
+                MagicMock(), "source", "raw/", "output", "index", "schema",
+                1, False, failure == "validator", True, "test-key", "gpt-4o"
+            )
+
+        assert result == 1
+        save.assert_not_called()
+        upload.assert_not_called()
+        assert "PRIVATE" not in caplog.text
+        assert capsys.readouterr().out == ""
+        if failure in {"conversion", "validator"}:
+            expected = "catalog_conversion_failed" if failure == "conversion" else "catalog_validation_failed"
+            assert expected in caplog.text
+
+
 class TestPipelineIntegration:
     @patch("generate_index.extract_metadata_batch")
     def test_full_pipeline_local(
@@ -986,18 +1041,8 @@ class TestPipelineIntegration:
         schema_path: str,
         tmp_path: Path,
     ) -> None:
-        """Test the full pipeline with mocked AI extraction."""
-        # Mock returns items in the SAME ORDER as the PDFs are discovered.
-        # Local PDFs are sorted alphabetically by s3_key:
-        #   1. baterias/gel/Sunset Gel.pdf
-        #   2. baterias/litio/Huawei LUNA2000.pdf
-        #   3. inversores/multifuncionales/Voltronic.pdf
-        #   4. paneles/Jinko Tiger Pro.pdf
-        # With batch_size=2, batch 1 = [1,2], batch 2 = [3,4].
-        mock_extract.side_effect = [
-            # Batch 1: baterias/gel + baterias/litio
-            [
-                {
+        extracted_by_route = {
+            "raw/baterias/gel/Sunset Gel.pdf": {
                     "nombre_comercial": "Sunset Gel",
                     "fabricante": "Sunset",
                     "parametros_comunes": {"tipo": "Gel"},
@@ -1007,8 +1052,8 @@ class TestPipelineIntegration:
                             "parametros_clave": {"capacidad": 100},
                         }
                     ],
-                },
-                {
+            },
+            "raw/baterias/litio/Huawei LUNA2000.pdf": {
                     "nombre_comercial": "Huawei LUNA2000",
                     "fabricante": "Huawei",
                     "parametros_comunes": {"tipo": "Litio", "nivel_tension": 48},
@@ -1018,11 +1063,8 @@ class TestPipelineIntegration:
                             "parametros_clave": {"capacidad": 5},
                         }
                     ],
-                },
-            ],
-            # Batch 2: inversores/multifuncionales + paneles
-            [
-                {
+            },
+            "raw/inversores/multifuncionales/Voltronic.pdf": {
                     "nombre_comercial": "Voltronic Axpert",
                     "fabricante": "Voltronic",
                     "parametros_comunes": {
@@ -1035,8 +1077,8 @@ class TestPipelineIntegration:
                             "parametros_clave": {"capacidad": 5000},
                         }
                     ],
-                },
-                {
+            },
+            "raw/paneles/Jinko Tiger Pro.pdf": {
                     "nombre_comercial": "Jinko Tiger Pro",
                     "fabricante": "Jinko",
                     "parametros_comunes": {"tipo_celda": "monocristalino"},
@@ -1046,28 +1088,40 @@ class TestPipelineIntegration:
                             "parametros_clave": {"potencia_w": 460},
                         }
                     ],
-                },
-            ],
+            },
+        }
+        pdfs = [
+            {**pdf, "s3_key": f"raw/{pdf['s3_key']}"}
+            for pdf in list_local_pdfs(temp_source_dir)
         ]
-
+        mock_extract.side_effect = lambda batch, *_: [
+            build_product_entry(extracted_by_route[s3_key], pdf_info)
+            for s3_key, _, pdf_info in batch
+        ]
         output_path = str(tmp_path / "catalog_index.json")
 
-        from generate_index import run_pipeline
-
-        exit_code = run_pipeline(
-            s3_manager=None,
-            source_dir=temp_source_dir,
-            prefix="raw/",
-            output_path=output_path,
-            index_s3_key="index/catalog_index.json",
-            schema_path=schema_path,
-            batch_size=2,
-            local_only=True,
-            dry_run=False,
-            force=True,
-            api_key="test-key",
-            model="gpt-4o",
-        )
+        with (
+            patch("generate_index.list_local_pdfs", return_value=pdfs),
+            patch("generate_index.download_local_pdf", return_value=b"%PDF"),
+            patch(
+                "generate_index.build_product_entry",
+                side_effect=AssertionError("pipeline must consume publication mappings"),
+            ),
+        ):
+            exit_code = run_pipeline(
+                s3_manager=None,
+                source_dir=temp_source_dir,
+                prefix="raw/",
+                output_path=output_path,
+                index_s3_key="index/catalog_index.json",
+                schema_path=schema_path,
+                batch_size=2,
+                local_only=True,
+                dry_run=False,
+                force=True,
+                api_key="test-key",
+                model="gpt-4o",
+            )
 
         assert exit_code == 0
         assert os.path.exists(output_path)
@@ -1077,37 +1131,40 @@ class TestPipelineIntegration:
 
         assert catalog["version"] == "1.1.0"
         assert catalog["generado_por"] == "ai-pipeline"
-        assert len(catalog["productos"]) == 4
+        assert {
+            (product["nombre_comercial"], product["ruta_s3"])
+            for product in catalog["productos"]
+        } == {(metadata["nombre_comercial"], route) for route, metadata in extracted_by_route.items()}
 
-        # Verify subcategoria was preserved
-        batteries = [p for p in catalog["productos"] if p["categoria"] == "baterias"]
-        assert len(batteries) == 2
-        gel_battery = next(b for b in batteries if b.get("subcategoria") == "gel")
-        assert gel_battery["nombre_comercial"] == "Sunset Gel"
-
-    def test_dry_run(self, temp_source_dir: str, tmp_path: Path) -> None:
-        """Dry run should not create output file."""
+    def test_dry_run_prints_only_a_valid_catalog(
+        self,
+        schema_path: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
         output_path = str(tmp_path / "catalog_index.json")
+        document = _trusted_document("Series A")
+        entry = build_product_entry(_extracted_product("Series A"), document)
 
-        from generate_index import run_pipeline
-
-        exit_code = run_pipeline(
-            s3_manager=None,
-            source_dir=temp_source_dir,
-            prefix="raw/",
-            output_path=output_path,
-            index_s3_key="index/catalog_index.json",
-            schema_path="/nonexistent/schema.json",
-            batch_size=5,
-            local_only=True,
-            dry_run=True,
-            force=True,
-            api_key="test-key",
-            model="gpt-4o",
-        )
+        with (
+            patch("generate_index.list_local_pdfs", return_value=[document.pdf_info]),
+            patch("generate_index.download_local_pdf", return_value=b"%PDF"),
+            patch("generate_index.extract_metadata_batch", return_value=[entry]),
+            patch("generate_index.save_local") as save,
+            patch("generate_index.upload_to_s3") as upload,
+        ):
+            exit_code = run_pipeline(
+                None, "source", "raw/", output_path, "index", schema_path,
+                1, True, True, True, "test-key", "gpt-4o"
+            )
 
         assert exit_code == 0
         assert not os.path.exists(output_path)
+        assert json.loads(capsys.readouterr().out)["productos"][0]["ruta_s3"] == (
+            "raw/paneles/Series A.pdf"
+        )
+        save.assert_not_called()
+        upload.assert_not_called()
 
     def test_idempotency(
         self,
