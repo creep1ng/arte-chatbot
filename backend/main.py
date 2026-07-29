@@ -1759,7 +1759,7 @@ async def get_buffer_result(
     bind_or_validate_session(session_id, principal, is_new=False)
 
     chat_response_json = pop_pending_chat_response(session_id)
-    if chat_response_json:
+    if chat_response_json is not None:
         return BufferResultResponse(
             status="ready",
             session_id=session_id,
@@ -1775,7 +1775,7 @@ async def get_buffer_result(
             if joined_message:
                 await _on_buffer_window_expired(session_id, joined_message)
                 chat_response_json = pop_pending_chat_response(session_id)
-                if chat_response_json:
+                if chat_response_json is not None:
                     return BufferResultResponse(
                         status="ready",
                         session_id=session_id,

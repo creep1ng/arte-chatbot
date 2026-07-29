@@ -118,13 +118,23 @@ class ChatbotStateRepository(Protocol):
         """Persist a joined buffer result for polling."""
 
     def pop_pending_result(self, session_id: str) -> Optional[str]:
-        """Atomically consume a pending joined buffer result."""
+        """Consume a stored string once; return None when none is pending.
+
+        At most one concurrent caller receives the value. An empty string is a
+        pending value rather than absence.
+        """
 
     def set_pending_chat_response(self, session_id: str, response_json: str) -> None:
         """Persist a processed chat response for polling."""
 
     def pop_pending_chat_response(self, session_id: str) -> Optional[str]:
-        """Atomically consume a pending chat response."""
+        """Consume a stored string once and clear its processing marker.
+
+        At most one concurrent caller receives the stored string. An empty string
+        is a pending value; ``None`` means that no string was available. The
+        winning consume removes the marker in the same operation; an absent
+        response leaves the marker unchanged.
+        """
 
     def set_processing(self, session_id: str) -> None:
         """Mark a flushed session as being processed."""
