@@ -3,8 +3,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
-from threading import Barrier, RLock
-from typing import Any
+from threading import Barrier, Event, RLock, Thread, current_thread
+from typing import Any, Callable
 
 import pytest
 from botocore.exceptions import ClientError
@@ -141,12 +141,21 @@ class FakeDynamoDBTable:
                     item["window_seconds"] = ExpressionAttributeValues[":window"]
                 item["expires_at"] = ExpressionAttributeValues[":ttl"]
             elif UpdateExpression.startswith("SET "):
-                assignments = UpdateExpression.removeprefix("SET ").split(", ")
+                set_expression = UpdateExpression.removeprefix("SET ")
+                remove_expression: str | None = None
+                if " REMOVE " in set_expression:
+                    set_expression, remove_expression = set_expression.split(
+                        " REMOVE ", maxsplit=1
+                    )
+                assignments = set_expression.split(", ")
                 for assignment in assignments:
                     attribute, value_name = assignment.split(" = ")
                     item[names.get(attribute, attribute)] = deepcopy(
                         ExpressionAttributeValues[value_name]
                     )
+                if remove_expression is not None:
+                    for placeholder in remove_expression.split(", "):
+                        item.pop(names.get(placeholder, placeholder), None)
             else:
                 raise NotImplementedError(UpdateExpression)
 
@@ -168,6 +177,74 @@ class FakeDynamoDBTable:
             },
             "UpdateItem",
         )
+
+
+class ProcessingInterleavingTable(FakeDynamoDBTable):
+    """Pause a processing mutation after an old read or before an atomic write."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.processing_mutation_started = Event()
+        self.allow_processing_mutation = Event()
+
+    def get_item(self, Key: dict[str, str]) -> dict[str, Any]:
+        response = super().get_item(Key)
+        if current_thread().name == "processing-race" and Key["SK"] == "BUFFER":
+            self.processing_mutation_started.set()
+            assert self.allow_processing_mutation.wait(timeout=2)
+        return response
+
+    def update_item(self, **kwargs: Any) -> dict[str, Any]:
+        update_expression = str(kwargs["UpdateExpression"])
+        is_processing_update = (
+            update_expression.startswith("SET processing_started_at")
+            or "REMOVE processing_started_at" in update_expression
+        )
+        if current_thread().name == "processing-race" and is_processing_update:
+            self.processing_mutation_started.set()
+            assert self.allow_processing_mutation.wait(timeout=2)
+        return super().update_item(**kwargs)
+
+
+class MessageInterleavingTable(ProcessingInterleavingTable):
+    """Pause a message mutation after its read or before its field update."""
+
+    def update_item(self, **kwargs: Any) -> dict[str, Any]:
+        update_expression = str(kwargs["UpdateExpression"])
+        if (
+            current_thread().name == "processing-race"
+            and update_expression.startswith("SET messages = :messages")
+        ):
+            self.processing_mutation_started.set()
+            assert self.allow_processing_mutation.wait(timeout=2)
+        return super().update_item(**kwargs)
+
+
+def run_paused_buffer_mutation(
+    table: ProcessingInterleavingTable,
+    mutation: Callable[[], None],
+    interleaved_operation: Callable[[], None],
+) -> None:
+    """Run an operation while a processing mutation holds a stale/queued view."""
+    errors: list[BaseException] = []
+
+    def run_mutation() -> None:
+        try:
+            mutation()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = Thread(target=run_mutation, name="processing-race")
+    thread.start()
+    try:
+        assert table.processing_mutation_started.wait(timeout=2)
+        interleaved_operation()
+    finally:
+        table.allow_processing_mutation.set()
+        thread.join(timeout=2)
+
+    assert thread.is_alive() is False
+    assert errors == []
 
 
 @pytest.fixture()
@@ -363,6 +440,128 @@ def test_concurrent_pending_consumers_have_exactly_one_winner(
 
     assert results.count("ready") == 1
     assert results.count(None) == 7
+
+
+@pytest.mark.parametrize("processing_mutation", ["set_processing", "clear_processing"])
+@pytest.mark.parametrize(
+    ("pending_setter", "pending_popper"),
+    [
+        ("set_pending_result", "pop_pending_result"),
+        ("set_pending_chat_response", "pop_pending_chat_response"),
+    ],
+)
+def test_processing_mutation_cannot_erase_concurrent_pending_value(
+    processing_mutation: str,
+    pending_setter: str,
+    pending_popper: str,
+) -> None:
+    """Set/clear processing preserve pending data written during the mutation."""
+    table = ProcessingInterleavingTable()
+    repository = DynamoDBStateRepository(table=table)
+    repository.append_buffer_message("s1", "keep me")
+    if processing_mutation == "clear_processing":
+        repository.set_processing("s1")
+
+    run_paused_buffer_mutation(
+        table,
+        lambda: getattr(repository, processing_mutation)("s1"),
+        lambda: getattr(repository, pending_setter)("s1", "pending"),
+    )
+
+    state = repository.get_buffer_state("s1")
+    assert [message.message for message in state.messages] == ["keep me"]
+    assert getattr(repository, pending_popper)("s1") == "pending"
+
+
+def test_clear_processing_cannot_reinsert_a_consumed_chat_response() -> None:
+    """A stale processing clear cannot resurrect a response after its winner."""
+    table = ProcessingInterleavingTable()
+    repository = DynamoDBStateRepository(table=table)
+    repository.set_processing("s1")
+    repository.set_pending_chat_response("s1", "ready")
+    first_result: list[str | None] = []
+
+    run_paused_buffer_mutation(
+        table,
+        lambda: repository.clear_processing("s1"),
+        lambda: first_result.append(repository.pop_pending_chat_response("s1")),
+    )
+
+    assert first_result == ["ready"]
+    assert repository.pop_pending_chat_response("s1") is None
+
+
+@pytest.mark.parametrize("message_mutation", ["append", "clear"])
+def test_message_mutation_cannot_reinsert_consumed_chat_response(
+    message_mutation: str,
+) -> None:
+    """An append/clear snapshot cannot resurrect a response after its winner."""
+    table = MessageInterleavingTable()
+    repository = DynamoDBStateRepository(table=table)
+    repository.append_buffer_message("s1", "existing")
+    repository.set_processing("s1")
+    repository.set_pending_result("s1", "keep result")
+    repository.set_pending_chat_response("s1", "ready")
+    first_result: list[str | None] = []
+
+    def mutation() -> None:
+        if message_mutation == "append":
+            repository.append_buffer_message("s1", "new")
+        else:
+            repository.clear_buffer_messages("s1")
+
+    run_paused_buffer_mutation(
+        table,
+        mutation,
+        lambda: first_result.append(repository.pop_pending_chat_response("s1")),
+    )
+
+    state = repository.get_buffer_state("s1")
+    assert first_result == ["ready"]
+    assert repository.pop_pending_chat_response("s1") is None
+    assert state.pending_result == "keep result"
+    assert [message.message for message in state.messages] == (
+        ["existing", "new"] if message_mutation == "append" else []
+    )
+
+
+@pytest.mark.parametrize("message_mutation", ["append", "clear"])
+@pytest.mark.parametrize(
+    ("pending_setter", "pending_popper"),
+    [
+        ("set_pending_result", "pop_pending_result"),
+        ("set_pending_chat_response", "pop_pending_chat_response"),
+    ],
+)
+def test_message_mutation_preserves_concurrently_set_pending_value(
+    message_mutation: str,
+    pending_setter: str,
+    pending_popper: str,
+) -> None:
+    """Messages-only updates preserve pending and processing fields."""
+    table = MessageInterleavingTable()
+    repository = DynamoDBStateRepository(table=table)
+    repository.append_buffer_message("s1", "existing")
+    repository.set_processing("s1")
+
+    def mutation() -> None:
+        if message_mutation == "append":
+            repository.append_buffer_message("s1", "new")
+        else:
+            repository.clear_buffer_messages("s1")
+
+    run_paused_buffer_mutation(
+        table,
+        mutation,
+        lambda: getattr(repository, pending_setter)("s1", "pending"),
+    )
+
+    state = repository.get_buffer_state("s1")
+    assert state.processing_started_at is not None
+    assert getattr(repository, pending_popper)("s1") == "pending"
+    assert [message.message for message in state.messages] == (
+        ["existing", "new"] if message_mutation == "append" else []
+    )
 
 
 def test_chat_response_winner_removes_processing_marker_and_preserves_other_fields(

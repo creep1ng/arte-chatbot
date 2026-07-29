@@ -1650,6 +1650,8 @@ async def _on_buffer_window_expired(session_id: str, joined_message: str) -> Non
         )
         set_pending_chat_response(session_id, error_response.model_dump_json())
     finally:
+        # This is an idempotent field-level remove. If polling already consumed
+        # the response and marker together, it cannot recreate either field.
         clear_processing(session_id)
 
 
