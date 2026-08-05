@@ -80,7 +80,7 @@ class TestLLMClientWithTools:
     """Tests for get_llm_response_with_tools method."""
 
     @patch("backend.app.llm_client.OpenAI")
-    def test_get_llm_response_with_tools_returns_tool_calls(
+    def test_low_effort_routing_returns_tool_calls(
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools returns LLMResponse with tool_calls when LLM invokes tool."""
@@ -110,6 +110,9 @@ class TestLLMClientWithTools:
         assert result.text == ""
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0]["function"]["name"] == "leer_ficha_tecnica"
+        assert mock_client.responses.create.call_args.kwargs["reasoning"] == {
+            "effort": "low"
+        }
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_tools_no_tool_calls(
@@ -202,7 +205,7 @@ class TestLLMClientWithTools:
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "instructions" in call_kwargs
         assert call_kwargs["instructions"] == ARTE_SYSTEM_PROMPT
-        assert call_kwargs["reasoning"] == {"effort": "medium"}
+        assert call_kwargs["reasoning"] == {"effort": "low"}
 
     @patch.dict(
         os.environ,
