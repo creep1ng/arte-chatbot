@@ -315,7 +315,7 @@ class LLMClient:
                 ],
             }
         ]
-        reasoning = {"effort": "medium"}
+        reasoning = {"effort": "low"}
         self._preflight_file_input_request(
             instructions=instructions,
             input_payload=input_payload,

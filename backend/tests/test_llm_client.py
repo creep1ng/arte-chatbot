@@ -493,6 +493,7 @@ class TestLLMClientWithFile:
         assert count_kwargs["instructions"] == create_kwargs["instructions"]
         assert count_kwargs["input"] == create_kwargs["input"]
         assert count_kwargs["reasoning"] == create_kwargs["reasoning"]
+        assert create_kwargs["reasoning"] == {"effort": "low"}
 
     @patch("backend.app.llm_client.OpenAI")
     def test_file_request_official_count_over_budget_skips_create(
