@@ -27,6 +27,5 @@ def validate_file_input_size(
     )
     if not is_accepted:
         raise ContextBudgetError(
-            "File Input request rejected by context budget: "
-            "file_size_exceeds_limit"
+            "File Input request rejected by context budget: file_size_exceeds_limit"
         )
