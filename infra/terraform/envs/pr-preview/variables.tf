@@ -94,7 +94,7 @@ variable "lambda_memory_size" {
 variable "lambda_timeout_seconds" {
   description = "Preview Lambda timeout in seconds."
   type        = number
-  default     = 25
+  default     = 29
 }
 
 variable "lambda_session_ttl_seconds" {
