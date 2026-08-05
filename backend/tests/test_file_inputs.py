@@ -4,6 +4,7 @@ Unit tests for the file_inputs.py module.
 Tests the File Inputs client for OpenAI Files API integration.
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -65,6 +66,44 @@ class TestFileInputsClientInitialization:
 
 class TestFileInputsClientUpload:
     """Tests for upload_pdf method."""
+
+    @patch("backend.app.file_inputs.OpenAI")
+    def test_file_lifecycle_logs_omit_names_and_provider_ids(
+        self,
+        mock_openai_class: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger="backend.app.file_inputs")
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_client.files.create.return_value.id = "file-private-123"
+        client = FileInputsClient(api_key="sk-test-key")
+
+        file_id = client.upload_pdf(b"%PDF-1.4 private", "cliente@example.com.pdf")
+        client.delete_file(file_id)
+
+        assert "size_bytes=16" in caplog.text
+        assert "cliente@example.com.pdf" not in caplog.text
+        assert "file-private-123" not in caplog.text
+
+    @patch("backend.app.file_inputs.OpenAI")
+    def test_upload_failure_logs_omit_error_body(
+        self,
+        mock_openai_class: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        secret = "cliente@example.com private provider body"
+        caplog.set_level(logging.ERROR, logger="backend.app.file_inputs")
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_client.files.create.side_effect = RuntimeError(secret)
+        client = FileInputsClient(api_key="sk-test-key")
+
+        with pytest.raises(FileUploadError, match="Unexpected File Input"):
+            client.upload_pdf(b"%PDF-1.4 private", "private.pdf")
+
+        assert "error_type=RuntimeError" in caplog.text
+        assert secret not in caplog.text
 
     @patch("backend.app.file_inputs.OpenAI")
     def test_upload_pdf_success(self, mock_openai_class: MagicMock) -> None:
