@@ -1203,17 +1203,30 @@ class TestProcessToolCall:
         mock_file_inputs: MagicMock,
         mock_s3: MagicMock,
         mock_get_catalog: MagicMock,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test _process_leer_ficha_tecnica handles successful execution."""
+        from backend.app.catalog import CatalogError
         from backend.main import _process_leer_ficha_tecnica
 
+        caplog.set_level("DEBUG", logger="backend.main")
         # Mock S3 download
         mock_s3.download_pdf.return_value = b"%PDF-1.4 test"
 
         # Mock file upload
-        mock_file_inputs.upload_pdf.return_value = "file-xyz789"
+        mock_file_inputs.upload_pdf.return_value = "file-secret-xyz789"
+        mock_file_inputs.delete_file.side_effect = RuntimeError("exception-secret")
         mock_catalog = MagicMock()
-        mock_catalog.contains_ruta_s3.return_value = True
+        mock_catalog.search.return_value = [
+            MagicMock(
+                ruta_s3="raw/paneles/route-secret-a.pdf",
+                nombre_comercial="product-secret-a",
+            ),
+            MagicMock(
+                ruta_s3="raw/paneles/route-secret-b.pdf",
+                nombre_comercial="product-secret-b",
+            ),
+        ]
         mock_get_catalog.return_value = mock_catalog
 
         # Mock second LLM call
@@ -1228,22 +1241,99 @@ class TestProcessToolCall:
                 "id": "call_123",
                 "function": {
                     "name": "leer_ficha_tecnica",
-                    "arguments": '{"ruta_s3": "raw/paneles/jinko.pdf", "categoria": "paneles", "fabricante": "Jinko", "modelo": "Tiger"}',
+                    "arguments": '{"categoria": "category-secret", "fabricante": "maker-secret", "modelo": "model-secret"}',
                 },
             }
 
             result, source_docs = await _process_leer_ficha_tecnica(
                 tool_call=tool_call,
-                user_message="Specs del panel",
-                session_id="test-session",
+                user_message="message-secret",
+                session_id="session-secret",
                 llm_client=llm_client,
                 s3_client=mock_s3,
                 file_inputs_client=mock_file_inputs,
             )
 
         assert "460W" in result.text
-        assert source_docs == ["raw/paneles/jinko.pdf"]
-        mock_file_inputs.delete_file.assert_called_once_with("file-xyz789")
+        assert source_docs == ["raw/paneles/route-secret-a.pdf"]
+        mock_file_inputs.delete_file.assert_called_once_with("file-secret-xyz789")
+        assert "matches=2 selection=first" in caplog.text
+        for secret in (
+            "route-secret",
+            "product-secret",
+            "category-secret",
+            "maker-secret",
+            "model-secret",
+            "message-secret",
+            "session-secret",
+            "file-secret-xyz789",
+            "exception-secret",
+        ):
+            assert secret not in caplog.text
+        caplog.clear()
+        mock_get_catalog.side_effect = CatalogError("exception-secret")
+        tool_call["function"]["arguments"] = (
+            '{"ruta_s3":"raw/paneles/route-secret.pdf"}'
+        )
+
+        with pytest.raises(ValueError, match="validar la ficha"):
+            await _process_leer_ficha_tecnica(
+                tool_call=tool_call,
+                user_message="message-secret",
+                session_id="session-secret",
+                llm_client=llm_client,
+                s3_client=mock_s3,
+                file_inputs_client=mock_file_inputs,
+            )
+
+        assert "reason=catalog_unavailable" in caplog.text
+        assert "error_type=CatalogError" in caplog.text
+        assert "route-secret" not in caplog.text
+        assert "exception-secret" not in caplog.text
+
+    @pytest.mark.asyncio
+    @patch("backend.main.get_catalog")
+    async def test_process_tool_call_rejects_budget_before_upload(
+        self,
+        mock_get_catalog: MagicMock,
+    ) -> None:
+        """A rejected File Input budget prevents upload and provider execution."""
+        from backend.app.file_input_budget import ContextBudgetError
+        from backend.main import _process_leer_ficha_tecnica
+
+        mock_catalog = MagicMock()
+        mock_catalog.contains_ruta_s3.return_value = True
+        mock_get_catalog.return_value = mock_catalog
+        mock_s3 = MagicMock()
+        mock_s3.download_pdf.return_value = b"%PDF-1.4 oversized"
+        mock_file_inputs = MagicMock()
+        mock_llm_client = MagicMock(model="gpt-5.4-nano")
+        tool_call = {
+            "id": "call_budget",
+            "function": {
+                "name": "leer_ficha_tecnica",
+                "arguments": '{"ruta_s3": "raw/paneles/test.pdf"}',
+            },
+        }
+
+        with patch(
+            "backend.main.validate_file_input_size",
+            side_effect=ContextBudgetError("file_size_exceeds_limit"),
+        ) as mock_validate:
+            with pytest.raises(ContextBudgetError, match="file_size_exceeds_limit"):
+                await _process_leer_ficha_tecnica(
+                    tool_call=tool_call,
+                    user_message="Specs",
+                    session_id="test-session",
+                    llm_client=mock_llm_client,
+                    s3_client=mock_s3,
+                    file_inputs_client=mock_file_inputs,
+                )
+
+        assert mock_validate.call_args.kwargs["file_size_bytes"] == len(
+            b"%PDF-1.4 oversized"
+        )
+        mock_file_inputs.upload_pdf.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("backend.main.s3_client")

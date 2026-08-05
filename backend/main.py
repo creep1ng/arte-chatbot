@@ -51,6 +51,7 @@ from backend.app.conversation_logger import (
     redact_text,
 )
 from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+from backend.app.file_input_budget import validate_file_input_size
 from backend.app.file_inputs import FileInputsClient, FileUploadError
 from backend.app.greeting import maybe_prepend_greeting
 from backend.app.llm_client import (
@@ -687,9 +688,9 @@ async def _process_leer_ficha_tecnica(
             catalog = get_catalog()
         except CatalogError as e:
             logger.error(
-                "Catalog unavailable while validating ruta_s3: session_id=%s, error=%s",
-                session_id,
-                e,
+                "File Input catalog validation failed: "
+                "reason=catalog_unavailable error_type=%s",
+                type(e).__name__,
             )
             raise ValueError("No pude validar la ficha técnica en el catálogo") from e
 
@@ -697,25 +698,22 @@ async def _process_leer_ficha_tecnica(
             raise ValueError("Requested datasheet is not declared in the catalog")
 
     logger.debug(
-        "Tool call parameters: function=%s, ruta_s3=%s, categoria=%s, "
-        "fabricante=%s, modelo=%s, session_id=%s",
-        function_name,
-        ruta_s3,
-        categoria,
-        fabricante,
-        modelo,
-        session_id,
+        "File Input tool parameters: has_route=%s has_category=%s "
+        "has_manufacturer=%s has_model=%s",
+        bool(ruta_s3),
+        bool(categoria),
+        bool(fabricante),
+        bool(modelo),
     )
 
     # If ruta_s3 is not provided, try to find it via catalog search
     if not ruta_s3:
         logger.info(
-            "No ruta_s3 provided, searching catalog: categoria=%s, "
-            "fabricante=%s, modelo=%s, session_id=%s",
-            categoria,
-            fabricante,
-            modelo,
-            session_id,
+            "File Input catalog lookup started: reason=route_missing "
+            "has_category=%s has_manufacturer=%s has_model=%s",
+            bool(categoria),
+            bool(fabricante),
+            bool(modelo),
         )
 
         if not categoria:
@@ -746,29 +744,22 @@ async def _process_leer_ficha_tecnica(
                 ruta_s3 = results[0].ruta_s3
                 validate_s3_path(ruta_s3)
                 logger.info(
-                    "Found single product, using ruta_s3=%s, session_id=%s",
-                    ruta_s3,
-                    session_id,
+                    "File Input catalog lookup resolved: matches=1 selection=single"
                 )
             else:
                 # Multiple products found - select first one deterministically
                 ruta_s3 = results[0].ruta_s3
                 validate_s3_path(ruta_s3)
                 logger.warning(
-                    "Multiple products found when resolving ruta_s3, selecting first: "
-                    "ruta_s3=%s, session_id=%s, available=%d, products=%s",
-                    ruta_s3,
-                    session_id,
+                    "File Input catalog lookup resolved: matches=%d selection=first",
                     len(results),
-                    [p.nombre_comercial for p in results],
                 )
         except CatalogError as e:
             logger.error(
-                "Catalog error when resolving ruta_s3: session_id=%s, error=%s",
-                session_id,
-                e,
+                "File Input catalog lookup failed: reason=search_failed error_type=%s",
+                type(e).__name__,
             )
-            raise ValueError(f"Failed to search catalog: {e}") from e
+            raise ValueError("Failed to search catalog") from e
 
     # Download PDF from S3
     try:
@@ -776,13 +767,11 @@ async def _process_leer_ficha_tecnica(
     except S3DownloadError:
         # Fallback: if direct download fails, search catalog using other parameters
         logger.info(
-            "Direct download failed for ruta_s3=%s, trying catalog fallback: "
-            "categoria=%s, fabricante=%s, modelo=%s, session_id=%s",
-            ruta_s3,
-            categoria,
-            fabricante,
-            modelo,
-            session_id,
+            "File Input download retry: reason=direct_download_failed "
+            "has_category=%s has_manufacturer=%s has_model=%s",
+            bool(categoria),
+            bool(fabricante),
+            bool(modelo),
         )
 
         if categoria:
@@ -799,9 +788,7 @@ async def _process_leer_ficha_tecnica(
                 ruta_s3 = results[0].ruta_s3
                 validate_s3_path(ruta_s3)
                 logger.info(
-                    "Fallback successful, using ruta_s3=%s, session_id=%s",
-                    ruta_s3,
-                    session_id,
+                    "File Input download fallback resolved: matches=1 selection=single"
                 )
                 pdf_bytes = await asyncio.to_thread(s3_client.download_pdf, ruta_s3)
             elif len(results) > 1:
@@ -809,10 +796,7 @@ async def _process_leer_ficha_tecnica(
                 ruta_s3 = results[0].ruta_s3
                 validate_s3_path(ruta_s3)
                 logger.warning(
-                    "Multiple products found during fallback, selecting first: "
-                    "ruta_s3=%s, session_id=%s, available_products=%d",
-                    ruta_s3,
-                    session_id,
+                    "File Input download fallback resolved: matches=%d selection=first",
                     len(results),
                 )
                 pdf_bytes = await asyncio.to_thread(s3_client.download_pdf, ruta_s3)
@@ -828,6 +812,11 @@ async def _process_leer_ficha_tecnica(
 
     # Generate filename from ruta_s3
     filename = ruta_s3.split("/")[-1] if "/" in ruta_s3 else ruta_s3
+
+    validate_file_input_size(
+        file_size_bytes=len(pdf_bytes),
+        max_file_size_bytes=settings.context_file_input_max_bytes,
+    )
 
     # Upload PDF to OpenAI
     file_id = await asyncio.to_thread(
@@ -850,10 +839,8 @@ async def _process_leer_ficha_tecnica(
             await asyncio.to_thread(file_inputs_client.delete_file, file_id)
         except Exception as e:
             logger.warning(
-                "Failed to delete file: file_id=%s, session_id=%s, error=%s",
-                file_id,
-                session_id,
-                e,
+                "Failed to delete uploaded File Input: error_type=%s",
+                type(e).__name__,
             )
 
 
@@ -1291,12 +1278,10 @@ async def _process_chat_message(
                         )
                 except S3DownloadError as e:
                     logger.error(
-                        "S3 download error in tool call: request_id=%s, "
-                        "session_id=%s, function=%s, error=%s",
-                        request_id,
-                        session_id,
+                        "Tool call failed: function=%s reason=s3_download_error "
+                        "error_type=%s",
                         function_name,
-                        e,
+                        type(e).__name__,
                     )
                     tool_results.append(
                         {
@@ -1313,12 +1298,10 @@ async def _process_chat_message(
                     )
                 except FileUploadError as e:
                     logger.error(
-                        "File upload error in tool call: request_id=%s, "
-                        "session_id=%s, function=%s, error=%s",
-                        request_id,
-                        session_id,
+                        "Tool call failed: function=%s reason=file_upload_error "
+                        "error_type=%s",
                         function_name,
-                        e,
+                        type(e).__name__,
                     )
                     tool_results.append(
                         {
@@ -1333,12 +1316,10 @@ async def _process_chat_message(
                     )
                 except ValueError as e:
                     logger.warning(
-                        "ValueError in tool call: request_id=%s, session_id=%s, "
-                        "function=%s, error=%s",
-                        request_id,
-                        session_id,
+                        "Tool call failed: function=%s reason=validation_error "
+                        "error_type=%s",
                         function_name,
-                        e,
+                        type(e).__name__,
                     )
                     tool_results.append(
                         {
@@ -1349,13 +1330,11 @@ async def _process_chat_message(
                         }
                     )
                 except Exception as e:
-                    logger.exception(
-                        "Error processing tool call: request_id=%s, session_id=%s, "
-                        "function=%s, error=%s",
-                        request_id,
-                        session_id,
+                    logger.error(
+                        "Tool call failed: function=%s reason=unexpected_error "
+                        "error_type=%s",
                         function_name,
-                        e,
+                        type(e).__name__,
                     )
                     tool_results.append(
                         {

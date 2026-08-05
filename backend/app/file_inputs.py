@@ -84,11 +84,9 @@ class FileInputsClient:
 
         try:
             logger.debug(
-                "File upload initiated: filename=%s, size_bytes=%d",
-                filename,
+                "File Input upload initiated: size_bytes=%d",
                 len(pdf_bytes),
             )
-            logger.info("Uploading PDF to OpenAI Files API: %s", filename)
 
             # Create a file-like object from bytes
             file_obj = io.BytesIO(pdf_bytes)
@@ -101,26 +99,27 @@ class FileInputsClient:
             )
 
             file_id = response.id
-            logger.debug(
-                "File upload complete: file_id=%s, filename=%s",
-                file_id,
-                filename,
-            )
-            logger.info("Successfully uploaded file with ID: %s", file_id)
+            logger.info("File Input upload completed: size_bytes=%d", len(pdf_bytes))
             return file_id
 
         except AuthenticationError as e:
-            logger.error("OpenAI authentication error: %s", e)
+            logger.error("OpenAI authentication error during File Input upload")
             raise FileUploadError("Invalid OpenAI API key") from e
         except BadRequestError as e:
-            logger.error("OpenAI bad request error: %s", e)
-            raise FileUploadError(f"Invalid file format or request: {e}") from e
+            logger.error("OpenAI rejected File Input upload")
+            raise FileUploadError("Invalid file format or request") from e
         except APIError as e:
-            logger.error("OpenAI API error: %s", e)
-            raise FileUploadError(f"OpenAI API error: {e}") from e
+            logger.error(
+                "OpenAI File Input upload failed: error_type=%s",
+                type(e).__name__,
+            )
+            raise FileUploadError("OpenAI API error during File Input upload") from e
         except Exception as e:
-            logger.exception("Unexpected error uploading file: %s", e)
-            raise FileUploadError(f"Unexpected error: {e}") from e
+            logger.error(
+                "Unexpected File Input upload failure: error_type=%s",
+                type(e).__name__,
+            )
+            raise FileUploadError("Unexpected File Input upload failure") from e
 
     def delete_file(self, file_id: str) -> None:
         """Delete a file from OpenAI Files API.
@@ -135,17 +134,21 @@ class FileInputsClient:
             raise FileUploadError("OpenAI API key not configured")
 
         try:
-            logger.debug("File deletion initiated: file_id=%s", file_id)
-            logger.info("Deleting OpenAI file: %s", file_id)
+            logger.debug("File Input deletion initiated")
             self.client.files.delete(file_id)
-            logger.debug("File deletion complete: file_id=%s", file_id)
-            logger.info("Successfully deleted file: %s", file_id)
+            logger.info("File Input deletion completed")
         except AuthenticationError as e:
-            logger.error("OpenAI authentication error: %s", e)
+            logger.error("OpenAI authentication error during File Input deletion")
             raise FileUploadError("Invalid OpenAI API key") from e
         except APIError as e:
-            logger.error("OpenAI API error deleting file: %s", e)
-            raise FileUploadError(f"Error deleting file: {e}") from e
+            logger.error(
+                "OpenAI File Input deletion failed: error_type=%s",
+                type(e).__name__,
+            )
+            raise FileUploadError("Error deleting file") from e
         except Exception as e:
-            logger.exception("Unexpected error deleting file: %s", e)
-            raise FileUploadError(f"Unexpected error: {e}") from e
+            logger.error(
+                "Unexpected File Input deletion failure: error_type=%s",
+                type(e).__name__,
+            )
+            raise FileUploadError("Unexpected File Input deletion failure") from e
