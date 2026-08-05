@@ -218,6 +218,32 @@ class TestLLMClientWithTools:
             mock_client.responses.create.call_args.kwargs["max_output_tokens"] == 3210
         )
 
+    @patch("backend.app.llm_client.OpenAI")
+    def test_context_is_injected_once_in_request_payload(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        """History has one composition owner and is not duplicated in input."""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_response = MagicMock(
+            output_text="respuesta",
+            output=[MagicMock(type="message")],
+            usage=None,
+        )
+        mock_client.responses.create.return_value = mock_response
+        client = LLMClient(api_key="sk-test-key")
+
+        client.get_llm_response_with_tools(
+            message="pregunta actual",
+            session_id="test-session",
+            context="Usuario: pregunta anterior\nAsistente: respuesta anterior",
+        )
+
+        payload = mock_client.responses.create.call_args.kwargs["input"]
+        assert payload.count("Contexto de la conversación:") == 1
+        assert payload.count("pregunta anterior") == 1
+        assert payload.count("pregunta actual") == 1
+
     def test_get_llm_response_with_tools_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_tools raises error without API key."""
         client = LLMClient(api_key="")
