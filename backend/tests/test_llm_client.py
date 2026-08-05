@@ -201,6 +201,7 @@ class TestLLMClientWithTools:
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "instructions" in call_kwargs
         assert call_kwargs["instructions"] == ARTE_SYSTEM_PROMPT
+        assert call_kwargs["reasoning"] == {"effort": "low"}
 
     @patch.dict(
         os.environ,
