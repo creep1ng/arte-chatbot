@@ -63,19 +63,18 @@ from backend.app.llm_client import (
     expand_query_with_context,
 )
 from backend.app.message_buffer import (
+    acquire_and_flush_buffer,
     add_to_buffer,
     clear_pending_chat_response,
-    clear_processing,
-    flush_buffer,
     get_buffer_count,
+    has_active_processing_lease,
     is_buffer_ready_to_flush,
     is_buffering,
-    is_processing,
     pop_pending_chat_response,
+    release_processing_lease,
     schedule_flush,
     set_state_repository as set_buffer_state_repository,
     set_pending_chat_response,
-    set_processing,
 )
 
 from backend.app.message_splitter import process_split_messages
@@ -87,7 +86,7 @@ from backend.app.security import (
     validate_session_id,
 )
 from backend.app.session import session_manager
-from backend.app.state_repository import ChatbotStateRepository
+from backend.app.state_repository import ChatbotStateRepository, ProcessingLease
 from backend.app.tools import get_tool_definitions, validate_s3_path
 from backend.app.user_profiler import (
     PROFILE_INSTRUCTIONS,
@@ -1593,7 +1592,9 @@ async def _process_chat_message(
         raise
 
 
-async def _on_buffer_window_expired(session_id: str, joined_message: str) -> None:
+async def _on_buffer_window_expired(
+    session_id: str, joined_message: str, lease: ProcessingLease
+) -> None:
     """Callback when buffer window expires.
 
     Processes the joined message with the chatbot in the background
@@ -1605,7 +1606,6 @@ async def _on_buffer_window_expired(session_id: str, joined_message: str) -> Non
         session_id,
         len(joined_message),
     )
-    set_processing(session_id)
     try:
         response = await _process_chat_message(
             session_id=session_id,
@@ -1644,9 +1644,7 @@ async def _on_buffer_window_expired(session_id: str, joined_message: str) -> Non
         )
         set_pending_chat_response(session_id, error_response.model_dump_json())
     finally:
-        # This is an idempotent field-level remove. If polling already consumed
-        # the response and marker together, it cannot recreate either field.
-        clear_processing(session_id)
+        release_processing_lease(session_id, lease.token)
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -1674,28 +1672,41 @@ async def chat_endpoint(
     validate_session_id(session_id)
     bind_or_validate_session(session_id, principal, is_new=is_new_session)
     request_id = str(uuid.uuid4())
+    processing_lease: Optional[ProcessingLease] = None
 
     # P4: Multi-message buffer — intercept before normal processing
     if settings.multi_message_buffer_enabled:
         current_count = get_buffer_count(session_id)
 
         if request.is_final or current_count >= 4:
-            overflow_result = await add_to_buffer(session_id, request.message)
-            joined = overflow_result or await flush_buffer(session_id)
-            if joined:
-                if len(joined) > settings.max_chat_message_chars:
-                    raise HTTPException(
-                        status_code=413, detail="Buffered message too large"
-                    )
-                request = ChatRequest(
-                    message=joined,
-                    session_id=session_id,
-                    is_final=request.is_final,
+            owned_message = await add_to_buffer(
+                session_id,
+                request.message,
+                max_messages=1 if request.is_final else 5,
+            )
+            if owned_message is None:
+                return JSONResponse(
+                    status_code=202,
+                    content=BufferingResponse(
+                        session_id=session_id,
+                        poll_url=f"/buffer-result/{session_id}",
+                    ).model_dump(),
                 )
+            processing_lease = owned_message.lease
+            if len(owned_message.message) > settings.max_chat_message_chars:
+                release_processing_lease(session_id, processing_lease.token)
+                processing_lease = None
+                raise HTTPException(
+                    status_code=413, detail="Buffered message too large"
+                )
+            request = ChatRequest(
+                message=owned_message.message,
+                session_id=session_id,
+                is_final=request.is_final,
+            )
         else:
             # Clear any stale pending response from a previous buffer window
             clear_pending_chat_response(session_id)
-            clear_processing(session_id)
             await add_to_buffer(session_id, request.message)
             schedule_flush(
                 session_id,
@@ -1735,6 +1746,9 @@ async def chat_endpoint(
             e,
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        if processing_lease is not None:
+            release_processing_lease(session_id, processing_lease.token)
 
 
 @app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)
@@ -1767,9 +1781,11 @@ async def get_buffer_result(
             session_id,
             settings.buffer_window_seconds,
         ):
-            joined_message = await flush_buffer(session_id)
-            if joined_message:
-                await _on_buffer_window_expired(session_id, joined_message)
+            owned_message = await acquire_and_flush_buffer(session_id)
+            if owned_message is not None:
+                await _on_buffer_window_expired(
+                    session_id, owned_message.message, owned_message.lease
+                )
                 chat_response_json = pop_pending_chat_response(session_id)
                 if chat_response_json is not None:
                     return BufferResultResponse(
@@ -1782,7 +1798,7 @@ async def get_buffer_result(
             session_id=session_id,
         )
 
-    if is_processing(session_id):
+    if has_active_processing_lease(session_id):
         return BufferResultResponse(
             status="pending",
             session_id=session_id,
