@@ -9,11 +9,15 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
+from backend.app.config import settings
+from backend.app.context_budget import SelectedContext, select_history
+from backend.app.context_budget_config import ContextBudgetConfig
 from backend.app.state_repository import (
     ChatbotStateRepository,
     ChatTurn as RepositoryChatTurn,
     TokenTotals as RepositoryTokenTotals,
 )
+from backend.app.token_counter import TokenCounter
 
 
 class ChatTurn(BaseModel):
@@ -181,6 +185,32 @@ class SessionManager:
 
         return "\n".join(context_parts).strip()
 
+    def get_budgeted_context(
+        self,
+        *,
+        session_id: str,
+        model: str,
+        config: ContextBudgetConfig,
+        system_prompt: str,
+        tools: list[dict[str, object]],
+        current_message: str,
+        token_counter: Optional[TokenCounter] = None,
+    ) -> SelectedContext:
+        """Return the newest complete history turns that fit the token budget."""
+        return select_history(
+            turns=self.get_context_candidates(session_id),
+            model=model,
+            config=config,
+            system_prompt=system_prompt,
+            tools=tools,
+            current_message=current_message,
+            token_counter=token_counter,
+        )
+
+    def get_context_candidates(self, session_id: str) -> List[ChatTurn]:
+        """Return chronological candidates bounded by the configured turn ceiling."""
+        return self.get_history(session_id)[-self.max_turns :]
+
     def clear_session(self, session_id: str) -> None:
         """
         Elimina una sesión.
@@ -294,4 +324,4 @@ class SessionManager:
 
 
 # Instancia global del gestor de sesiones
-session_manager = SessionManager()
+session_manager = SessionManager(max_turns=settings.context_max_turns)

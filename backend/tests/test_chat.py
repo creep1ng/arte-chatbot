@@ -198,9 +198,8 @@ class TestChatEndpointUnit:
         """Test that the chat endpoint uses session context."""
         # Configurar mocks
         mock_llm.return_value = make_llm_response(text="Mocked LLM Response")
-        mock_session_manager.get_context_string.return_value = (
-            "Turno 1:\nUsuario: Pregunta anterior\nAsistente: Respuesta anterior"
-        )
+        context = "Turno 1:\nUsuario: Pregunta anterior\nAsistente: Respuesta anterior"
+        mock_session_manager.get_budgeted_context.return_value.context = context
         mock_session_manager.get_user_profile.return_value = None
         _bind_test_session("test-session-123")
 
@@ -217,11 +216,12 @@ class TestChatEndpointUnit:
         # Verificar que se llamó al LLM con el contexto
         mock_llm.assert_called_once()
         args, kwargs = mock_llm.call_args
-        # Message includes context when session context exists
-        assert "¿Y cuánto cuesta?" in kwargs["message"]
+        # The client owns request composition, so message and context stay separate.
+        assert kwargs["message"] == "¿Y cuánto cuesta?"
         assert kwargs["session_id"] == "test-session-123"
-        assert kwargs["context"] == mock_session_manager.get_context_string.return_value
+        assert kwargs["context"] == context
         assert "Pregunta anterior" in kwargs["context"]
+        assert "Pregunta anterior" not in kwargs["message"]
 
         # Verificar que se guardó el turno en la sesión
         mock_session_manager.add_turn.assert_called_once()
@@ -912,13 +912,19 @@ class TestAgenticLoopBehavior:
     @patch("backend.main.logger.warning")
     @patch("backend.main.get_catalog")
     @patch("backend.main.llm_client.get_llm_response_with_tools")
+    @patch("backend.main.session_manager")
     def test_agentic_loop_respects_max_iterations(
         self,
+        mock_session_manager: MagicMock,
         mock_llm: MagicMock,
         mock_get_catalog: MagicMock,
         mock_warning: MagicMock,
     ) -> None:
         """Verify the loop stops after reaching MAX_AGENTIC_ITERATIONS."""
+
+        mock_session_manager.get_user_profile.return_value = None
+        mock_session_manager.get_history.return_value = []
+        mock_session_manager.get_budgeted_context.return_value.context = "history"
 
         looping_response = make_llm_response(
             text="Sigo buscando opciones",
@@ -955,6 +961,11 @@ class TestAgenticLoopBehavior:
         assert "límite de iteraciones" in data["response"].lower()
         # Should have called LLM at least twice (iteration 1 and 2)
         assert mock_llm.call_count >= 2
+        assert [call.kwargs["context"] for call in mock_llm.call_args_list] == [
+            "history",
+            "",
+        ]
+        mock_session_manager.get_budgeted_context.assert_called_once()
         mock_catalog.search.assert_called()
         mock_warning.assert_called_once()
 
