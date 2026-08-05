@@ -236,7 +236,7 @@ class LLMClient:
                 input=user_input,
                 tools=tools,
                 max_output_tokens=settings.llm_max_output_tokens,
-                reasoning={"effort": "none"},
+                reasoning={"effort": "low"},
                 prompt_cache_key=session_id,
             )
 
