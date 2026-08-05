@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend.main import app, llm_client, file_inputs_client
 from backend.app.auth import api_key_principal, verify_api_key
+from backend.app.file_input_budget import ContextBudgetError
 from backend.app.schemas import SourceDocument
 from backend.app.session import session_manager
 from backend.tests.conftest import make_llm_response
@@ -640,8 +641,11 @@ class TestChatEndpointWithToolCall:
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     @patch("backend.main.s3_client")
     @patch("backend.main.file_inputs_client")
-    def test_chat_endpoint_cleans_up_uploaded_files(
-        self, mock_file_inputs: MagicMock, mock_s3: MagicMock, mock_llm: MagicMock
+    def test_chat_endpoint_cleans_up_after_exact_token_rejection(
+        self,
+        mock_file_inputs: MagicMock,
+        mock_s3: MagicMock,
+        mock_llm: MagicMock,
     ) -> None:
         """Test chat endpoint cleans up uploaded files after second LLM call."""
         # Mock LLM response with tool call - first call returns tool call, second should return normal response
@@ -677,7 +681,7 @@ class TestChatEndpointWithToolCall:
             ) as mock_llm_file,
         ):
             mock_get_catalog.return_value.contains_ruta_s3.return_value = True
-            mock_llm_file.return_value = make_llm_response(text="Test response")
+            mock_llm_file.side_effect = ContextBudgetError("input_tokens_exceed_limit")
 
             client.post(
                 "/chat",

@@ -6,17 +6,71 @@ for generating chatbot responses with tool calling support.
 
 import logging
 import os
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, NoReturn, Optional, Protocol
 
-from openai import APIError, AuthenticationError, OpenAI
+from openai import OpenAI
 
 from backend.app.config import settings
 from backend.app.conversation_logger import redact_text
+from backend.app.file_input_budget import (
+    ContextBudgetError,
+    validate_file_input_token_count,
+)
+from backend.app.model_capabilities import get_model_capabilities
 from backend.app.schemas import LLMResponse
 from backend.app.secret_resolver import configured_secret_value
 from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FileInputRequestShape:
+    """Immutable source for token-equivalent count and create payloads."""
+
+    model: str
+    instructions: str
+    file_id: str
+    input_text: str
+    reasoning_effort: str
+
+    def token_fields(self) -> dict[str, Any]:
+        """Build the fields accepted by both count and create endpoints."""
+        return {
+            "model": self.model,
+            "instructions": self.instructions,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_file", "file_id": self.file_id},
+                        {"type": "input_text", "text": self.input_text},
+                    ],
+                }
+            ],
+            "reasoning": {"effort": self.reasoning_effort},
+        }
+
+
+class InputTokenCounter(Protocol):
+    """Exact provider counter boundary used by File Input admission."""
+
+    def count(self, request: FileInputRequestShape) -> int: ...
+
+
+class OpenAIInputTokenCounter:
+    """OpenAI Responses input-token count endpoint adapter."""
+
+    def __init__(self, client: OpenAI) -> None:
+        self._client = client
+
+    def count(self, request: FileInputRequestShape) -> int:
+        resource = getattr(self._client.responses, "input_tokens", None)
+        count_method = getattr(resource, "count", None)
+        if not callable(count_method):
+            raise AttributeError("OpenAI input token counter is unavailable")
+        return count_method(**request.token_fields()).input_tokens
 
 
 def expand_query_with_context(message: str, history: list) -> str:
@@ -133,6 +187,16 @@ class LLMServiceError(Exception):
     pass
 
 
+def _raise_safe_create_error(model: str, operation: str, error: Exception) -> NoReturn:
+    logger.error(
+        "LLM create failed: model=%s operation=%s reason=create_failed error_type=%s",
+        model,
+        operation,
+        type(error).__name__,
+    )
+    raise LLMServiceError("LLM create failed") from None
+
+
 class LLMClient:
     """Client for interacting with OpenAI Responses API."""
 
@@ -140,6 +204,7 @@ class LLMClient:
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        input_token_counter: Optional[InputTokenCounter] = None,
     ) -> None:
         self.api_key = (
             api_key
@@ -170,6 +235,7 @@ class LLMClient:
 
         # OpenAI SDK client
         self._openai_client: Optional[OpenAI] = None
+        self._input_token_counter = input_token_counter
 
     @property
     def openai_client(self) -> OpenAI:
@@ -266,15 +332,8 @@ class LLMClient:
                 total_tokens=total_tokens,
             )
 
-        except AuthenticationError as e:
-            logger.error("OpenAI authentication error: %s", e)
-            raise LLMServiceError("Invalid OpenAI API key") from e
-        except APIError as e:
-            logger.error("OpenAI API error: %s", e)
-            raise LLMServiceError(f"OpenAI API error: {e}") from e
-        except Exception as e:
-            logger.exception("Unexpected error calling OpenAI API: %s", e)
-            raise LLMServiceError(f"LLM service error: {e}") from e
+        except Exception as error:
+            _raise_safe_create_error(model=self.model, operation="tools", error=error)
 
     def get_llm_response_with_file(
         self,
@@ -301,31 +360,20 @@ class LLMClient:
             raise LLMServiceError("Missing OpenAI API key.")
 
         instructions = system_prompt or DATASHEET_SYSTEM_PROMPT
-
-        logger.debug(
-            "LLM call with file: model=%s, session_id=%s, file_id=%s, "
-            "message_preview=%s",
-            self.model,
-            session_id,
-            file_id,
-            redact_text(message)[:100],
+        request = FileInputRequestShape(
+            model=self.model,
+            instructions=instructions,
+            file_id=file_id,
+            input_text=message,
+            reasoning_effort="medium",
         )
+        self._preflight_file_input_request(request)
+        logger.debug("LLM File Input preflight accepted: model=%s", self.model)
 
         try:
             response = self.openai_client.responses.create(
-                model=self.model,
-                instructions=instructions,
-                input=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_file", "file_id": file_id},
-                            {"type": "input_text", "text": message},
-                        ],
-                    }
-                ],
+                **request.token_fields(),
                 max_output_tokens=settings.llm_max_output_tokens,
-                reasoning={"effort": "medium"},
                 prompt_cache_key=session_id,
             )
 
@@ -341,12 +389,48 @@ class LLMClient:
                 total_tokens=total_tokens,
             )
 
-        except AuthenticationError as e:
-            logger.error("OpenAI authentication error (file): %s", e)
-            raise LLMServiceError("Invalid OpenAI API key") from e
-        except APIError as e:
-            logger.error("OpenAI API error (file): %s", e)
-            raise LLMServiceError(f"OpenAI API error: {e}") from e
-        except Exception as e:
-            logger.exception("Unexpected error calling OpenAI API (file): %s", e)
-            raise LLMServiceError(f"LLM service error: {e}") from e
+        except Exception as error:
+            _raise_safe_create_error(self.model, "file", error)
+
+    def _preflight_file_input_request(self, request: FileInputRequestShape) -> None:
+        """Count the exact token-bearing request and fail closed."""
+        if get_model_capabilities(request.model) is None:
+            validate_file_input_token_count(
+                model=request.model,
+                config=settings.context_budget_config(),
+                counted_input_tokens=0,
+            )
+
+        counter = self._input_token_counter or OpenAIInputTokenCounter(
+            self.openai_client
+        )
+        try:
+            counted_input_tokens = counter.count(request)
+            if isinstance(counted_input_tokens, bool) or not isinstance(
+                counted_input_tokens, int
+            ):
+                raise TypeError("Input token count is not an integer")
+        except Exception as error:
+            reason = (
+                "input_token_counter_unavailable"
+                if isinstance(error, AttributeError)
+                else "input_token_count_failed"
+            )
+            self._reject_failed_count(reason, error)
+
+        validate_file_input_token_count(
+            model=request.model,
+            config=settings.context_budget_config(),
+            counted_input_tokens=counted_input_tokens,
+        )
+
+    def _reject_failed_count(self, reason: str, error: Exception) -> None:
+        logger.warning(
+            "File Input token preflight rejected: model=%s reason=%s error_type=%s",
+            self.model,
+            reason,
+            type(error).__name__,
+        )
+        raise ContextBudgetError(
+            f"File Input request rejected by context budget: {reason}"
+        ) from None

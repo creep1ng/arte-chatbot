@@ -5,13 +5,16 @@ Tests the LLM client for OpenAI Responses API integration with tool calling supp
 """
 
 from collections.abc import Iterator
+import logging
 import os
+import traceback
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from backend.app import llm_client as llm_client_module
 from backend.app.config import settings
+from backend.app.file_input_budget import ContextBudgetError
 from backend.app.llm_client import (
     ARTE_SYSTEM_PROMPT,
     DATASHEET_SYSTEM_PROMPT,
@@ -20,6 +23,14 @@ from backend.app.llm_client import (
 )
 from backend.app.schemas import LLMResponse
 from backend.app.secret_resolver import clear_runtime_secret_cache
+
+
+def _mock_official_input_count(
+    mock_client: MagicMock,
+    input_tokens: int = 100,
+) -> None:
+    response = MagicMock(input_tokens=input_tokens)
+    mock_client.responses.input_tokens.count.return_value = response
 
 
 @pytest.fixture(autouse=True)
@@ -365,11 +376,12 @@ class TestLLMClientWithFile:
         )
         client = LLMClient(api_key="sk-test-key")
 
-        client.get_llm_response_with_file(
-            message="Test",
-            file_id="file-123",
-            session_id="test-session",
-        )
+        with patch.object(client, "_preflight_file_input_request"):
+            client.get_llm_response_with_file(
+                message="Test",
+                file_id="file-123",
+                session_id="test-session",
+            )
 
         assert (
             mock_client.responses.create.call_args.kwargs["max_output_tokens"] == 3210
@@ -388,6 +400,7 @@ class TestLLMClientWithFile:
         mock_response = MagicMock()
         mock_response.output_text = "El panel tiene una potencia de 460W..."
         mock_client.responses.create.return_value = mock_response
+        _mock_official_input_count(mock_client)
 
         client = LLMClient(api_key="sk-test-key")
         result = client.get_llm_response_with_file(
@@ -426,6 +439,7 @@ class TestLLMClientWithFile:
         mock_response = MagicMock()
         mock_response.output_text = "Test"
         mock_client.responses.create.return_value = mock_response
+        _mock_official_input_count(mock_client)
 
         client = LLMClient(api_key="sk-test-key")
         client.get_llm_response_with_file(
@@ -452,6 +466,91 @@ class TestLLMClientWithFile:
 
         assert "Missing OpenAI API key" in str(exc_info.value)
 
+    @patch("backend.app.llm_client.OpenAI")
+    def test_count_and_create_share_all_token_bearing_fields(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        _mock_official_input_count(mock_client, 30_000)
+        mock_client.responses.create.return_value = MagicMock(
+            output_text="ok", usage=None
+        )
+
+        LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+            message="Specs?",
+            file_id="file-123",
+            session_id="session-123",
+        )
+
+        count_fields = mock_client.responses.input_tokens.count.call_args.kwargs
+        create_fields = mock_client.responses.create.call_args.kwargs
+        assert count_fields == {key: create_fields[key] for key in count_fields}
+        assert set(create_fields) - set(count_fields) == {
+            "max_output_tokens",
+            "prompt_cache_key",
+        }
+
+    @pytest.mark.parametrize(
+        ("model", "outcome", "reason"),
+        [
+            ("unknown-model", 1, "unknown_model"),
+            ("gpt-5.4-nano", 30_001, "input_tokens_exceed_limit"),
+            ("gpt-5.4-nano", -1, "invalid_input_token_count"),
+            ("gpt-5.4-nano", "invalid", "input_token_count_failed"),
+            ("gpt-5.4-nano", RuntimeError("secret"), "input_token_count_failed"),
+            (
+                "gpt-5.4-nano",
+                AttributeError("secret"),
+                "input_token_counter_unavailable",
+            ),
+        ],
+    )
+    @patch("backend.app.llm_client.OpenAI")
+    def test_unprovable_file_request_is_safe_and_never_calls_create(
+        self,
+        mock_openai_class: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+        model: str,
+        outcome: object,
+        reason: str,
+    ) -> None:
+        mock_client = mock_openai_class.return_value
+        _mock_official_input_count(mock_client)
+        if isinstance(outcome, Exception):
+            mock_client.responses.input_tokens.count.side_effect = outcome
+        else:
+            mock_client.responses.input_tokens.count.return_value.input_tokens = outcome
+
+        with pytest.raises(ContextBudgetError, match=reason) as raised:
+            LLMClient(api_key="sk-test-key", model=model).get_llm_response_with_file(
+                message="secret", file_id="secret", session_id="secret"
+            )
+
+        mock_client.responses.create.assert_not_called()
+        assert "secret" not in caplog.text
+        assert "secret" not in "".join(traceback.format_exception(raised.value))
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_create_failure_logs_safe_metrics_only(
+        self, mock_openai_class: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.ERROR, logger="backend.app.llm_client")
+        mock_client = mock_openai_class.return_value
+        _mock_official_input_count(mock_client)
+        mock_client.responses.create.side_effect = RuntimeError("secret")
+
+        with pytest.raises(LLMServiceError) as raised:
+            LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+                message="secret", file_id="secret", session_id="secret"
+            )
+
+        assert "reason=create_failed" in caplog.text
+        assert "error_type=RuntimeError" in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+        assert "secret" not in caplog.text
+        assert "secret" not in str(raised.value)
+
 
 class TestLLMClientWithFileReturnsLLMResponse:
     """Tests that get_llm_response_with_file returns LLMResponse with token extraction."""
@@ -470,6 +569,7 @@ class TestLLMClientWithFileReturnsLLMResponse:
         mock_response.usage.output_tokens = 100
         mock_response.usage.total_tokens = 300
         mock_client.responses.create.return_value = mock_response
+        _mock_official_input_count(mock_client)
 
         client = LLMClient(api_key="sk-test-key")
         result = client.get_llm_response_with_file(
@@ -493,6 +593,7 @@ class TestLLMClientWithFileReturnsLLMResponse:
         mock_response.output_text = "Response text"
         mock_response.usage = None
         mock_client.responses.create.return_value = mock_response
+        _mock_official_input_count(mock_client)
 
         client = LLMClient(api_key="sk-test-key")
         result = client.get_llm_response_with_file(
