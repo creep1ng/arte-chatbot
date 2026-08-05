@@ -244,6 +244,23 @@ class TestLLMClientWithTools:
         assert payload.count("pregunta anterior") == 1
         assert payload.count("pregunta actual") == 1
 
+    @patch("backend.app.llm_client.OpenAI")
+    def test_tools_call_uses_bounded_zero_retry_client(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        base_client = mock_openai_class.return_value
+        bounded_client = base_client.with_options.return_value
+        bounded_client.responses.create.return_value = MagicMock(
+            output_text="bounded", output=[], usage=None
+        )
+
+        LLMClient(api_key="sk-test-key").get_llm_response_with_tools(
+            "Test", "session", timeout_seconds=4.5
+        )
+
+        base_client.with_options.assert_called_once_with(timeout=4.5, max_retries=0)
+        bounded_client.responses.create.assert_called_once()
+
     def test_get_llm_response_with_tools_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_tools raises error without API key."""
         client = LLMClient(api_key="")
@@ -438,6 +455,23 @@ class TestLLMClientWithFile:
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "instructions" in call_kwargs
         assert "ficha técnica" in call_kwargs["instructions"].lower()
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_call_uses_bounded_zero_retry_client(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        base_client = mock_openai_class.return_value
+        bounded_client = base_client.with_options.return_value
+        bounded_client.responses.create.return_value = MagicMock(
+            output_text="bounded", usage=None
+        )
+
+        LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+            "Test", "file-1", "session", timeout_seconds=3.0
+        )
+
+        base_client.with_options.assert_called_once_with(timeout=3.0, max_retries=0)
+        bounded_client.responses.create.assert_called_once()
 
     def test_get_llm_response_with_file_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_file raises error without API key."""

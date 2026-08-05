@@ -128,6 +128,21 @@ class TestFileInputsClientUpload:
         assert call_kwargs["purpose"] == "user_data"
 
     @patch("backend.app.file_inputs.OpenAI")
+    def test_upload_pdf_uses_bounded_zero_retry_client(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        base_client = mock_openai_class.return_value
+        bounded_client = base_client.with_options.return_value
+        bounded_client.files.create.return_value.id = "file-bounded"
+
+        result = FileInputsClient(api_key="sk-test-key").upload_pdf(
+            b"%PDF-1.4 test", "test.pdf", timeout_seconds=2.5
+        )
+
+        assert result == "file-bounded"
+        base_client.with_options.assert_called_once_with(timeout=2.5, max_retries=0)
+
+    @patch("backend.app.file_inputs.OpenAI")
     def test_upload_pdf_raises_auth_error(self, mock_openai_class: MagicMock) -> None:
         """Test upload_pdf raises FileUploadError on authentication error."""
         from openai import AuthenticationError
@@ -197,6 +212,20 @@ class TestFileInputsClientDelete:
         client.delete_file("file-abc123")
 
         mock_client.files.delete.assert_called_once_with("file-abc123")
+
+    @patch("backend.app.file_inputs.OpenAI")
+    def test_delete_file_uses_bounded_zero_retry_client(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        base_client = mock_openai_class.return_value
+        bounded_client = base_client.with_options.return_value
+
+        FileInputsClient(api_key="sk-test-key").delete_file(
+            "file-abc123", timeout_seconds=1.5
+        )
+
+        base_client.with_options.assert_called_once_with(timeout=1.5, max_retries=0)
+        bounded_client.files.delete.assert_called_once_with("file-abc123")
 
     @patch("backend.app.file_inputs.OpenAI")
     def test_delete_file_raises_auth_error(self, mock_openai_class: MagicMock) -> None:

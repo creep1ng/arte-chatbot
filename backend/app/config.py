@@ -167,6 +167,9 @@ class Settings(BaseSettings):
         le=900,
         description="Configured Lambda timeout budget in seconds",
     )
+    request_response_safety_seconds: float = Field(default=2.0, gt=0.0)
+    request_cleanup_reserve_seconds: float = Field(default=3.0, gt=0.0)
+    request_min_operation_margin_seconds: float = Field(default=1.0, gt=0.0)
 
     # Runtime secret references for Lambda/Terraform wiring.
     openai_api_key_secret_ref: Optional[str] = Field(
@@ -390,6 +393,20 @@ class Settings(BaseSettings):
         if self.state_backend == "dynamodb" and not self.dynamodb_state_table_name:
             raise ValueError(
                 "DYNAMODB_STATE_TABLE_NAME is required when STATE_BACKEND=dynamodb"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_request_deadline_budget(self) -> "Settings":
+        """Keep response, cleanup, and admission reserves inside total budget."""
+        reserves = (
+            self.request_response_safety_seconds
+            + self.request_cleanup_reserve_seconds
+            + self.request_min_operation_margin_seconds
+        )
+        if self.lambda_timeout_seconds <= reserves:
+            raise ValueError(
+                "LAMBDA_TIMEOUT_SECONDS must exceed all request deadline reserves"
             )
         return self
 

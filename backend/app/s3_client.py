@@ -112,7 +112,29 @@ class S3Client:
             )
         return self._client
 
-    def download_pdf(self, s3_key: str) -> bytes:
+    def _client_for_timeout(self, timeout_seconds: Optional[float]):
+        """Return the shared client or a one-attempt request-scoped client."""
+        if timeout_seconds is None:
+            return self.client
+        return boto3.client(
+            "s3",
+            **_build_s3_client_kwargs(
+                self.aws_access_key_id,
+                self.aws_secret_access_key,
+                self.aws_region,
+            ),
+            config=Config(
+                connect_timeout=min(
+                    timeout_seconds, settings.s3_connect_timeout_seconds
+                ),
+                read_timeout=min(timeout_seconds, settings.s3_read_timeout_seconds),
+                retries={"total_max_attempts": 1, "mode": "standard"},
+            ),
+        )
+
+    def download_pdf(
+        self, s3_key: str, timeout_seconds: Optional[float] = None
+    ) -> bytes:
         """Download a PDF file from S3 and return raw bytes.
 
         Args:
@@ -135,7 +157,8 @@ class S3Client:
                 s3_key,
             )
             logger.info("Downloading S3 object: %s/%s", self.bucket_name, s3_key)
-            response = self.client.get_object(Bucket=self.bucket_name, Key=s3_key)
+            request_client = self._client_for_timeout(timeout_seconds)
+            response = request_client.get_object(Bucket=self.bucket_name, Key=s3_key)
             content_length = response.get("ContentLength")
             if content_length and content_length > settings.max_pdf_bytes:
                 raise S3DownloadError(

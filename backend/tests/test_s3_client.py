@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from backend.app.config import settings
+from backend.app import catalog as catalog_module
 from backend.app.s3_client import S3Client, S3DownloadError, S3UploadError
 
 
@@ -97,6 +98,25 @@ class TestS3DownloadPdf:
         )
 
     @patch("backend.app.s3_client.boto3")
+    def test_download_pdf_uses_one_attempt_capped_phase_timeouts(
+        self, mock_boto3: MagicMock
+    ) -> None:
+        bounded_s3 = mock_boto3.client.return_value
+        bounded_s3.get_object.return_value = {
+            "Body": MagicMock(read=MagicMock(return_value=b"{}"))
+        }
+
+        result = S3Client(bucket_name="test-bucket").download_pdf(
+            "index/catalog_index.json", timeout_seconds=2.5
+        )
+
+        assert result == b"{}"
+        config = mock_boto3.client.call_args.kwargs["config"]
+        assert config.connect_timeout == 2.5
+        assert config.read_timeout == 2.5
+        assert config.retries["total_max_attempts"] == 1
+
+    @patch("backend.app.s3_client.boto3")
     def test_download_pdf_file_not_found(self, mock_boto3: MagicMock) -> None:
         """Test download_pdf raises S3DownloadError when file not found."""
         from botocore.exceptions import ClientError
@@ -158,6 +178,18 @@ class TestS3DownloadPdf:
             client.download_pdf("test.pdf")
 
         assert "credentials" in str(exc_info.value).lower()
+
+
+def test_catalog_propagates_optional_download_timeout() -> None:
+    with patch.object(catalog_module, "s3_client") as mock_s3:
+        mock_s3.download_pdf.return_value = b'{"productos": []}'
+
+        catalog = catalog_module.get_catalog(force_reload=True, timeout_seconds=4.0)
+
+    assert catalog.products == []
+    mock_s3.download_pdf.assert_called_once_with(
+        catalog_module.CATALOG_INDEX_PATH, timeout_seconds=4.0
+    )
 
 
 class TestS3FileExists:

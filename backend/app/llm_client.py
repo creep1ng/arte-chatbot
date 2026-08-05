@@ -187,6 +187,7 @@ class LLMClient:
         session_id: str,
         system_prompt: Optional[str] = None,
         context: str = "",
+        timeout_seconds: Optional[float] = None,
     ) -> LLMResponse:
         """Send a message to the LLM with tool definitions using Responses API.
 
@@ -225,7 +226,13 @@ class LLMClient:
         )
 
         try:
-            response = self.openai_client.responses.create(
+            request_client = self.openai_client
+            if timeout_seconds is not None:
+                request_client = request_client.with_options(
+                    timeout=min(timeout_seconds, settings.openai_timeout_seconds),
+                    max_retries=0,
+                )
+            response = request_client.responses.create(
                 model=self.model,
                 instructions=instructions,
                 input=user_input,
@@ -282,6 +289,7 @@ class LLMClient:
         file_id: str,
         session_id: str,
         system_prompt: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> LLMResponse:
         """Send a message to the LLM with a file attached using Responses API.
 
@@ -312,7 +320,13 @@ class LLMClient:
         )
 
         try:
-            response = self.openai_client.responses.create(
+            request_client = self.openai_client
+            if timeout_seconds is not None:
+                request_client = request_client.with_options(
+                    timeout=min(timeout_seconds, settings.openai_timeout_seconds),
+                    max_retries=0,
+                )
+            response = request_client.responses.create(
                 model=self.model,
                 instructions=instructions,
                 input=[
