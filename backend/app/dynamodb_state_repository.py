@@ -213,9 +213,14 @@ class DynamoDBStateRepository:
 
     def clear_buffer_messages(self, session_id: str) -> None:
         """Clear accumulated buffer messages."""
-        state = self.get_buffer_state(session_id)
-        state.messages = []
-        self._put_buffer_state(state)
+        self._table.update_item(
+            Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+            UpdateExpression="SET messages = :messages, expires_at = :ttl",
+            ExpressionAttributeValues={
+                ":messages": [],
+                ":ttl": self._ttl(self._buffer_ttl_seconds),
+            },
+        )
 
     def set_pending_result(self, session_id: str, joined_message: str) -> None:
         """Persist a joined buffer result."""
@@ -253,15 +258,24 @@ class DynamoDBStateRepository:
 
     def set_processing(self, session_id: str) -> None:
         """Mark a session as being processed."""
-        state = self.get_buffer_state(session_id)
-        state.processing_started_at = datetime.now(timezone.utc)
-        self._put_buffer_state(state)
+        self._table.update_item(
+            Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+            UpdateExpression=("SET processing_started_at = :value, expires_at = :ttl"),
+            ExpressionAttributeValues={
+                ":value": datetime.now(timezone.utc).isoformat(),
+                ":ttl": self._ttl(self._buffer_ttl_seconds),
+            },
+        )
 
     def clear_processing(self, session_id: str) -> None:
         """Clear the processing marker."""
-        state = self.get_buffer_state(session_id)
-        state.processing_started_at = None
-        self._put_buffer_state(state)
+        self._table.update_item(
+            Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+            UpdateExpression="SET expires_at = :ttl REMOVE processing_started_at",
+            ExpressionAttributeValues={
+                ":ttl": self._ttl(self._buffer_ttl_seconds),
+            },
+        )
 
     def _pop_pending_string(
         self,
@@ -389,33 +403,6 @@ class DynamoDBStateRepository:
                 break
 
         return [self._turn_from_item(item) for item in reversed(items)]
-
-    def _put_buffer_state(self, state: BufferState) -> None:
-        item: dict[str, Any] = {
-            "PK": self._session_pk(state.session_id),
-            "SK": "BUFFER",
-            "messages": [
-                {
-                    "message": message.message,
-                    "timestamp": self._to_utc(message.timestamp).isoformat(),
-                }
-                for message in state.messages
-            ],
-            "pending_result": state.pending_result,
-            "pending_chat_response": state.pending_chat_response,
-            "processing_started_at": (
-                self._to_utc(state.processing_started_at).isoformat()
-                if state.processing_started_at
-                else None
-            ),
-            "expires_at": self._ttl(self._buffer_ttl_seconds),
-        }
-        if state.processing_lease is not None:
-            item["lease_token"] = state.processing_lease.token
-            item["lease_expires_at"] = self._epoch_seconds(
-                state.processing_lease.expires_at
-            )
-        self._table.put_item(Item=item)
 
     def _get_item(self, pk: str, sk: str) -> dict[str, Any]:
         response = self._table.get_item(Key={"PK": pk, "SK": sk})
