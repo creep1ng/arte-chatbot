@@ -236,7 +236,7 @@ class LLMClient:
                 input=user_input,
                 tools=tools,
                 max_output_tokens=settings.llm_max_output_tokens,
-                reasoning={"effort": "low"},
+                reasoning={"effort": "none"},
                 prompt_cache_key=session_id,
             )
 
@@ -315,7 +315,7 @@ class LLMClient:
                 ],
             }
         ]
-        reasoning = {"effort": "low"}
+        reasoning = {"effort": "none"}
         self._preflight_file_input_request(
             instructions=instructions,
             input_payload=input_payload,

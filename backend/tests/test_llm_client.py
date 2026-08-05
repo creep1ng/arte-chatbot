@@ -201,7 +201,7 @@ class TestLLMClientWithTools:
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "instructions" in call_kwargs
         assert call_kwargs["instructions"] == ARTE_SYSTEM_PROMPT
-        assert call_kwargs["reasoning"] == {"effort": "low"}
+        assert call_kwargs["reasoning"] == {"effort": "none"}
 
     @patch.dict(
         os.environ,
@@ -494,7 +494,7 @@ class TestLLMClientWithFile:
         assert count_kwargs["instructions"] == create_kwargs["instructions"]
         assert count_kwargs["input"] == create_kwargs["input"]
         assert count_kwargs["reasoning"] == create_kwargs["reasoning"]
-        assert create_kwargs["reasoning"] == {"effort": "low"}
+        assert create_kwargs["reasoning"] == {"effort": "none"}
 
     @patch("backend.app.llm_client.OpenAI")
     def test_file_request_official_count_over_budget_skips_create(
