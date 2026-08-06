@@ -10,7 +10,7 @@ The final delivery chain is PR #299 (bounded File Input latency), PR #303
 committed `results.json` and its byte-equality test already live on `main` through
 PR #303; this PR does not duplicate them.
 
-## Run and verify
+## Quick path: run and verify
 
 ```bash
 uv run pytest evaluation/context_budget/test_simulation.py -q
