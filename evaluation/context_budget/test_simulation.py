@@ -13,7 +13,10 @@ from evaluation.context_budget.simulation import (
     REPLAY_PATH,
     generate_report,
     load_replay,
+    serialize_report,
 )
+
+RESULTS_PATH = REPLAY_PATH.with_name("results.json")
 
 
 def test_replay_pins_twenty_spanish_exchanges_and_metadata() -> None:
@@ -87,6 +90,12 @@ def test_report_has_per_turn_final_and_cumulative_metrics() -> None:
     assert report["final_context"]["selected_history_turns"] == 20
     assert report["turns"][-1]["input_tokens"] < cumulative_input
     assert cumulative_total == cumulative_input + cumulative_output
+
+
+def test_committed_report_matches_regenerated_bytes() -> None:
+    generated = serialize_report(generate_report(load_replay(REPLAY_PATH)))
+
+    assert RESULTS_PATH.read_bytes() == generated
 
 
 def test_generation_is_cold_process_offline_and_byte_identical(tmp_path) -> None:
