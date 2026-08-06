@@ -5,9 +5,10 @@ them or call a provider. The committed Spanish fixture pins 20 exchanges, the
 `gpt-5.4-nano-2026-03-17` registry snapshot, `o200k_base`, tokenizer source/hash,
 and audited SHA-256-indexed counts.
 
-PR #298 merged the replay and its CLI into `main@da46cbf`. Evidence v3 adds only
-the canonical `results.json` and its byte-equality test; defaults/docs v3 follows
-on that evidence commit. PR #299 keeps latency and tool-routing changes separate.
+The final delivery chain is PR #299 (bounded File Input latency), PR #303
+(canonical replay evidence), then this defaults/documentation PR #304. The
+committed `results.json` and its byte-equality test already live on `main` through
+PR #303; this PR does not duplicate them.
 
 ## Run and verify
 
@@ -27,13 +28,18 @@ network denied, and provider API-key reads guarded.
 
 | Metric | Tokens | Meaning |
 |---|---:|---|
+| Request 20 input | 1,289 | Input sent for the twentieth recorded request. |
+| Response 20 output | 32 | Output recorded for the twentieth response. |
+| Exchange 20 total | 1,321 | Request 20 input plus response 20 output. |
 | Final context input | 1,368 | One hypothetical request after all 20 exchanges; 20 selected turns. |
 | Cumulative input | 14,497 | Sum of input tokens across the 20 actual replay requests. |
 | Cumulative output | 510 | Sum of the 20 recorded responses. |
 | Cumulative total | 15,007 | Input plus output consumed by the whole replay. |
 
-Final context is request size, NOT cumulative consumption. Per-turn values and
-running totals are in `results.json`.
+Request 20 (1,289/32/1,321), the final 20-turn snapshot (1,368 input), and
+cumulative consumption (14,497/510/15,007) answer different questions. Do not
+substitute one for another. Per-turn values and running totals are in
+`results.json`.
 
 ## Why these six preliminary defaults
 
