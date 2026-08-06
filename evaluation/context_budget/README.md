@@ -24,6 +24,11 @@ response from the audited corpus, and serializes canonical UTF-8 JSON without a
 timestamp. Tests run generation in fresh processes with empty tokenizer caches,
 network denied, and provider API-key reads guarded.
 
+History selection fails closed when the model is unknown or its tokenizer is
+unavailable: the history budget is `0`, no conversation turns are selected, and
+the decision log contains only budget/reason metadata—never conversation content
+or PII.
+
 ## Read the metrics correctly
 
 | Metric | Tokens | Meaning |
