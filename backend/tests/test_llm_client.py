@@ -473,21 +473,22 @@ class TestLLMClientWithFile:
         assert "ficha técnica" in call_kwargs["instructions"].lower()
 
     @patch("backend.app.llm_client.OpenAI")
-    def test_file_call_uses_bounded_zero_retry_client(
+    def test_file_count_and_create_share_bounded_zero_retry_client(
         self, mock_openai_class: MagicMock
     ) -> None:
         base_client = mock_openai_class.return_value
         bounded_client = base_client.with_options.return_value
+        _mock_official_input_count(bounded_client)
         bounded_client.responses.create.return_value = MagicMock(
             output_text="bounded", usage=None
         )
-        _mock_official_input_count(base_client)
 
         LLMClient(api_key="sk-test-key").get_llm_response_with_file(
             "Test", "file-1", "session", timeout_seconds=3.0
         )
 
         base_client.with_options.assert_called_once_with(timeout=3.0, max_retries=0)
+        bounded_client.responses.input_tokens.count.assert_called_once()
         bounded_client.responses.create.assert_called_once()
 
     def test_get_llm_response_with_file_raises_without_api_key(self) -> None:
