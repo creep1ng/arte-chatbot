@@ -481,6 +481,7 @@ class TestLLMClientWithFile:
         bounded_client.responses.create.return_value = MagicMock(
             output_text="bounded", usage=None
         )
+        _mock_official_input_count(base_client)
 
         LLMClient(api_key="sk-test-key").get_llm_response_with_file(
             "Test", "file-1", "session", timeout_seconds=3.0
