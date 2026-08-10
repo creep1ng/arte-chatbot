@@ -11,11 +11,19 @@ flush due buffers instead of relying on ``asyncio.create_task`` after response.
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import RLock
 from typing import Awaitable, Callable, Optional
+from uuid import uuid4
 
-from backend.app.state_repository import ChatbotStateRepository
+from backend.app.config import settings
+from backend.app.state_repository import (
+    ChatbotStateRepository,
+    ProcessingLease,
+    ProcessingLeaseReleaseResult,
+    ProcessingLeaseResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +48,18 @@ _processing_sessions: dict[str, datetime] = {}
 # cleanup are one in-process operation.
 _pending_state_lock = RLock()
 
+# Tokenized leases coordinate every local destructive buffer-processing path.
+_processing_leases: dict[str, ProcessingLease] = {}
+_state_lock = RLock()
+
+
+@dataclass(frozen=True)
+class OwnedBufferedMessage:
+    """A flushed message paired with its processing ownership."""
+
+    message: str
+    lease: ProcessingLease
+
 
 def set_state_repository(
     state_repository: Optional[ChatbotStateRepository],
@@ -51,7 +71,7 @@ def set_state_repository(
 
 async def add_to_buffer(
     session_id: str, message: str, max_messages: int = 5
-) -> Optional[str]:
+) -> Optional[OwnedBufferedMessage]:
     """Append message to session buffer.
 
     Args:
@@ -60,7 +80,8 @@ async def add_to_buffer(
         max_messages: Maximum messages before overflow flush. Default 5.
 
     Returns:
-        Joined text if overflow triggered, None if still buffering.
+        Owned joined text if overflow triggered, None if still buffering or
+        another worker owns processing.
     """
     if _state_repository is not None:
         state = _state_repository.append_buffer_message(session_id, message)
@@ -70,12 +91,13 @@ async def add_to_buffer(
                 session_id,
                 len(state.messages),
             )
-            return await flush_buffer(session_id)
+            return await acquire_and_flush_buffer(session_id)
         return None
 
-    if session_id not in _buffer:
-        _buffer[session_id] = []
-    _buffer[session_id].append((message, datetime.now(timezone.utc)))
+    with _state_lock:
+        if session_id not in _buffer:
+            _buffer[session_id] = []
+        _buffer[session_id].append((message, datetime.now(timezone.utc)))
 
     if len(_buffer[session_id]) >= max_messages:
         # Overflow: flush immediately
@@ -84,12 +106,47 @@ async def add_to_buffer(
             session_id,
             len(_buffer[session_id]),
         )
-        return await flush_buffer(session_id)
+        return await acquire_and_flush_buffer(session_id)
     return None
 
 
 async def flush_buffer(session_id: str) -> Optional[str]:
-    """Flush buffer and return joined message. None if empty.
+    """Claim, flush, and release a buffer without retaining processing ownership.
+
+    Processing paths must use :func:`acquire_and_flush_buffer` so ownership is
+    retained until their side effects complete.
+    """
+    owned_message = await acquire_and_flush_buffer(session_id)
+    if owned_message is None:
+        return None
+    try:
+        return owned_message.message
+    finally:
+        release_processing_lease(session_id, owned_message.lease.token)
+
+
+async def acquire_and_flush_buffer(
+    session_id: str,
+) -> Optional[OwnedBufferedMessage]:
+    """Acquire processing ownership before destructively flushing a buffer."""
+    acquired = acquire_processing_lease(session_id)
+    if not acquired.acquired or acquired.lease is None:
+        return None
+
+    lease = acquired.lease
+    try:
+        joined = await _flush_owned_buffer(session_id)
+    except BaseException:
+        release_processing_lease(session_id, lease.token)
+        raise
+    if joined is None:
+        release_processing_lease(session_id, lease.token)
+        return None
+    return OwnedBufferedMessage(message=joined, lease=lease)
+
+
+async def _flush_owned_buffer(session_id: str) -> Optional[str]:
+    """Flush a buffer after the caller has acquired processing ownership.
 
     Local mode clears stale pending delivery state before returning the joined
     value to its caller. Repository mode stores the joined value for polling.
@@ -102,13 +159,12 @@ async def flush_buffer(session_id: str) -> Optional[str]:
     """
     if _state_repository is not None:
         state = _state_repository.get_buffer_state(session_id)
-        messages = state.messages
-        if not messages:
+        buffer_messages = state.messages
+        if not buffer_messages:
             return None
-        joined = "\n".join(message.message for message in messages)
+        joined = "\n".join(message.message for message in buffer_messages)
         _state_repository.clear_buffer_messages(session_id)
         _state_repository.set_pending_result(session_id, joined)
-        _state_repository.clear_processing(session_id)
         return joined
 
     buffered_entries = _buffer.pop(session_id, [])
@@ -290,6 +346,60 @@ def clear_processing(session_id: str) -> None:
         _processing_sessions.pop(session_id, None)
 
 
+def acquire_processing_lease(
+    session_id: str,
+    *,
+    now: Optional[datetime] = None,
+    token: Optional[str] = None,
+) -> ProcessingLeaseResult:
+    """Try to claim processing ownership with deterministic test inputs."""
+    current_time = _to_utc(now if now is not None else datetime.now(timezone.utc))
+    lease = ProcessingLease(
+        token=token if token is not None else uuid4().hex,
+        expires_at=current_time
+        + timedelta(seconds=settings.buffer_processing_lease_seconds),
+    )
+    if _state_repository is not None:
+        return _state_repository.try_acquire_processing_lease(
+            session_id, now=current_time, lease=lease
+        )
+    return try_acquire_local_processing_lease(session_id, now=current_time, lease=lease)
+
+
+def try_acquire_local_processing_lease(
+    session_id: str, *, now: datetime, lease: ProcessingLease
+) -> ProcessingLeaseResult:
+    """Atomically acquire an absent or expired local processing lease."""
+    current_time = _to_utc(now)
+    with _state_lock:
+        current = _processing_leases.get(session_id)
+        if current is not None and current_time < _to_utc(current.expires_at):
+            return ProcessingLeaseResult(acquired=False)
+        _processing_leases[session_id] = lease
+        return ProcessingLeaseResult(acquired=True, lease=lease)
+
+
+def release_processing_lease(
+    session_id: str, token: str
+) -> ProcessingLeaseReleaseResult:
+    """Release processing ownership only for the current token."""
+    if _state_repository is not None:
+        return _state_repository.release_processing_lease(session_id, token)
+    return release_local_processing_lease(session_id, token)
+
+
+def release_local_processing_lease(
+    session_id: str, token: str
+) -> ProcessingLeaseReleaseResult:
+    """Atomically release local processing ownership for the caller's token."""
+    with _state_lock:
+        current = _processing_leases.get(session_id)
+        if current is None or current.token != token:
+            return ProcessingLeaseReleaseResult(released=False)
+        del _processing_leases[session_id]
+        return ProcessingLeaseReleaseResult(released=True)
+
+
 def is_processing(session_id: str) -> bool:
     """Check if a session is currently being processed after a flush.
 
@@ -308,6 +418,19 @@ def is_processing(session_id: str) -> bool:
         return session_id in _processing_sessions
 
 
+def has_active_processing_lease(
+    session_id: str, *, now: Optional[datetime] = None
+) -> bool:
+    """Return whether a tokenized processing lease is currently active."""
+    current_time = _to_utc(now or datetime.now(timezone.utc))
+    if _state_repository is not None:
+        lease = _state_repository.get_buffer_state(session_id).processing_lease
+        return lease is not None and current_time < _to_utc(lease.expires_at)
+    with _state_lock:
+        lease = _processing_leases.get(session_id)
+        return lease is not None and current_time < _to_utc(lease.expires_at)
+
+
 def is_buffer_ready_to_flush(
     session_id: str,
     window_seconds: int,
@@ -321,10 +444,10 @@ def is_buffer_ready_to_flush(
     """
     current_time = _to_utc(now or datetime.now(timezone.utc))
     if _state_repository is not None:
-        messages = _state_repository.get_buffer_state(session_id).messages
-        if not messages:
+        buffer_messages = _state_repository.get_buffer_state(session_id).messages
+        if not buffer_messages:
             return False
-        last_message_at = _to_utc(messages[-1].timestamp)
+        last_message_at = _to_utc(buffer_messages[-1].timestamp)
         return current_time >= last_message_at + timedelta(seconds=window_seconds)
 
     buffered_entries = _buffer.get(session_id, [])
@@ -340,7 +463,7 @@ def _to_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-FlushCallback = Callable[[str, str], Awaitable[None]]
+FlushCallback = Callable[[str, str, ProcessingLease], Awaitable[None]]
 
 
 def schedule_flush(
@@ -357,8 +480,8 @@ def schedule_flush(
     Args:
         session_id: The session identifier.
         window_seconds: Seconds to wait before flushing.
-        callback: Async function called with (session_id, joined_message)
-                  when the window expires.
+        callback: Async function called with the session, joined message, and
+            processing lease when the window expires.
     """
     existing = _buffer_tasks.get(session_id)
     if existing and not existing.done():
@@ -378,8 +501,8 @@ def schedule_flush(
             await asyncio.sleep(window_seconds)
         except asyncio.CancelledError:
             return
-        message = await flush_buffer(session_id)
-        if message:
-            await callback(session_id, message)
+        owned_message = await acquire_and_flush_buffer(session_id)
+        if owned_message is not None:
+            await callback(session_id, owned_message.message, owned_message.lease)
 
     _buffer_tasks[session_id] = asyncio.create_task(_flush_after_delay())

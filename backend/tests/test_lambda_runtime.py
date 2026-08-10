@@ -281,6 +281,89 @@ def test_buffer_result_processes_due_repository_buffer_without_background_task(
     assert repository.get_buffer_state(session_id).messages == []
 
 
+@pytest.mark.asyncio
+async def test_two_due_buffer_pollers_run_one_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A processing lease makes competing Lambda pollers return one result."""
+    from backend.app import message_buffer
+    from backend.app.auth import api_key_principal
+    from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+    from backend.app.session import session_manager
+    from backend.main import ChatResponse, get_buffer_result
+    from backend.tests.test_state_repository import FakeDynamoDBTable
+
+    monkeypatch.setenv("BUFFER_WINDOW_SECONDS", "1")
+    settings.reset()
+    repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+    session_id = "competing-pollers"
+    principal = api_key_principal("lambda-test-key")
+    processor_started = asyncio.Event()
+    finish_processing = asyncio.Event()
+    processor_calls = 0
+
+    session_manager.set_state_repository(repository)
+    message_buffer.set_state_repository(repository)
+    repository.bind_owner(session_id, principal)
+    repository.append_buffer_message(session_id, "Hola")
+    state = repository.get_buffer_state(session_id)
+    old_timestamp = datetime.now(timezone.utc) - timedelta(seconds=10)
+    table_item = repository._table.items[(f"SESSION#{session_id}", "BUFFER")]
+    table_item["messages"][-1]["timestamp"] = old_timestamp.isoformat()
+
+    async def fake_process_chat_message(**_: Any) -> ChatResponse:
+        nonlocal processor_calls
+        processor_calls += 1
+        processor_started.set()
+        await finish_processing.wait()
+        return ChatResponse(response="ready", session_id=session_id)
+
+    monkeypatch.setattr("backend.main._process_chat_message", fake_process_chat_message)
+    try:
+        owner_poll = asyncio.create_task(
+            get_buffer_result(session_id, "lambda-test-key")
+        )
+        await processor_started.wait()
+        competing_poll = await get_buffer_result(session_id, "lambda-test-key")
+        finish_processing.set()
+        owner_result = await owner_poll
+    finally:
+        session_manager.set_state_repository(None)
+        message_buffer.set_state_repository(None)
+
+    assert state.messages
+    assert competing_poll.status == "pending"
+    assert owner_result.status == "ready"
+    assert processor_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
+async def test_buffer_callback_always_releases_its_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[BaseException],
+) -> None:
+    """Callback errors and cancellation cannot leak processing ownership."""
+    from backend.app import message_buffer
+    from backend.main import _on_buffer_window_expired
+
+    session_id = f"callback-{error_type.__name__}"
+    acquired = message_buffer.acquire_processing_lease(session_id)
+    assert acquired.lease is not None
+
+    async def fail_processing(**_: Any) -> None:
+        raise error_type("processing interrupted")
+
+    monkeypatch.setattr("backend.main._process_chat_message", fail_processing)
+    if issubclass(error_type, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await _on_buffer_window_expired(session_id, "Hola", acquired.lease)
+    else:
+        await _on_buffer_window_expired(session_id, "Hola", acquired.lease)
+
+    assert not message_buffer.has_active_processing_lease(session_id)
+
+
 def test_auth_override_is_not_required_for_lambda_auth() -> None:
     """The runtime tests exercise real API-key auth, not dependency overrides."""
     from backend.main import app
