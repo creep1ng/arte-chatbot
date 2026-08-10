@@ -6,6 +6,7 @@ for generating chatbot responses with tool calling support.
 
 import logging
 import os
+from time import monotonic as _monotonic
 from typing import Optional
 
 from openai import APIError, AuthenticationError, OpenAI
@@ -327,7 +328,17 @@ class LLMClient:
             }
         ]
         reasoning = {"effort": FILE_INPUT_REASONING_EFFORT}
+        request_client = self.openai_client
+        request_deadline: Optional[float] = None
+        if timeout_seconds is not None:
+            allocation = min(timeout_seconds, settings.openai_timeout_seconds)
+            request_deadline = _monotonic() + allocation
+            request_client = request_client.with_options(
+                timeout=allocation,
+                max_retries=0,
+            )
         self._preflight_file_input_request(
+            request_client=request_client,
             instructions=instructions,
             input_payload=input_payload,
             reasoning=reasoning,
@@ -336,10 +347,12 @@ class LLMClient:
         logger.debug("LLM File Input request preflight accepted: model=%s", self.model)
 
         try:
-            request_client = self.openai_client
-            if timeout_seconds is not None:
-                request_client = request_client.with_options(
-                    timeout=min(timeout_seconds, settings.openai_timeout_seconds),
+            if request_deadline is not None:
+                remaining_seconds = request_deadline - _monotonic()
+                if remaining_seconds <= 0:
+                    raise LLMServiceError("LLM create failed")
+                request_client = self.openai_client.with_options(
+                    timeout=remaining_seconds,
                     max_retries=0,
                 )
             response = request_client.responses.create(
@@ -384,6 +397,7 @@ class LLMClient:
     def _preflight_file_input_request(
         self,
         *,
+        request_client: OpenAI,
         instructions: str,
         input_payload: list[dict[str, object]],
         reasoning: dict[str, str],
@@ -397,7 +411,7 @@ class LLMClient:
             )
 
         input_tokens_resource = getattr(
-            self.openai_client.responses,
+            request_client.responses,
             "input_tokens",
             None,
         )

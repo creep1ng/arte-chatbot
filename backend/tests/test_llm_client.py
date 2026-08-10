@@ -6,7 +6,7 @@ Tests the LLM client for OpenAI Responses API integration with tool calling supp
 
 from collections.abc import Iterator
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -473,22 +473,85 @@ class TestLLMClientWithFile:
         assert "ficha técnica" in call_kwargs["instructions"].lower()
 
     @patch("backend.app.llm_client.OpenAI")
-    def test_file_call_uses_bounded_zero_retry_client(
+    def test_file_count_and_create_use_bounded_zero_retry_clients(
         self, mock_openai_class: MagicMock
     ) -> None:
         base_client = mock_openai_class.return_value
-        bounded_client = base_client.with_options.return_value
-        bounded_client.responses.create.return_value = MagicMock(
+        count_client = MagicMock()
+        create_client = MagicMock()
+        base_client.with_options.side_effect = [count_client, create_client]
+        _mock_official_input_count(count_client)
+        create_client.responses.create.return_value = MagicMock(
             output_text="bounded", usage=None
         )
-        _mock_official_input_count(base_client)
 
-        LLMClient(api_key="sk-test-key").get_llm_response_with_file(
-            "Test", "file-1", "session", timeout_seconds=3.0
-        )
+        with patch.object(llm_client_module, "_monotonic", side_effect=[10.0, 11.25]):
+            LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+                "Test", "file-1", "session", timeout_seconds=3.0
+            )
+
+        assert base_client.with_options.call_args_list == [
+            call(timeout=3.0, max_retries=0),
+            call(timeout=1.75, max_retries=0),
+        ]
+        count_client.responses.input_tokens.count.assert_called_once()
+        create_client.responses.create.assert_called_once()
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_count_exhausts_timeout_skips_create(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        base_client = mock_openai_class.return_value
+        count_client = base_client.with_options.return_value
+        _mock_official_input_count(count_client)
+
+        with (
+            patch.object(llm_client_module, "_monotonic", side_effect=[10.0, 13.0]),
+            pytest.raises(LLMServiceError, match="LLM create failed"),
+        ):
+            LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+                "Test", "file-1", "session", timeout_seconds=3.0
+            )
 
         base_client.with_options.assert_called_once_with(timeout=3.0, max_retries=0)
-        bounded_client.responses.create.assert_called_once()
+        count_client.responses.input_tokens.count.assert_called_once()
+        base_client.responses.create.assert_not_called()
+        count_client.responses.create.assert_not_called()
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_call_without_timeout_uses_base_client(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        base_client = mock_openai_class.return_value
+        _mock_official_input_count(base_client)
+        base_client.responses.create.return_value = MagicMock(
+            output_text="base", usage=None
+        )
+
+        LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+            "Test", "file-1", "session"
+        )
+
+        base_client.with_options.assert_not_called()
+        base_client.responses.input_tokens.count.assert_called_once()
+        base_client.responses.create.assert_called_once()
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_bounded_file_count_failure_skips_create(
+        self, mock_openai_class: MagicMock
+    ) -> None:
+        base_client = mock_openai_class.return_value
+        count_client = base_client.with_options.return_value
+        count_client.responses.input_tokens.count.side_effect = RuntimeError("private")
+
+        with pytest.raises(ContextBudgetError, match="input_token_count_failed"):
+            LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+                "Test", "file-1", "session", timeout_seconds=3.0
+            )
+
+        base_client.with_options.assert_called_once_with(timeout=3.0, max_retries=0)
+        count_client.responses.create.assert_not_called()
+        base_client.responses.create.assert_not_called()
 
     def test_get_llm_response_with_file_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_file raises error without API key."""
