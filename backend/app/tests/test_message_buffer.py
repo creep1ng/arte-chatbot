@@ -8,8 +8,9 @@ Strict TDD: tests written BEFORE implementation.
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Barrier
+from typing import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,7 +46,7 @@ def _require_message_buffer() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clean_buffer_state() -> None:
+def _clean_buffer_state() -> Generator[None, None, None]:
     """Ensure clean buffer state between tests."""
     try:
         from backend.app import message_buffer
@@ -54,6 +55,7 @@ def _clean_buffer_state() -> None:
         message_buffer._buffer_tasks.clear()
         message_buffer._pending_results.clear()
         message_buffer._pending_chat_responses.clear()
+        message_buffer._processing_leases.clear()
         message_buffer._processing_sessions.clear()
     except ImportError:
         pass
@@ -65,6 +67,7 @@ def _clean_buffer_state() -> None:
         message_buffer._buffer_tasks.clear()
         message_buffer._pending_results.clear()
         message_buffer._pending_chat_responses.clear()
+        message_buffer._processing_leases.clear()
         message_buffer._processing_sessions.clear()
     except ImportError:
         pass
@@ -152,6 +155,7 @@ class TestFlushBuffer:
         await add_to_buffer("s1", "primer mensaje")
         await add_to_buffer("s1", "segundo mensaje")
         result = await flush_buffer("s1")
+        assert result is not None
         lines = result.split("\n")
         assert lines[0] == "primer mensaje"
         assert lines[1] == "segundo mensaje"
@@ -373,6 +377,122 @@ class TestLambdaSafeDebounce:
             message_buffer.set_state_repository(None)
 
 
+class TestLocalProcessingLease:
+    """Test local-memory parity with the repository lease contract."""
+
+    def test_contention_exact_expiry_and_token_protected_release(self) -> None:
+        from backend.app.message_buffer import (
+            release_local_processing_lease,
+            try_acquire_local_processing_lease,
+        )
+        from backend.app.state_repository import ProcessingLease
+
+        now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+        first_lease = ProcessingLease(
+            token="first", expires_at=now + timedelta(seconds=60)
+        )
+        replacement_lease = ProcessingLease(
+            token="replacement", expires_at=now + timedelta(seconds=120)
+        )
+
+        first = try_acquire_local_processing_lease("s1", now=now, lease=first_lease)
+        blocked = try_acquire_local_processing_lease(
+            "s1", now=now, lease=replacement_lease
+        )
+        replacement = try_acquire_local_processing_lease(
+            "s1", now=first_lease.expires_at, lease=replacement_lease
+        )
+
+        assert first.acquired and first.lease == first_lease
+        assert not blocked.acquired and blocked.lease is None
+        assert replacement.acquired and replacement.lease == replacement_lease
+        assert not release_local_processing_lease("s1", "first").released
+        assert not release_local_processing_lease("missing", "first").released
+        assert release_local_processing_lease("s1", "replacement").released
+
+    def test_competing_acquisitions_have_exactly_one_winner(self) -> None:
+        from backend.app.message_buffer import try_acquire_local_processing_lease
+        from backend.app.state_repository import ProcessingLease
+
+        now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+        barrier = Barrier(2)
+
+        def acquire(token: str) -> bool:
+            lease = ProcessingLease(token=token, expires_at=now + timedelta(seconds=60))
+            barrier.wait()
+            return try_acquire_local_processing_lease(
+                "shared", now=now, lease=lease
+            ).acquired
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(acquire, ("worker-a", "worker-b")))
+
+        assert sorted(outcomes) == [False, True]
+
+    def test_facade_has_equivalent_local_and_repository_outcomes(self) -> None:
+        from backend.app import message_buffer
+        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.app.message_buffer import (
+            acquire_processing_lease,
+            release_processing_lease,
+        )
+        from backend.tests.test_state_repository import FakeDynamoDBTable
+
+        now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+
+        def exercise() -> list[bool]:
+            first = acquire_processing_lease("parity", now=now, token="first")
+            blocked = acquire_processing_lease("parity", now=now, token="blocked")
+            assert first.lease is not None
+            replacement = acquire_processing_lease(
+                "parity", now=first.lease.expires_at, token="replacement"
+            )
+            stale = release_processing_lease("parity", "first")
+            owner = release_processing_lease("parity", "replacement")
+            return [
+                first.acquired,
+                blocked.acquired,
+                replacement.acquired,
+                stale.released,
+                owner.released,
+            ]
+
+        local_outcomes = exercise()
+        message_buffer.set_state_repository(
+            DynamoDBStateRepository(table=FakeDynamoDBTable())
+        )
+        try:
+            repository_outcomes = exercise()
+        finally:
+            message_buffer.set_state_repository(None)
+
+        assert local_outcomes == repository_outcomes == [True, False, True, False, True]
+
+    def test_legacy_processing_markers_remain_isolated_from_leases(self) -> None:
+        from backend.app import message_buffer
+        from backend.app.message_buffer import (
+            acquire_processing_lease,
+            clear_processing,
+            is_processing,
+            release_processing_lease,
+            set_processing,
+        )
+
+        now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+        acquired = acquire_processing_lease("legacy", now=now, token="owner")
+        set_processing("legacy")
+
+        assert acquired.acquired
+        assert is_processing("legacy")
+        assert "legacy" in message_buffer._processing_leases
+
+        clear_processing("legacy")
+
+        assert not is_processing("legacy")
+        assert not acquire_processing_lease("legacy", now=now, token="blocked").acquired
+        assert release_processing_lease("legacy", "owner").released
+
+
 # ===========================================================================
 # Task 5.5 — Overflow: max_messages triggers immediate flush
 # ===========================================================================
@@ -405,6 +525,7 @@ class TestOverflow:
             await add_to_buffer("s1", msg, max_messages=5)
 
         result = await add_to_buffer("s1", messages[4], max_messages=5)
+        assert result is not None
         for msg in messages:
             assert msg in result
         # Check newline separation
