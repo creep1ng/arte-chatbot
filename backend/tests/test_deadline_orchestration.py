@@ -121,7 +121,7 @@ async def test_cleanup_outcomes_are_bounded_and_observable(
     await backend_main._cleanup_file(
         MagicMock(delete_file=delete), "secret-file", _deadline(), "request-1"
     )
-    assert 0 < delete.call_args.kwargs["timeout_seconds"] <= 0.03
+    assert 0 < delete.call_args.kwargs["timeout_seconds"] == pytest.approx(0.03)
     assert time.monotonic() - started < 0.04 and f"outcome={outcome}" in caplog.text
     assert "secret-file" not in caplog.text and "private" not in caplog.text
 
@@ -151,8 +151,8 @@ def test_lambda_cap_local_fallback_and_auth_short_circuit() -> None:
         backend_main._request_deadline({"aws.context": context}),
         backend_main._request_deadline(),
     )
-    assert lambda_deadline.hard_at - lambda_deadline.started_at == 6.0
-    assert local_deadline.hard_at - local_deadline.started_at == 23.0
+    assert lambda_deadline.hard_at - lambda_deadline.started_at == pytest.approx(6.0)
+    assert local_deadline.hard_at - local_deadline.started_at == pytest.approx(23.0)
     app.dependency_overrides.pop(verify_api_key)
     with patch("backend.main._request_deadline") as builder:
         response = client.post("/chat", json={"message": "paneles"})
