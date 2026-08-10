@@ -16,9 +16,7 @@ class FakeClock:
 
 
 def _deadline(clock: FakeClock, lambda_remaining_ms: object = None) -> RequestDeadline:
-    return RequestDeadline.from_budget(
-        25.0, 2.0, 3.0, 1.0, lambda_remaining_ms, clock
-    )
+    return RequestDeadline.from_budget(25.0, 2.0, 3.0, 1.0, lambda_remaining_ms, clock)
 
 
 def test_local_deadline_uses_configured_budget_and_immutable_cutoffs() -> None:
@@ -70,7 +68,10 @@ def test_cleanup_allocation_uses_remaining_hard_cutoff() -> None:
     clock = FakeClock()
     deadline = _deadline(clock)
     clock.now = 121.5
-    assert (deadline.remaining_work_seconds(), deadline.remaining_cleanup_seconds()) == (
+    assert (
+        deadline.remaining_work_seconds(),
+        deadline.remaining_cleanup_seconds(),
+    ) == (
         0.0,
         1.5,
     )

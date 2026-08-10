@@ -11,7 +11,9 @@ class RequestDeadlineExceeded(RuntimeError):
     """Typed, sanitized failure raised when work cannot be admitted."""
 
     def __init__(
-        self, operation: str, timeout_class: str = "work_budget_exhausted",
+        self,
+        operation: str,
+        timeout_class: str = "work_budget_exhausted",
         iteration: Optional[int] = None,
     ) -> None:
         super().__init__("request deadline exceeded")
