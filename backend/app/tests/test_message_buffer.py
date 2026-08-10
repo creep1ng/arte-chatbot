@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from backend.app.state_repository import ProcessingLease
 from backend.tests.conftest import make_llm_response
 
 # ---------------------------------------------------------------------------
@@ -248,8 +249,13 @@ class TestDebounce:
         """After window_seconds, callback is invoked with joined message."""
         results: list[tuple[str, str]] = []
 
-        async def _on_flush(sid: str, msg: str) -> None:
-            results.append((sid, msg))
+        async def _on_flush(sid: str, msg: str, lease: ProcessingLease) -> None:
+            from backend.app.message_buffer import release_processing_lease
+
+            try:
+                results.append((sid, msg))
+            finally:
+                release_processing_lease(sid, lease.token)
 
         await add_to_buffer("s1", "Hola")
         await add_to_buffer("s1", "mundo")
@@ -266,8 +272,13 @@ class TestDebounce:
         """Each call to schedule_flush cancels the previous timer."""
         results: list[str] = []
 
-        async def _on_flush(sid: str, msg: str) -> None:
-            results.append(msg)
+        async def _on_flush(sid: str, msg: str, lease: ProcessingLease) -> None:
+            from backend.app.message_buffer import release_processing_lease
+
+            try:
+                results.append(msg)
+            finally:
+                release_processing_lease(sid, lease.token)
 
         await add_to_buffer("s1", "Hola")
         schedule_flush("s1", window_seconds=1, callback=_on_flush)
@@ -289,8 +300,8 @@ class TestDebounce:
         """Callback is NOT invoked if buffer is empty when timer fires."""
         results: list[str] = []
 
-        async def _on_flush(sid: str, msg: str) -> None:
-            results.append(msg)
+        async def _on_flush(sid: str, msg: str, lease: ProcessingLease) -> None:
+            del sid, msg, lease
 
         # Schedule flush without adding messages — buffer is empty
 
@@ -305,8 +316,13 @@ class TestDebounce:
         """After timer fires and processes, buffer state is cleared."""
         results: list[str] = []
 
-        async def _on_flush(sid: str, msg: str) -> None:
-            results.append(msg)
+        async def _on_flush(sid: str, msg: str, lease: ProcessingLease) -> None:
+            from backend.app.message_buffer import release_processing_lease
+
+            try:
+                results.append(msg)
+            finally:
+                release_processing_lease(sid, lease.token)
 
         await add_to_buffer("s1", "test")
         schedule_flush("s1", window_seconds=1, callback=_on_flush)
@@ -314,6 +330,27 @@ class TestDebounce:
 
         assert is_buffering("s1") is False
         assert get_buffer_count("s1") == 0
+
+    @pytest.mark.asyncio
+    async def test_schedule_flush_passes_lease_to_callback_on_error(self) -> None:
+        """A failing callback retains explicit ownership for finally release."""
+        from backend.app import message_buffer
+
+        callback_finished = asyncio.Event()
+
+        async def _on_flush(sid: str, msg: str, lease: ProcessingLease) -> None:
+            try:
+                assert msg == "test"
+                raise RuntimeError("callback failed")
+            finally:
+                message_buffer.release_processing_lease(sid, lease.token)
+                callback_finished.set()
+
+        await add_to_buffer("s1", "test")
+        schedule_flush("s1", window_seconds=0, callback=_on_flush)
+        await asyncio.wait_for(callback_finished.wait(), timeout=1)
+
+        assert "s1" not in message_buffer._processing_leases
 
 
 class TestLambdaSafeDebounce:
@@ -331,8 +368,8 @@ class TestLambdaSafeDebounce:
         try:
             await add_to_buffer("lambda-safe", "Hola")
 
-            async def _on_flush(sid: str, msg: str) -> None:
-                del sid, msg
+            async def _on_flush(sid: str, msg: str, lease: ProcessingLease) -> None:
+                del sid, msg, lease
 
             with patch("backend.app.message_buffer.asyncio.create_task") as create_task:
                 schedule_flush("lambda-safe", window_seconds=1, callback=_on_flush)
@@ -512,8 +549,11 @@ class TestOverflow:
         # 5th message triggers overflow
         result = await add_to_buffer("s1", "msg4", max_messages=5)
         assert result is not None
-        assert "msg0" in result
-        assert "msg4" in result
+        assert "msg0" in result.message
+        assert "msg4" in result.message
+        from backend.app.message_buffer import release_processing_lease
+
+        release_processing_lease("s1", result.lease.token)
         # Buffer is now empty
         assert is_buffering("s1") is False
 
@@ -527,17 +567,24 @@ class TestOverflow:
         result = await add_to_buffer("s1", messages[4], max_messages=5)
         assert result is not None
         for msg in messages:
-            assert msg in result
+            assert msg in result.message
         # Check newline separation
-        assert result.count("\n") == 4
+        assert result.message.count("\n") == 4
+        from backend.app.message_buffer import release_processing_lease
+
+        release_processing_lease("s1", result.lease.token)
 
     @pytest.mark.asyncio
     async def test_overflow_with_custom_max(self) -> None:
         """Overflow respects custom max_messages value."""
         await add_to_buffer("s1", "a", max_messages=2)
         result = await add_to_buffer("s1", "b", max_messages=2)
-        assert result == "a\nb"
+        assert result is not None
+        assert result.message == "a\nb"
         assert is_buffering("s1") is False
+        from backend.app.message_buffer import release_processing_lease
+
+        release_processing_lease("s1", result.lease.token)
 
     @pytest.mark.asyncio
     async def test_no_overflow_below_max(self) -> None:
@@ -546,6 +593,21 @@ class TestOverflow:
             result = await add_to_buffer("s1", f"msg{i}", max_messages=5)
             assert result is None
         assert is_buffering("s1") is True
+
+    @pytest.mark.asyncio
+    async def test_overflow_conflict_does_not_flush(self) -> None:
+        """A lease conflict leaves every overflow message buffered."""
+        from backend.app import message_buffer
+
+        owner = message_buffer.acquire_processing_lease("s1", token="owner")
+        assert owner.acquired
+
+        await add_to_buffer("s1", "a", max_messages=2)
+        result = await add_to_buffer("s1", "b", max_messages=2)
+
+        assert result is None
+        assert get_buffer_count("s1") == 2
+        assert message_buffer.release_processing_lease("s1", "owner").released
 
 
 class TestDurableBufferState:
