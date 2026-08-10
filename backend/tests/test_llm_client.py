@@ -12,14 +12,26 @@ import pytest
 
 from backend.app import llm_client as llm_client_module
 from backend.app.config import settings
+from backend.app.file_input_budget import ContextBudgetError
 from backend.app.llm_client import (
     ARTE_SYSTEM_PROMPT,
     DATASHEET_SYSTEM_PROMPT,
+    FILE_INPUT_MAX_OUTPUT_TOKENS,
     LLMClient,
     LLMServiceError,
 )
 from backend.app.schemas import LLMResponse
 from backend.app.secret_resolver import clear_runtime_secret_cache
+
+
+def _mock_official_input_count(
+    mock_client: MagicMock,
+    input_tokens: int = 100,
+) -> None:
+    """Configure the SDK input-token counter without a network call."""
+    response = MagicMock()
+    response.input_tokens = input_tokens
+    mock_client.responses.input_tokens.count.return_value = response
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +80,7 @@ class TestLLMClientWithTools:
     """Tests for get_llm_response_with_tools method."""
 
     @patch("backend.app.llm_client.OpenAI")
-    def test_get_llm_response_with_tools_returns_tool_calls(
+    def test_low_effort_routing_returns_tool_calls(
         self, mock_openai_class: MagicMock
     ) -> None:
         """Test get_llm_response_with_tools returns LLMResponse with tool_calls when LLM invokes tool."""
@@ -98,6 +110,9 @@ class TestLLMClientWithTools:
         assert result.text == ""
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0]["function"]["name"] == "leer_ficha_tecnica"
+        assert mock_client.responses.create.call_args.kwargs["reasoning"] == {
+            "effort": "low"
+        }
 
     @patch("backend.app.llm_client.OpenAI")
     def test_get_llm_response_with_tools_no_tool_calls(
@@ -190,6 +205,7 @@ class TestLLMClientWithTools:
         call_kwargs = mock_client.responses.create.call_args.kwargs
         assert "instructions" in call_kwargs
         assert call_kwargs["instructions"] == ARTE_SYSTEM_PROMPT
+        assert call_kwargs["reasoning"] == {"effort": "low"}
 
     @patch.dict(
         os.environ,
@@ -348,13 +364,8 @@ class TestLLMClientWithToolsReturnsLLMResponse:
 class TestLLMClientWithFile:
     """Tests for get_llm_response_with_file method."""
 
-    @patch.dict(
-        os.environ,
-        {"LLM_MAX_OUTPUT_TOKENS": "3210", "CONTEXT_OUTPUT_RESERVE_TOKENS": "3210"},
-        clear=True,
-    )
     @patch("backend.app.llm_client.OpenAI")
-    def test_get_llm_response_with_file_uses_configured_output_limit(
+    def test_get_llm_response_with_file_uses_bounded_output_limit(
         self, mock_openai_class: MagicMock
     ) -> None:
         mock_client = MagicMock()
@@ -365,14 +376,17 @@ class TestLLMClientWithFile:
         )
         client = LLMClient(api_key="sk-test-key")
 
-        client.get_llm_response_with_file(
-            message="Test",
-            file_id="file-123",
-            session_id="test-session",
-        )
+        with patch.object(client, "_preflight_file_input_request"):
+            client.get_llm_response_with_file(
+                message="Test",
+                file_id="file-123",
+                session_id="test-session",
+            )
 
         assert (
-            mock_client.responses.create.call_args.kwargs["max_output_tokens"] == 3210
+            mock_client.responses.create.call_args.kwargs["max_output_tokens"]
+            == FILE_INPUT_MAX_OUTPUT_TOKENS
+            == 512
         )
 
     @patch("backend.app.llm_client.OpenAI")
@@ -388,6 +402,7 @@ class TestLLMClientWithFile:
         mock_response = MagicMock()
         mock_response.output_text = "El panel tiene una potencia de 460W..."
         mock_client.responses.create.return_value = mock_response
+        _mock_official_input_count(mock_client)
 
         client = LLMClient(api_key="sk-test-key")
         result = client.get_llm_response_with_file(
@@ -426,6 +441,7 @@ class TestLLMClientWithFile:
         mock_response = MagicMock()
         mock_response.output_text = "Test"
         mock_client.responses.create.return_value = mock_response
+        _mock_official_input_count(mock_client)
 
         client = LLMClient(api_key="sk-test-key")
         client.get_llm_response_with_file(
@@ -452,6 +468,201 @@ class TestLLMClientWithFile:
 
         assert "Missing OpenAI API key" in str(exc_info.value)
 
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_request_official_count_exact_boundary(
+        self,
+        mock_openai_class: MagicMock,
+    ) -> None:
+        """The exact effective input limit is accepted before create."""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        events: list[str] = []
+
+        def count_input_tokens(**_: object) -> MagicMock:
+            events.append("count")
+            return MagicMock(input_tokens=30_000)
+
+        def create_response(**_: object) -> MagicMock:
+            events.append("create")
+            return MagicMock(output_text="ok", usage=None)
+
+        mock_client.responses.input_tokens.count.side_effect = count_input_tokens
+        mock_client.responses.create.side_effect = create_response
+        client = LLMClient(api_key="sk-test-key", model="gpt-5.4-nano")
+
+        client.get_llm_response_with_file(
+            message="Specs?",
+            file_id="file-123",
+            session_id="test-session",
+        )
+
+        count_kwargs = mock_client.responses.input_tokens.count.call_args.kwargs
+        create_kwargs = mock_client.responses.create.call_args.kwargs
+        assert events == ["count", "create"]
+        assert count_kwargs == {key: create_kwargs[key] for key in count_kwargs}
+        assert count_kwargs["reasoning"] == {"effort": "none"}
+        assert "max_output_tokens" not in count_kwargs
+        assert create_kwargs["max_output_tokens"] == FILE_INPUT_MAX_OUTPUT_TOKENS
+
+    @pytest.mark.parametrize(
+        ("incomplete_reason", "logged_reason"),
+        [("max_output_tokens", "max_output_tokens"), ("private reason", "unknown")],
+    )
+    @patch("backend.app.llm_client.OpenAI")
+    def test_incomplete_file_response_fails_closed_with_safe_logs(
+        self,
+        mock_openai_class: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+        incomplete_reason: str,
+        logged_reason: str,
+    ) -> None:
+        mock_client = mock_openai_class.return_value
+        _mock_official_input_count(mock_client)
+        response = mock_client.responses.create.return_value
+        response.status = "incomplete"
+        response.incomplete_details.reason = incomplete_reason
+        response.output_text = "private partial output"
+
+        with pytest.raises(LLMServiceError, match="response incomplete") as raised:
+            LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+                message="private message",
+                file_id="private-file",
+                session_id="private-session",
+            )
+
+        assert raised.value.__cause__ is None
+        assert f"reason={logged_reason}" in caplog.text
+        assert "private" not in caplog.text
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_create_failure_has_safe_logs_and_no_chaining(
+        self,
+        mock_openai_class: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        mock_client = mock_openai_class.return_value
+        _mock_official_input_count(mock_client)
+        mock_client.responses.create.side_effect = RuntimeError("private error")
+
+        with pytest.raises(LLMServiceError, match="LLM create failed") as raised:
+            LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+                message="private message",
+                file_id="private-file",
+                session_id="private-session",
+            )
+
+        assert raised.value.__cause__ is None
+        assert "reason=create_failed" in caplog.text
+        assert "error_type=RuntimeError" in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+        assert "private" not in caplog.text + str(raised.value)
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_request_official_count_over_budget_skips_create(
+        self,
+        mock_openai_class: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        _mock_official_input_count(mock_client, input_tokens=30_001)
+        client = LLMClient(api_key="sk-test-key", model="gpt-5.4-nano")
+
+        with pytest.raises(ContextBudgetError, match="input_tokens_exceed_limit"):
+            client.get_llm_response_with_file(
+                message="Specs?",
+                file_id="file-123",
+                session_id="test-session",
+            )
+
+        mock_client.responses.create.assert_not_called()
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_request_official_count_failure_skips_create(
+        self,
+        mock_openai_class: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level("WARNING", logger="backend.app.llm_client")
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_client.responses.input_tokens.count.side_effect = RuntimeError("private")
+        client = LLMClient(api_key="sk-test-key", model="gpt-5.4-nano")
+
+        with pytest.raises(
+            ContextBudgetError, match="input_token_count_failed"
+        ) as raised:
+            client.get_llm_response_with_file(
+                message="private content",
+                file_id="file-private",
+                session_id="session-private",
+            )
+
+        mock_client.responses.create.assert_not_called()
+        assert raised.value.__cause__ is None
+        assert "private content" not in caplog.text
+        assert "file-private" not in caplog.text
+        assert "session-private" not in caplog.text
+
+    @pytest.mark.parametrize("invalid_count", [True, "100"])
+    @patch("backend.app.llm_client.OpenAI")
+    def test_non_exact_integer_count_fails_closed(
+        self,
+        mock_openai_class: MagicMock,
+        invalid_count: object,
+    ) -> None:
+        mock_client = mock_openai_class.return_value
+        mock_client.responses.input_tokens.count.return_value.input_tokens = (
+            invalid_count
+        )
+
+        with pytest.raises(ContextBudgetError, match="input_token_count_failed"):
+            LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+                message="Specs?", file_id="file-123", session_id="session-123"
+            )
+
+        mock_client.responses.create.assert_not_called()
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_request_missing_official_counter_skips_create(
+        self,
+        mock_openai_class: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_client.responses.input_tokens = None
+        client = LLMClient(api_key="sk-test-key", model="gpt-5.4-nano")
+
+        with pytest.raises(
+            ContextBudgetError,
+            match="input_token_counter_unavailable",
+        ):
+            client.get_llm_response_with_file(
+                message="Specs?",
+                file_id="file-123",
+                session_id="test-session",
+            )
+
+        mock_client.responses.create.assert_not_called()
+
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_request_unknown_model_skips_count_and_create(
+        self,
+        mock_openai_class: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        client = LLMClient(api_key="sk-test-key", model="unknown-model")
+
+        with pytest.raises(ContextBudgetError, match="unknown_model"):
+            client.get_llm_response_with_file(
+                message="Specs?",
+                file_id="file-123",
+                session_id="test-session",
+            )
+
+        mock_client.responses.input_tokens.count.assert_not_called()
+        mock_client.responses.create.assert_not_called()
+
 
 class TestLLMClientWithFileReturnsLLMResponse:
     """Tests that get_llm_response_with_file returns LLMResponse with token extraction."""
@@ -470,10 +681,13 @@ class TestLLMClientWithFileReturnsLLMResponse:
         mock_response.usage.output_tokens = 100
         mock_response.usage.total_tokens = 300
         mock_client.responses.create.return_value = mock_response
+        _mock_official_input_count(mock_client)
 
         client = LLMClient(api_key="sk-test-key")
         result = client.get_llm_response_with_file(
-            message="Specs?", file_id="file-123", session_id="test-session"
+            message="Specs?",
+            file_id="file-123",
+            session_id="test-session",
         )
 
         assert isinstance(result, LLMResponse)
@@ -493,10 +707,13 @@ class TestLLMClientWithFileReturnsLLMResponse:
         mock_response.output_text = "Response text"
         mock_response.usage = None
         mock_client.responses.create.return_value = mock_response
+        _mock_official_input_count(mock_client)
 
         client = LLMClient(api_key="sk-test-key")
         result = client.get_llm_response_with_file(
-            message="Test", file_id="file-123", session_id="test-session"
+            message="Test",
+            file_id="file-123",
+            session_id="test-session",
         )
 
         assert isinstance(result, LLMResponse)

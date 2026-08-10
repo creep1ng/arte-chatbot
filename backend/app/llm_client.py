@@ -12,11 +12,19 @@ from openai import APIError, AuthenticationError, OpenAI
 
 from backend.app.config import settings
 from backend.app.conversation_logger import redact_text
+from backend.app.file_input_budget import (
+    ContextBudgetError,
+    validate_file_input_token_count,
+)
+from backend.app.model_capabilities import get_model_capabilities
 from backend.app.schemas import LLMResponse
 from backend.app.secret_resolver import configured_secret_value
 from backend.app.tools import get_tool_definitions
 
 logger = logging.getLogger(__name__)
+
+FILE_INPUT_REASONING_EFFORT = "none"
+FILE_INPUT_MAX_OUTPUT_TOKENS = 512
 
 
 def expand_query_with_context(message: str, history: list) -> str:
@@ -231,7 +239,7 @@ class LLMClient:
                 input=user_input,
                 tools=tools,
                 max_output_tokens=settings.llm_max_output_tokens,
-                reasoning={"effort": "medium"},
+                reasoning={"effort": "low"},
                 prompt_cache_key=session_id,
             )
 
@@ -301,33 +309,40 @@ class LLMClient:
             raise LLMServiceError("Missing OpenAI API key.")
 
         instructions = system_prompt or DATASHEET_SYSTEM_PROMPT
-
-        logger.debug(
-            "LLM call with file: model=%s, session_id=%s, file_id=%s, "
-            "message_preview=%s",
-            self.model,
-            session_id,
-            file_id,
-            redact_text(message)[:100],
+        input_payload: list[dict[str, object]] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_file", "file_id": file_id},
+                    {"type": "input_text", "text": message},
+                ],
+            }
+        ]
+        reasoning = {"effort": FILE_INPUT_REASONING_EFFORT}
+        self._preflight_file_input_request(
+            instructions=instructions,
+            input_payload=input_payload,
+            reasoning=reasoning,
         )
+
+        logger.debug("LLM File Input request preflight accepted: model=%s", self.model)
 
         try:
             response = self.openai_client.responses.create(
                 model=self.model,
                 instructions=instructions,
-                input=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_file", "file_id": file_id},
-                            {"type": "input_text", "text": message},
-                        ],
-                    }
-                ],
-                max_output_tokens=settings.llm_max_output_tokens,
-                reasoning={"effort": "medium"},
+                input=input_payload,
+                max_output_tokens=FILE_INPUT_MAX_OUTPUT_TOKENS,
+                reasoning=reasoning,
                 prompt_cache_key=session_id,
             )
+            if response.status == "incomplete":
+                reason = getattr(response.incomplete_details, "reason", None)
+                reason = reason if reason == "max_output_tokens" else "unknown"
+                logger.error(
+                    "File Input incomplete: model=%s reason=%s", self.model, reason
+                )
+                raise LLMServiceError("LLM File Input response incomplete") from None
 
             # Extract token usage (response.usage can be None)
             input_tokens = response.usage.input_tokens if response.usage else 0
@@ -341,12 +356,77 @@ class LLMClient:
                 total_tokens=total_tokens,
             )
 
-        except AuthenticationError as e:
-            logger.error("OpenAI authentication error (file): %s", e)
-            raise LLMServiceError("Invalid OpenAI API key") from e
-        except APIError as e:
-            logger.error("OpenAI API error (file): %s", e)
-            raise LLMServiceError(f"OpenAI API error: {e}") from e
-        except Exception as e:
-            logger.exception("Unexpected error calling OpenAI API (file): %s", e)
-            raise LLMServiceError(f"LLM service error: {e}") from e
+        except LLMServiceError:
+            raise
+        except Exception as error:
+            logger.error(
+                "LLM create failed: model=%s operation=file "
+                "reason=create_failed error_type=%s",
+                self.model,
+                type(error).__name__,
+            )
+            raise LLMServiceError("LLM create failed") from None
+
+    def _preflight_file_input_request(
+        self,
+        *,
+        instructions: str,
+        input_payload: list[dict[str, object]],
+        reasoning: dict[str, str],
+    ) -> None:
+        """Count the exact File Input payload remotely and fail closed."""
+        if get_model_capabilities(self.model) is None:
+            validate_file_input_token_count(
+                model=self.model,
+                config=settings.context_budget_config(),
+                counted_input_tokens=0,
+            )
+
+        input_tokens_resource = getattr(
+            self.openai_client.responses,
+            "input_tokens",
+            None,
+        )
+        count_method = getattr(input_tokens_resource, "count", None)
+        if not callable(count_method):
+            logger.warning(
+                "File Input token preflight rejected: model=%s "
+                "reason=input_token_counter_unavailable",
+                self.model,
+            )
+            raise ContextBudgetError(
+                "File Input request rejected by context budget: "
+                "input_token_counter_unavailable"
+            )
+
+        try:
+            count_response = count_method(
+                model=self.model,
+                instructions=instructions,
+                input=input_payload,
+                reasoning=reasoning,
+            )
+            counted_input_tokens = count_response.input_tokens
+            if type(counted_input_tokens) is not int:
+                raise TypeError("Input token count response was not an integer")
+        except Exception as error:
+            reason = (
+                "input_token_counter_unavailable"
+                if isinstance(error, AttributeError)
+                else "input_token_count_failed"
+            )
+            logger.warning(
+                "File Input token preflight rejected: model=%s reason=%s error_type=%s",
+                self.model,
+                reason,
+                type(error).__name__,
+            )
+            raise ContextBudgetError(
+                f"File Input request rejected by context budget: {reason}"
+            ) from None
+
+        validate_file_input_token_count(
+            model=self.model,
+            config=settings.context_budget_config(),
+            counted_input_tokens=counted_input_tokens,
+        )
