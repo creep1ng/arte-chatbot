@@ -327,14 +327,7 @@ class LLMClient:
             }
         ]
         reasoning = {"effort": FILE_INPUT_REASONING_EFFORT}
-        request_client = self.openai_client
-        if timeout_seconds is not None:
-            request_client = request_client.with_options(
-                timeout=min(timeout_seconds, settings.openai_timeout_seconds),
-                max_retries=0,
-            )
         self._preflight_file_input_request(
-            request_client=request_client,
             instructions=instructions,
             input_payload=input_payload,
             reasoning=reasoning,
@@ -343,6 +336,12 @@ class LLMClient:
         logger.debug("LLM File Input request preflight accepted: model=%s", self.model)
 
         try:
+            request_client = self.openai_client
+            if timeout_seconds is not None:
+                request_client = request_client.with_options(
+                    timeout=min(timeout_seconds, settings.openai_timeout_seconds),
+                    max_retries=0,
+                )
             response = request_client.responses.create(
                 model=self.model,
                 instructions=instructions,
@@ -380,12 +379,11 @@ class LLMClient:
                 self.model,
                 type(error).__name__,
             )
-            raise LLMServiceError("LLM create failed") from (error if type(error).__name__ == "APITimeoutError" else None)  # fmt: skip
+            raise LLMServiceError("LLM create failed") from None
 
     def _preflight_file_input_request(
         self,
         *,
-        request_client: OpenAI,
         instructions: str,
         input_payload: list[dict[str, object]],
         reasoning: dict[str, str],
@@ -399,7 +397,7 @@ class LLMClient:
             )
 
         input_tokens_resource = getattr(
-            request_client.responses,
+            self.openai_client.responses,
             "input_tokens",
             None,
         )
@@ -439,7 +437,7 @@ class LLMClient:
             )
             raise ContextBudgetError(
                 f"File Input request rejected by context budget: {reason}"
-            ) from (error if type(error).__name__ == "APITimeoutError" else None)
+            ) from None
 
         validate_file_input_token_count(
             model=self.model,

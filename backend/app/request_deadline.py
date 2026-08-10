@@ -29,7 +29,6 @@ class RequestDeadline:
     hard_at: float
     work_at: float
     minimum_operation_margin_seconds: float
-    started_at: float = 0.0
     clock: Callable[[], float] = field(
         default=time.monotonic, repr=False, compare=False
     )
@@ -47,7 +46,7 @@ class RequestDeadline:
         """Build cutoffs, falling back when Lambda remaining time is invalid."""
         effective_total = configured_total_seconds
         try:
-            lambda_seconds = float(lambda_remaining_ms) / 1000.0  # type: ignore[arg-type]
+            lambda_seconds = float(lambda_remaining_ms) / 1000.0
         except (TypeError, ValueError):
             lambda_seconds = 0.0
         if math.isfinite(lambda_seconds) and lambda_seconds > 0:
@@ -58,7 +57,6 @@ class RequestDeadline:
         return cls(
             hard_at=hard_at,
             work_at=hard_at - cleanup_reserve_seconds,
-            started_at=started_at,
             minimum_operation_margin_seconds=minimum_operation_margin_seconds,
             clock=clock,
         )
@@ -69,11 +67,7 @@ class RequestDeadline:
 
     def remaining_cleanup_seconds(self) -> float:
         """Return non-negative time remaining before the hard cutoff."""
-        return max(0.0, min(self.hard_at - self.clock(), self.hard_at - self.work_at))
-
-    def elapsed_seconds(self) -> float:
-        """Return elapsed monotonic time for sanitized telemetry."""
-        return max(0.0, self.clock() - self.started_at)
+        return max(0.0, self.hard_at - self.clock())
 
     def require_work(self, operation: str, iteration: Optional[int] = None) -> float:
         """Return the available allocation or reject work below its margin."""
