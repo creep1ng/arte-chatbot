@@ -220,6 +220,36 @@ class TestServerlessStateConfig:
             with pytest.raises(ValidationError):
                 Settings()
 
+    def test_request_deadline_defaults_preserve_positive_work_budget(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings()
+        assert (
+            settings.request_response_safety_seconds,
+            settings.request_cleanup_reserve_seconds,
+            settings.request_min_operation_margin_seconds,
+        ) == (2.0, 3.0, 1.0)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "REQUEST_RESPONSE_SAFETY_SECONDS",
+            "REQUEST_CLEANUP_RESERVE_SECONDS",
+            "REQUEST_MIN_OPERATION_MARGIN_SECONDS",
+        ],
+    )
+    def test_request_deadline_reserves_must_be_positive(self, name: str) -> None:
+        with pytest.raises(ValidationError):
+            Settings(**{name.lower(): 0})
+
+    def test_lambda_budget_must_exceed_all_request_reserves(self) -> None:
+        with pytest.raises(ValidationError, match="LAMBDA_TIMEOUT_SECONDS"):
+            Settings(
+                lambda_timeout_seconds=6,
+                request_response_safety_seconds=2,
+                request_cleanup_reserve_seconds=3,
+                request_min_operation_margin_seconds=1,
+            )
+
     def test_dynamodb_state_backend_requires_table_name(self) -> None:
         """DynamoDB state must fail fast when the table name is missing."""
         with patch.dict(os.environ, {"STATE_BACKEND": "dynamodb"}, clear=True):

@@ -59,7 +59,12 @@ class FileInputsClient:
             )
         return self._client
 
-    def upload_pdf(self, pdf_bytes: bytes, filename: str) -> str:
+    def upload_pdf(
+        self,
+        pdf_bytes: bytes,
+        filename: str,
+        timeout_seconds: Optional[float] = None,
+    ) -> str:
         """Upload a PDF file to OpenAI Files API with purpose="user_data".
 
         Args:
@@ -93,7 +98,13 @@ class FileInputsClient:
             file_obj.name = filename
 
             # Upload the file with purpose="user_data" for use in Chat Completions
-            response = self.client.files.create(
+            request_client = self.client
+            if timeout_seconds is not None:
+                request_client = request_client.with_options(
+                    timeout=min(timeout_seconds, settings.openai_timeout_seconds),
+                    max_retries=0,
+                )
+            response = request_client.files.create(
                 file=file_obj,
                 purpose="user_data",
             )
@@ -121,7 +132,9 @@ class FileInputsClient:
             )
             raise FileUploadError("Unexpected File Input upload failure") from e
 
-    def delete_file(self, file_id: str) -> None:
+    def delete_file(
+        self, file_id: str, timeout_seconds: Optional[float] = None
+    ) -> None:
         """Delete a file from OpenAI Files API.
 
         Args:
@@ -135,7 +148,13 @@ class FileInputsClient:
 
         try:
             logger.debug("File Input deletion initiated")
-            self.client.files.delete(file_id)
+            request_client = self.client
+            if timeout_seconds is not None:
+                request_client = request_client.with_options(
+                    timeout=min(timeout_seconds, settings.openai_timeout_seconds),
+                    max_retries=0,
+                )
+            request_client.files.delete(file_id)
             logger.info("File Input deletion completed")
         except AuthenticationError as e:
             logger.error("OpenAI authentication error during File Input deletion")

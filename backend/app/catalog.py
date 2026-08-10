@@ -121,7 +121,9 @@ class Catalog:
 _catalog_instance: Optional[Catalog] = None
 
 
-def get_catalog(force_reload: bool = False) -> Catalog:
+def get_catalog(
+    force_reload: bool = False, timeout_seconds: Optional[float] = None
+) -> Catalog:
     """
     Get the singleton catalog instance. Loads from S3 if not already loaded.
 
@@ -139,7 +141,9 @@ def get_catalog(force_reload: bool = False) -> Catalog:
     if _catalog_instance is None or force_reload:
         logger.info("Loading catalog index from S3: %s", CATALOG_INDEX_PATH)
         try:
-            index_bytes = s3_client.download_pdf(CATALOG_INDEX_PATH)
+            index_bytes = s3_client.download_pdf(
+                CATALOG_INDEX_PATH, timeout_seconds=timeout_seconds
+            )
             index_data = json.loads(index_bytes.decode("utf-8"))
             _catalog_instance = Catalog(index_data)
         except S3DownloadError as e:
