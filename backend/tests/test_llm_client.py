@@ -8,6 +8,7 @@ from collections.abc import Iterator
 import os
 from unittest.mock import MagicMock, call, patch
 
+from openai import APITimeoutError
 import pytest
 
 from backend.app import llm_client as llm_client_module
@@ -552,6 +553,25 @@ class TestLLMClientWithFile:
         base_client.with_options.assert_called_once_with(timeout=3.0, max_retries=0)
         count_client.responses.create.assert_not_called()
         base_client.responses.create.assert_not_called()
+
+    @pytest.mark.parametrize("operation", ["count", "create"])
+    @patch("backend.app.llm_client.OpenAI")
+    def test_file_timeout_keeps_cause(self, sdk: MagicMock, operation: str) -> None:
+        base_client = sdk.return_value
+        count_client, create_client = MagicMock(), MagicMock()
+        base_client.with_options.side_effect = [count_client, create_client]
+        _mock_official_input_count(count_client)
+        timeout = APITimeoutError(MagicMock())
+        target = count_client.responses.input_tokens.count
+        if operation == "create":
+            target = create_client.responses.create
+        target.side_effect = timeout
+        expected = {"count": ContextBudgetError, "create": LLMServiceError}[operation]
+        with pytest.raises(expected) as raised:
+            LLMClient(api_key="sk-test-key").get_llm_response_with_file(
+                "Test", "file-1", "session", timeout_seconds=3.0
+            )
+        assert raised.value.__cause__ is timeout
 
     def test_get_llm_response_with_file_raises_without_api_key(self) -> None:
         """Test get_llm_response_with_file raises error without API key."""

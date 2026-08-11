@@ -9,6 +9,7 @@ import os
 from typing import Any, Optional
 
 import boto3
+from botocore.client import BaseClient  # type: ignore[import-untyped]
 from botocore.config import Config
 from botocore.exceptions import ClientError, NoCredentialsError
 
@@ -112,7 +113,7 @@ class S3Client:
             )
         return self._client
 
-    def _client_for_timeout(self, timeout_seconds: Optional[float]):
+    def _client_for_timeout(self, timeout_seconds: Optional[float]) -> BaseClient:
         """Return the shared client or a one-attempt request-scoped client."""
         if timeout_seconds is None:
             return self.client
