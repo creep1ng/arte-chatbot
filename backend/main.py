@@ -36,10 +36,11 @@ from backend.app.logging_config import setup_logging
 # Configure logging before anything else (reads LOG_LEVEL from centralized settings)
 setup_logging()
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from mangum import Mangum
+from openai import APITimeoutError
 from pydantic import BaseModel, Field
 
 from backend.app.auth import api_key_principal, verify_api_key
@@ -78,6 +79,7 @@ from backend.app.message_buffer import (
 )
 
 from backend.app.message_splitter import process_split_messages
+from backend.app.request_deadline import RequestDeadline, RequestDeadlineExceeded
 from backend.app.s3_client import S3Client, S3DownloadError
 from backend.app.schemas import LLMResponse, SourceDocument
 from backend.app.security import (
@@ -294,6 +296,84 @@ def get_catalog_search() -> Any:
 
 
 MAX_AGENTIC_ITERATIONS = int(os.getenv("MAX_AGENTIC_ITERATIONS", "5"))
+
+
+def _request_deadline(scope: Optional[Any] = None) -> RequestDeadline:
+    context = (scope or {}).get("aws.context")
+    get_remaining = getattr(context, "get_remaining_time_in_millis", None)
+    try:
+        lambda_remaining_ms = get_remaining() if callable(get_remaining) else None
+    except Exception:
+        lambda_remaining_ms = None
+    return RequestDeadline.from_budget(
+        configured_total_seconds=settings.lambda_timeout_seconds,
+        response_safety_seconds=settings.request_response_safety_seconds,
+        cleanup_reserve_seconds=settings.request_cleanup_reserve_seconds,
+        minimum_operation_margin_seconds=settings.request_min_operation_margin_seconds,
+        lambda_remaining_ms=lambda_remaining_ms,
+    )
+
+
+def _is_timeout_error(error: BaseException) -> bool:
+    while error:
+        if isinstance(error, (TimeoutError, APITimeoutError)):
+            return True
+        error = error.__cause__  # type: ignore[assignment]
+    return False
+
+
+async def _bounded(
+    deadline: RequestDeadline,
+    operation: str,
+    function: Any,
+    *args: Any,
+    iteration: Optional[int] = None,
+    pass_timeout: bool = False,
+    **kwargs: Any,
+) -> Any:
+    allocation = deadline.require_work(operation, iteration)
+    if pass_timeout:
+        kwargs["timeout_seconds"] = allocation
+    try:
+        async with asyncio.timeout(allocation):
+            return await asyncio.to_thread(function, *args, **kwargs)
+    except Exception as error:
+        if not _is_timeout_error(error):
+            raise
+        raise RequestDeadlineExceeded(
+            operation, "operation_timeout", iteration
+        ) from None
+
+
+async def _download_pdf(deadline: RequestDeadline, client: S3Client, key: str) -> bytes:
+    return await _bounded(deadline, "s3_download", client.download_pdf, key, pass_timeout=True)  # fmt: skip
+
+
+async def _cleanup_file(
+    client: FileInputsClient,
+    file_id: str,
+    deadline: RequestDeadline,
+    request_id: str,
+) -> None:
+    timeout = deadline.remaining_cleanup_seconds()
+    outcome = "timeout"
+    try:
+        if timeout <= 0:
+            raise TimeoutError
+        async with asyncio.timeout(timeout):
+            await asyncio.to_thread(
+                client.delete_file, file_id, timeout_seconds=timeout
+            )
+        outcome = "success"
+    except TimeoutError:
+        pass
+    except Exception:
+        outcome = "failure"
+    logger.info(
+        "Request cleanup: request_id=%s operation=file_delete outcome=%s",
+        request_id,
+        outcome,
+    )
 
 
 def _fire_conversation_log(
@@ -560,6 +640,7 @@ def _handle_buscar_producto_tool(
 def _process_buscar_producto(
     arguments: dict[str, Any],
     session_id: str,
+    timeout_seconds: Optional[float] = None,
 ) -> str:
     """Process a buscar_producto tool call.
 
@@ -593,7 +674,7 @@ def _process_buscar_producto(
         return "Error: Se requiere especificar una categoría (paneles, inversores, controladores, baterias)."
 
     try:
-        catalog = get_catalog()
+        catalog = get_catalog(timeout_seconds=timeout_seconds)
         results = catalog.search(
             categoria=categoria,
             fabricante=fabricante,
@@ -651,6 +732,8 @@ async def _process_leer_ficha_tecnica(
     s3_client: S3Client,
     file_inputs_client: FileInputsClient,
     system_prompt: Optional[str] = None,
+    deadline: Optional[RequestDeadline] = None,
+    request_id: Optional[str] = None,
 ) -> tuple[LLMResponse, list[str]]:
     """Process a tool call for reading a technical datasheet.
 
@@ -673,6 +756,9 @@ async def _process_leer_ficha_tecnica(
     if function_name != "leer_ficha_tecnica":
         raise ValueError(f"Unknown tool: {function_name}")
 
+    deadline = deadline or _request_deadline()
+    request_id = request_id or str(uuid.uuid4())
+
     # Parse tool arguments
     arguments = _parse_tool_arguments(tool_call)
     ruta_s3 = arguments.get("ruta_s3")
@@ -684,7 +770,9 @@ async def _process_leer_ficha_tecnica(
     if ruta_s3:
         validate_s3_path(ruta_s3)
         try:
-            catalog = get_catalog()
+            catalog = await _bounded(
+                deadline, "catalog", get_catalog, pass_timeout=True
+            )
         except CatalogError as e:
             logger.error(
                 "File Input catalog validation failed: "
@@ -722,10 +810,15 @@ async def _process_leer_ficha_tecnica(
             )
 
         try:
-            catalog = get_catalog()
+            catalog = await _bounded(
+                deadline, "catalog", get_catalog, pass_timeout=True
+            )
             # Search by categoria and optionally fabricante/modelo
             modelo_contiene = modelo if modelo else None
-            results = catalog.search(
+            results = await _bounded(
+                deadline,
+                "catalog",
+                catalog.search,
                 categoria=categoria,
                 fabricante=fabricante,
                 modelo_contiene=modelo_contiene,
@@ -762,7 +855,7 @@ async def _process_leer_ficha_tecnica(
 
     # Download PDF from S3
     try:
-        pdf_bytes = await asyncio.to_thread(s3_client.download_pdf, ruta_s3)
+        pdf_bytes = await _download_pdf(deadline, s3_client, ruta_s3)
     except S3DownloadError:
         # Fallback: if direct download fails, search catalog using other parameters
         logger.info(
@@ -774,9 +867,14 @@ async def _process_leer_ficha_tecnica(
         )
 
         if categoria:
-            catalog = get_catalog()
+            catalog = await _bounded(
+                deadline, "catalog", get_catalog, pass_timeout=True
+            )
             modelo_contiene = modelo if modelo else None
-            results = catalog.search(
+            results = await _bounded(
+                deadline,
+                "catalog",
+                catalog.search,
                 categoria=categoria,
                 fabricante=fabricante,
                 modelo_contiene=modelo_contiene,
@@ -789,7 +887,7 @@ async def _process_leer_ficha_tecnica(
                 logger.info(
                     "File Input download fallback resolved: matches=1 selection=single"
                 )
-                pdf_bytes = await asyncio.to_thread(s3_client.download_pdf, ruta_s3)
+                pdf_bytes = await _download_pdf(deadline, s3_client, ruta_s3)
             elif len(results) > 1:
                 # Multiple products found - pick first one as fallback (deterministic)
                 ruta_s3 = results[0].ruta_s3
@@ -798,7 +896,7 @@ async def _process_leer_ficha_tecnica(
                     "File Input download fallback resolved: matches=%d selection=first",
                     len(results),
                 )
-                pdf_bytes = await asyncio.to_thread(s3_client.download_pdf, ruta_s3)
+                pdf_bytes = await _download_pdf(deadline, s3_client, ruta_s3)
             else:
                 # No results found in catalog fallback
                 raise ValueError(
@@ -818,29 +916,30 @@ async def _process_leer_ficha_tecnica(
     )
 
     # Upload PDF to OpenAI
-    file_id = await asyncio.to_thread(
-        file_inputs_client.upload_pdf, pdf_bytes, filename
+    file_id = await _bounded(
+        deadline,
+        "file_upload",
+        file_inputs_client.upload_pdf,
+        pdf_bytes,
+        filename,
+        pass_timeout=True,
     )
 
     # Second LLM call with file
     try:
-        llm_response = await asyncio.to_thread(
+        llm_response = await _bounded(
+            deadline,
+            "file_llm",
             llm_client.get_llm_response_with_file,
             message=user_message,
             file_id=file_id,
             session_id=session_id,
             system_prompt=system_prompt,
+            pass_timeout=True,
         )
         return llm_response, [ruta_s3]
     finally:
-        # Clean up: delete the uploaded file
-        try:
-            await asyncio.to_thread(file_inputs_client.delete_file, file_id)
-        except Exception as e:
-            logger.warning(
-                "Failed to delete uploaded File Input: error_type=%s",
-                type(e).__name__,
-            )
+        await _cleanup_file(file_inputs_client, file_id, deadline, request_id)
 
 
 # Alias for backward compatibility with tests
@@ -854,9 +953,11 @@ async def _process_chat_message(
     s3_client: S3Client,
     file_inputs_client: FileInputsClient,
     request_id: Optional[str] = None,
+    deadline: Optional[RequestDeadline] = None,
 ) -> ChatResponse:
     """Core chat processing logic shared between endpoint and buffer callback."""
     request_id = request_id or str(uuid.uuid4())
+    deadline = deadline or _request_deadline()
     request_start = time.time()
 
     logger.debug(
@@ -1023,12 +1124,16 @@ async def _process_chat_message(
                 llm_client.model,
                 iteration,
             )
-            llm_response = await asyncio.to_thread(
+            llm_response = await _bounded(
+                deadline,
+                "llm",
                 llm_client.get_llm_response_with_tools,
                 message=user_input,
                 session_id=session_id,
                 system_prompt=system_prompt_with_profile,
                 context=request_context,
+                iteration=iteration,
+                pass_timeout=True,
             )
 
             last_output_text = llm_response.text
@@ -1216,9 +1321,14 @@ async def _process_chat_message(
 
                 try:
                     if function_name == "buscar_producto":
-                        result_content = _process_buscar_producto(
+                        result_content = await _bounded(
+                            deadline,
+                            "catalog",
+                            _process_buscar_producto,
                             arguments=arguments,
                             session_id=session_id,
+                            iteration=iteration,
+                            pass_timeout=True,
                         )
                         tool_results.append(
                             {
@@ -1241,6 +1351,8 @@ async def _process_chat_message(
                             s3_client=s3_client,
                             file_inputs_client=file_inputs_client,
                             system_prompt=datasheet_system_prompt,
+                            deadline=deadline,
+                            request_id=request_id,
                         )
                         acc_input_tokens += ficha_response.input_tokens
                         acc_output_tokens += ficha_response.output_tokens
@@ -1275,6 +1387,8 @@ async def _process_chat_message(
                                 "success": False,
                             }
                         )
+                except RequestDeadlineExceeded:
+                    raise
                 except S3DownloadError as e:
                     logger.error(
                         "Tool call failed: function=%s reason=s3_download_error "
@@ -1574,6 +1688,37 @@ async def _process_chat_message(
             total_tokens=acc_total_tokens,
         )
 
+    except RequestDeadlineExceeded as error:
+        response_text = (
+            "No pude completar la consulta dentro del tiempo disponible. "
+            "Por favor, intentá nuevamente o contactá a un agente."
+        )
+        logger.warning(
+            "Request deadline: request_id=%s operation=%s timeout_class=%s "
+            "iteration=%s elapsed_ms=%d",
+            request_id,
+            error.operation,
+            error.timeout_class,
+            error.iteration,
+            int(deadline.elapsed_seconds() * 1000),
+        )
+        session_manager.add_turn(session_id, message, response_text, [])
+        session_manager.add_token_usage(
+            session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+        )
+        return ChatResponse(
+            response=response_text,
+            escalate=True,
+            intent_type="request_timeout",
+            reason="request_timeout",
+            session_id=session_id,
+            source_documents=[],
+            num_sources=0,
+            input_tokens=acc_input_tokens,
+            output_tokens=acc_output_tokens,
+            total_tokens=acc_total_tokens,
+        )
+
     except LLMServiceError as e:
         logger.error(
             "LLM service error: request_id=%s, session_id=%s, error=%s",
@@ -1650,6 +1795,7 @@ async def _on_buffer_window_expired(
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(
     request: ChatRequest,
+    http_request: Request,
     api_key: Annotated[str, Depends(verify_api_key)],
     llm_client: Annotated[LLMClient, Depends(get_llm_client)],
     s3_client: Annotated[S3Client, Depends(get_s3_client)],
@@ -1671,6 +1817,7 @@ async def chat_endpoint(
     session_id = request.session_id or str(uuid.uuid4())
     validate_session_id(session_id)
     bind_or_validate_session(session_id, principal, is_new=is_new_session)
+    deadline = _request_deadline(http_request.scope)
     request_id = str(uuid.uuid4())
     processing_lease: Optional[ProcessingLease] = None
 
@@ -1729,6 +1876,7 @@ async def chat_endpoint(
             s3_client=s3_client,
             file_inputs_client=file_inputs_client,
             request_id=request_id,
+            deadline=deadline,
         )
     except LLMServiceError as e:
         logger.error(

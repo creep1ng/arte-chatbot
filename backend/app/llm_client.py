@@ -392,7 +392,7 @@ class LLMClient:
                 self.model,
                 type(error).__name__,
             )
-            raise LLMServiceError("LLM create failed") from None
+            raise LLMServiceError("LLM create failed") from (error if type(error).__name__ == "APITimeoutError" else None)  # fmt: skip
 
     def _preflight_file_input_request(
         self,
@@ -451,7 +451,7 @@ class LLMClient:
             )
             raise ContextBudgetError(
                 f"File Input request rejected by context budget: {reason}"
-            ) from None
+            ) from (error if type(error).__name__ == "APITimeoutError" else None)
 
         validate_file_input_token_count(
             model=self.model,

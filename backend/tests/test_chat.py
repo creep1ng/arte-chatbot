@@ -685,7 +685,9 @@ class TestChatEndpointWithToolCall:
             )
 
         # Verify delete was called after the second LLM call
-        mock_file_inputs.delete_file.assert_called_once_with("file-abc123")
+        mock_file_inputs.delete_file.assert_called_once_with(
+            "file-abc123", timeout_seconds=3.0
+        )
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_chat_endpoint_returns_normal_response_when_no_tool_call(
@@ -1256,7 +1258,9 @@ class TestProcessToolCall:
 
         assert "460W" in result.text
         assert source_docs == ["raw/paneles/route-secret-a.pdf"]
-        mock_file_inputs.delete_file.assert_called_once_with("file-secret-xyz789")
+        mock_file_inputs.delete_file.assert_called_once_with(
+            "file-secret-xyz789", timeout_seconds=3.0
+        )
         assert "matches=2 selection=first" in caplog.text
         for secret in (
             "route-secret",
