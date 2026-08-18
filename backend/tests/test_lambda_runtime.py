@@ -391,6 +391,51 @@ async def test_two_due_buffer_pollers_run_one_processor(
 
 
 @pytest.mark.asyncio
+async def test_competing_pollers_cannot_consume_response_before_owner_release() -> None:
+    """Owner completion exposes one response without an intermediate not-found."""
+    from backend.app import message_buffer
+    from backend.app.auth import api_key_principal
+    from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+    from backend.app.session import session_manager
+    from backend.main import get_buffer_result
+    from backend.tests.test_state_repository import FakeDynamoDBTable
+
+    repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+    session_id = "owned-poll-response"
+    principal = api_key_principal("lambda-test-key")
+    now = datetime.now(timezone.utc)
+    session_manager.set_state_repository(repository)
+    message_buffer.set_state_repository(repository)
+    repository.bind_owner(session_id, principal)
+    lease = message_buffer.acquire_processing_lease(session_id, now=now, token="owner")
+    assert lease.lease is not None
+    repository.set_pending_chat_response(session_id, '"early"')
+
+    try:
+        competing = await asyncio.gather(
+            get_buffer_result(session_id, "lambda-test-key"),
+            get_buffer_result(session_id, "lambda-test-key"),
+        )
+        assert [result.status for result in competing] == ["pending", "pending"]
+        assert (
+            repository.get_buffer_state(session_id).pending_chat_response == '"early"'
+        )
+
+        completed = message_buffer.complete_processing(
+            session_id, lease.lease.token, '"ready"'
+        )
+        owner_result = await get_buffer_result(session_id, "lambda-test-key")
+        consumed = await get_buffer_result(session_id, "lambda-test-key")
+    finally:
+        session_manager.set_state_repository(None)
+        message_buffer.set_state_repository(None)
+
+    assert completed.completed
+    assert owner_result.status == "ready" and owner_result.result == '"ready"'
+    assert consumed.status == "not_found"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
 async def test_buffer_callback_commits_errors_but_preserves_cancelled_work(
     monkeypatch: pytest.MonkeyPatch,

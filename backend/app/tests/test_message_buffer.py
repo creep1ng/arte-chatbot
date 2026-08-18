@@ -717,6 +717,25 @@ class TestLocalPendingState:
         assert message_buffer.pop_pending_chat_response("s1") is None
         assert message_buffer.is_processing("s1") is True
 
+    def test_active_local_owner_fences_pending_response_consumption(self) -> None:
+        from backend.app import message_buffer
+
+        now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+        acquired = message_buffer.acquire_processing_lease("s1", now=now, token="owner")
+        message_buffer.set_pending_chat_response("s1", '"early"')
+
+        assert (
+            message_buffer.pop_pending_chat_response_if_unowned("s1", now=now) is None
+        )
+        assert acquired.lease is not None
+        assert message_buffer.complete_processing(
+            "s1", acquired.lease.token, '"ready"'
+        ).completed
+        assert (
+            message_buffer.pop_pending_chat_response_if_unowned("s1", now=now)
+            == '"ready"'
+        )
+
     @pytest.mark.parametrize(
         ("setter_name", "popper_name"),
         [

@@ -153,6 +153,23 @@ class FakeDynamoDBTable:
             ):
                 FakeDynamoDBTable._conditional_failure("pending value is not a string")
             return
+        if expression == (
+            "attribute_type(#response, :string_type) AND "
+            "(attribute_not_exists(#lease_token) OR "
+            "attribute_not_exists(#lease_expires_at) OR "
+            "#lease_expires_at <= :now)"
+        ):
+            response_name = names["#response"]
+            lease_token = names["#lease_token"]
+            lease_expiry = names["#lease_expires_at"]
+            has_active_lease = (
+                lease_token in item
+                and lease_expiry in item
+                and item[lease_expiry] > values[":now"]
+            )
+            if not isinstance(item.get(response_name), str) or has_active_lease:
+                FakeDynamoDBTable._conditional_failure("response is owned")
+            return
         if expression == "attribute_not_exists(#owner) OR #owner = :owner":
             owner_name = names.get("#owner")
             if owner_name != "owner":
@@ -271,6 +288,11 @@ class FakeDynamoDBTable:
         if expression in ("REMOVE #pending", "REMOVE #pending, #additional"):
             for alias in expression.removeprefix("REMOVE ").split(", "):
                 item.pop(names.get(alias, alias), None)
+            return
+
+        if expression == "REMOVE #response, #processing_started_at":
+            item.pop(names["#response"], None)
+            item.pop(names["#processing_started_at"], None)
             return
 
         if expression == (
@@ -1089,6 +1111,21 @@ def test_processing_lease_requires_recoverable_work() -> None:
     assert repository.get_buffer_state("s1").messages[0].message == "later"
 
 
+def test_owned_response_is_hidden_until_fenced_terminal_transition() -> None:
+    """Polling cannot consume response state while a worker still owns it."""
+    repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="owner", expires_at=now + timedelta(seconds=30))
+    assert repository.try_acquire_processing_lease("s1", now=now, lease=lease).acquired
+    repository.set_pending_chat_response("s1", '"early"')
+
+    assert repository.pop_pending_chat_response_if_unowned("s1", now) is None
+    assert repository.get_buffer_state("s1").pending_chat_response == '"early"'
+    assert repository.complete_processing("s1", lease.token, '"ready"').completed
+    assert repository.pop_pending_chat_response_if_unowned("s1", now) == '"ready"'
+    assert repository.pop_pending_chat_response_if_unowned("s1", now) is None
+
+
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:
     now = datetime.now(timezone.utc)
     lease = ProcessingLease(token="owner", expires_at=now)
@@ -1147,12 +1184,17 @@ def test_processing_lease_translates_only_conditional_errors() -> None:
     ).acquired
     assert not repository.release_processing_lease("s1", "token").released
     assert not repository.complete_processing("s1", "token", '"ready"').completed
+    assert repository.pop_pending_chat_response_if_unowned("s1", now) is None
 
     table.code = "ProvisionedThroughputExceededException"
     with pytest.raises(ClientError):
         repository.try_acquire_processing_lease("s1", now=now, lease=lease)
     with pytest.raises(ClientError):
         repository.release_processing_lease("s1", "token")
+    with pytest.raises(ClientError):
+        repository.complete_processing("s1", "token", '"ready"')
+    with pytest.raises(ClientError):
+        repository.pop_pending_chat_response_if_unowned("s1", now)
 
 
 def test_rate_limit_uses_shared_counter(repository: DynamoDBStateRepository) -> None:

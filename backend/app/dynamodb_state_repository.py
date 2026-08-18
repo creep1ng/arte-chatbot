@@ -302,6 +302,38 @@ class DynamoDBStateRepository:
             additional_remove="processing_started_at",
         )
 
+    def pop_pending_chat_response_if_unowned(
+        self, session_id: str, now: datetime
+    ) -> Optional[str]:
+        """Atomically consume a response only outside active ownership."""
+        try:
+            response = self._table.update_item(
+                Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+                UpdateExpression=("REMOVE #response, #processing_started_at"),
+                ConditionExpression=(
+                    "attribute_type(#response, :string_type) AND "
+                    "(attribute_not_exists(#lease_token) OR "
+                    "attribute_not_exists(#lease_expires_at) OR "
+                    "#lease_expires_at <= :now)"
+                ),
+                ExpressionAttributeNames={
+                    "#response": "pending_chat_response",
+                    "#processing_started_at": "processing_started_at",
+                    "#lease_token": "lease_token",
+                    "#lease_expires_at": "lease_expires_at",
+                },
+                ExpressionAttributeValues={
+                    ":string_type": "S",
+                    ":now": self._epoch_seconds(now),
+                },
+                ReturnValues="ALL_OLD",
+            )
+        except ClientError as exc:
+            if self._is_conditional_failure(exc):
+                return None
+            raise
+        return str(response["Attributes"]["pending_chat_response"])
+
     def set_processing(self, session_id: str) -> None:
         """Mark a session as being processed."""
         self._table.update_item(
