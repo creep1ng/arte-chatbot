@@ -138,19 +138,19 @@ def test_deterministic_gate_rejects_an_omitted_test_root(
             id="echo-wrapper",
         ),
         pytest.param(
-            '        run: uv run pytest backend/tests backend/app/tests rag/tests -m "not live"',
+            '        run: uv run pytest backend/tests backend/app/tests rag/tests evaluation/tests evaluation/harness/tests evaluation/context_budget -m "not live"',
             "        run: |\n"
-            "          uv run pytest backend/tests backend/app/tests rag/tests "
+            "          uv run pytest backend/tests backend/app/tests rag/tests evaluation/tests evaluation/harness/tests evaluation/context_budget "
             '-m "not live"\n'
-            "          uv run pytest backend/tests backend/app/tests rag/tests "
+            "          uv run pytest backend/tests backend/app/tests rag/tests evaluation/tests evaluation/harness/tests evaluation/context_budget "
             '-m "not live"',
             id="multiple-pytest-commands",
         ),
         pytest.param(
-            '        run: uv run pytest backend/tests backend/app/tests rag/tests -m "not live"',
+            '        run: uv run pytest backend/tests backend/app/tests rag/tests evaluation/tests evaluation/harness/tests evaluation/context_budget -m "not live"',
             "        run: |\n"
             "          uv run pytest backend/tests\n"
-            '          uv run pytest backend/app/tests rag/tests -m "not live"',
+            '          uv run pytest backend/app/tests rag/tests evaluation/tests evaluation/harness/tests evaluation/context_budget -m "not live"',
             id="split-pytest-arguments",
         ),
         pytest.param(
@@ -166,11 +166,11 @@ def test_deterministic_gate_rejects_an_omitted_test_root(
         ),
         pytest.param(
             "      - name: Run deterministic Python suites\n"
-            '        run: uv run pytest backend/tests backend/app/tests rag/tests -m "not live"',
+            '        run: uv run pytest backend/tests backend/app/tests rag/tests evaluation/tests evaluation/harness/tests evaluation/context_budget -m "not live"',
             "      - name: Run deterministic Python suites\n"
             "        shell: bash {0}\n"
             "        run: |\n"
-            "          uv run pytest backend/tests backend/app/tests rag/tests "
+            "          uv run pytest backend/tests backend/app/tests rag/tests evaluation/tests evaluation/harness/tests evaluation/context_budget "
             '-m "not live"\n\n'
             "          true",
             id="custom-shell-blank-line-multicommand",

@@ -48,6 +48,9 @@ Results are saved to `evaluation/harness/output/` with timestamps:
 | Hallucination rate | `<= 20%` | `unsupported_technical_numeric_claims_v1` detector |
 | p95 latency | `<= 5000 ms` | Nearest-rank p95 among successful queries |
 
+Escalation accuracy and p95 latency are advisory pending #210-#213 because their
+stable baseline behavior does not yet meet the provisional thresholds.
+
 The hallucination detector flags technical numeric claims without a source or
 absent from inspectable source text. Source-less nontechnical prose is allowed.
 
