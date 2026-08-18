@@ -370,6 +370,10 @@ class DynamoDBStateRepository:
                     "#processing_started_at = :started, #expires_at = :ttl"
                 ),
                 ConditionExpression=(
+                    "(attribute_not_exists(#payload) OR "
+                    "attribute_type(#payload, :list_type)) AND "
+                    "(attribute_not_exists(#messages) OR "
+                    "attribute_type(#messages, :list_type)) AND "
                     "((attribute_type(#payload, :list_type) AND "
                     "size(#payload) > :zero) OR (attribute_type(#messages, "
                     ":list_type) AND size(#messages) > :zero)) AND "

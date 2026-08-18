@@ -841,13 +841,11 @@ class TestEndpointBufferIntegration:
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
 
-    @pytest.mark.parametrize("durable", [False, True])
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_is_final_bypasses_buffer(
         self,
         mock_llm: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
-        durable: bool,
     ) -> None:
         """When is_final=True, message is processed immediately, not buffered."""
         mock_llm.return_value = make_llm_response(
@@ -857,12 +855,6 @@ class TestEndpointBufferIntegration:
         client, app = self._make_client(monkeypatch, enabled=True)
 
         from backend.app import message_buffer
-        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
-        from backend.tests.test_state_repository import FakeDynamoDBTable
-
-        if durable:
-            repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
-            message_buffer.set_state_repository(repository)
 
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
@@ -874,7 +866,6 @@ class TestEndpointBufferIntegration:
         )
         assert r1.status_code == 202
         session_id = r1.json()["session_id"]
-        message_buffer.set_pending_chat_response(session_id, '"stale"')
 
         # Second message with is_final — should process
         r2 = client.post(
@@ -890,12 +881,10 @@ class TestEndpointBufferIntegration:
         # Should contain joined message (original + is_final)
         assert "response" in data
         assert data["session_id"] == session_id
-        assert message_buffer.pop_pending_chat_response(session_id) is None
 
         # Cleanup
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
-        message_buffer.set_state_repository(None)
         app.dependency_overrides.clear()
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")

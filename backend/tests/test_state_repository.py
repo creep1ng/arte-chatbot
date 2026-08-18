@@ -161,6 +161,9 @@ class FakeDynamoDBTable:
                 FakeDynamoDBTable._conditional_failure("owner mismatch")
             return
         if expression == (
+            "(attribute_not_exists(#payload) OR attribute_type(#payload, "
+            ":list_type)) AND (attribute_not_exists(#messages) OR "
+            "attribute_type(#messages, :list_type)) AND "
             "((attribute_type(#payload, :list_type) AND size(#payload) > :zero) OR "
             "(attribute_type(#messages, :list_type) AND size(#messages) > :zero)) "
             "AND (attribute_not_exists(#lease_token) OR "
@@ -171,14 +174,13 @@ class FakeDynamoDBTable:
                 raise ValueError("Unsupported work attribute mapping")
             if (values[":list_type"], values[":zero"]) != ("L", 0):
                 raise ValueError("Unsupported work predicate values")
-            has_work = any(
-                isinstance(item.get(field), list) and bool(item[field])
-                for field in work_fields
-            )
+            work = [item.get(field, []) for field in work_fields]
+            has_work = any(isinstance(value, list) and value for value in work)
+            has_valid_types = all(isinstance(value, list) for value in work)
             has_lease = "lease_token" in item and "lease_expires_at" in item
             expiry = item.get("lease_expires_at")
             is_expired = isinstance(expiry, Number) and expiry <= values[":now"]
-            if not has_work or (has_lease and not is_expired):
+            if not has_valid_types or not has_work or (has_lease and not is_expired):
                 FakeDynamoDBTable._conditional_failure("lease unavailable or no work")
             return
         if expression == (
@@ -1069,7 +1071,13 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
 def test_processing_lease_requires_recoverable_work() -> None:
     now = datetime(2026, 8, 18, tzinfo=timezone.utc)
     lease = ProcessingLease(token="owner", expires_at=now + timedelta(minutes=1))
-    rows = ({}, {"messages": "invalid"}, {"processing_payload": {}}, {"messages": []})
+    valid = [{"message": "work", "timestamp": now.isoformat()}]
+    rows = ({}, {"messages": "invalid"}, {"processing_payload": {}})
+    rows += (
+        {"messages": valid, "processing_payload": {}},
+        {"processing_payload": valid, "messages": "invalid"},
+        {"messages": []},
+    )
     for work in rows:
         table = FakeDynamoDBTable()
         table.put_item(Item={"PK": "SESSION#s1", "SK": "BUFFER", **work})
