@@ -210,6 +210,7 @@ def test_chat_processes_owned_batch_from_stale_precount(
     owned = OwnedBufferedMessage(message="first\nsecond", lease=lease)
     processed: list[str] = []
     released: list[str] = []
+    completion = type("Completion", (), {"completed": True})()
 
     async def overflow(*_: Any, **__: Any) -> OwnedBufferedMessage:
         return owned
@@ -226,8 +227,8 @@ def test_chat_processes_owned_batch_from_stale_precount(
     monkeypatch.setattr("backend.main.schedule_flush", reject_schedule)
     monkeypatch.setattr("backend.main._process_chat_message", process)
     monkeypatch.setattr(
-        "backend.main.release_processing_lease",
-        lambda _session_id, token: released.append(token),
+        "backend.main.complete_processing",
+        lambda _session_id, token, response_json: released.append(token) or completion,
     )
 
     response = handler(
@@ -391,11 +392,11 @@ async def test_two_due_buffer_pollers_run_one_processor(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
-async def test_buffer_callback_always_releases_its_lease(
+async def test_buffer_callback_commits_errors_but_preserves_cancelled_work(
     monkeypatch: pytest.MonkeyPatch,
     error_type: type[BaseException],
 ) -> None:
-    """Callback errors and cancellation cannot leak processing ownership."""
+    """Terminal errors publish, while worker death leaves recoverable ownership."""
     from backend.app import message_buffer
     from backend.main import _on_buffer_window_expired
 
@@ -413,7 +414,9 @@ async def test_buffer_callback_always_releases_its_lease(
     else:
         await _on_buffer_window_expired(session_id, "Hola", acquired.lease)
 
-    assert not message_buffer.has_active_processing_lease(session_id)
+    assert message_buffer.has_active_processing_lease(session_id) is issubclass(
+        error_type, asyncio.CancelledError
+    )
 
 
 def test_auth_override_is_not_required_for_lambda_auth() -> None:

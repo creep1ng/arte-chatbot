@@ -496,8 +496,9 @@ class TestLocalProcessingLease:
 
         local_outcomes = exercise()
         message_buffer.set_state_repository(
-            DynamoDBStateRepository(table=FakeDynamoDBTable())
+            repository := DynamoDBStateRepository(table=FakeDynamoDBTable())
         )
+        repository.append_buffer_message("parity", "work")
         try:
             repository_outcomes = exercise()
         finally:

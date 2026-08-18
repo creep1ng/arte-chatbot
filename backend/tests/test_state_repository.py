@@ -3,6 +3,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from numbers import Number
+import re
 from threading import Barrier, Event, RLock, Thread, current_thread
 from typing import Any, Callable
 
@@ -114,6 +116,11 @@ class FakeDynamoDBTable:
         key = (Key["PK"], Key["SK"])
         names = ExpressionAttributeNames or {}
         expression = " ".join(UpdateExpression.split())
+        used = f"{UpdateExpression} {ConditionExpression or ''}"
+        used_names = set(re.findall(r"#[A-Za-z0-9_]+", used))
+        used_values = set(re.findall(r":[A-Za-z0-9_]+", used))
+        if used_names != set(names) or used_values != set(ExpressionAttributeValues):
+            raise ValueError("Unused expression attribute")
 
         with self._lock:
             item = deepcopy(self.items.get(key, {"PK": Key["PK"], "SK": Key["SK"]}))
@@ -154,6 +161,29 @@ class FakeDynamoDBTable:
                 FakeDynamoDBTable._conditional_failure("owner mismatch")
             return
         if expression == (
+            "(attribute_not_exists(#payload) OR attribute_type(#payload, "
+            ":list_type)) AND (attribute_not_exists(#messages) OR "
+            "attribute_type(#messages, :list_type)) AND "
+            "((attribute_type(#payload, :list_type) AND size(#payload) > :zero) OR "
+            "(attribute_type(#messages, :list_type) AND size(#messages) > :zero)) "
+            "AND (attribute_not_exists(#lease_token) OR "
+            "attribute_not_exists(#lease_expires_at) OR #lease_expires_at <= :now)"
+        ):
+            work_fields = names["#payload"], names["#messages"]
+            if work_fields != ("processing_payload", "messages"):
+                raise ValueError("Unsupported work attribute mapping")
+            if (values[":list_type"], values[":zero"]) != ("L", 0):
+                raise ValueError("Unsupported work predicate values")
+            work = [item.get(field, []) for field in work_fields]
+            has_work = any(isinstance(value, list) and value for value in work)
+            has_valid_types = all(isinstance(value, list) for value in work)
+            has_lease = "lease_token" in item and "lease_expires_at" in item
+            expiry = item.get("lease_expires_at")
+            is_expired = isinstance(expiry, Number) and expiry <= values[":now"]
+            if not has_valid_types or not has_work or (has_lease and not is_expired):
+                FakeDynamoDBTable._conditional_failure("lease unavailable or no work")
+            return
+        if expression == (
             "attribute_not_exists(#lease_token) OR "
             "attribute_not_exists(#lease_expires_at) OR "
             "#lease_expires_at <= :now"
@@ -175,6 +205,14 @@ class FakeDynamoDBTable:
                 raise ValueError("Unsupported lease token mapping")
             if item.get(token_name) != values[":token"]:
                 FakeDynamoDBTable._conditional_failure("token mismatch")
+            return
+        if expression.startswith("#lease_token = :token AND attribute_"):
+            is_resume = expression.endswith("attribute_exists(#payload)")
+            is_invalid = item.get(names["#lease_token"]) != values[":token"]
+            is_invalid |= (names["#payload"] in item) != is_resume
+            is_invalid |= not is_resume and names["#messages"] not in item
+            if is_invalid:
+                FakeDynamoDBTable._conditional_failure("payload claim failed")
             return
         else:
             raise ValueError(f"Unsupported condition expression: {expression}")
@@ -249,6 +287,35 @@ class FakeDynamoDBTable:
                 values[":total"]
             )
             item["expires_at"] = deepcopy(values[":ttl"])
+            return
+
+        if expression in (
+            "SET #expires_at = :ttl REMOVE #response",
+            "SET #payload = #messages, #expires_at = :ttl REMOVE #messages, #response",
+        ):
+            if expression.startswith("SET #payload"):
+                item[names["#payload"]] = deepcopy(item[names["#messages"]])
+                item.pop(names["#messages"])
+            item[names["#expires_at"]] = deepcopy(values[":ttl"])
+            item.pop(names["#response"], None)
+            return
+
+        if (
+            expression.startswith("SET #expires_at = :ttl")
+            and "#lease_token" in expression
+        ):
+            item[names["#expires_at"]] = deepcopy(values[":ttl"])
+            for attribute in (
+                "lease_token",
+                "lease_expires_at",
+                "processing_started_at",
+                "processing_payload",
+                "pending_result",
+                "pending_chat_response",
+            ):
+                item.pop(attribute, None)
+            if ":response" in values:
+                item[names["#response"]] = deepcopy(values[":response"])
             return
 
         if expression == (
@@ -393,8 +460,8 @@ class ClaimInterleavingTable(FakeDynamoDBTable):
     ) -> dict[str, Any]:
         is_claim = (
             current_thread().name == "buffer-claim"
-            and UpdateExpression == "SET messages = :messages, expires_at = :ttl"
-            and ReturnValues == "ALL_OLD"
+            and UpdateExpression.startswith("SET #payload = #messages")
+            and ReturnValues == "ALL_NEW"
         )
         if is_claim and self.pause == "before":
             self.claim_reached.set()
@@ -938,10 +1005,15 @@ def test_atomic_buffer_claim_partitions_deterministic_interleaving(
     table = ClaimInterleavingTable(pause)
     repository = DynamoDBStateRepository(table=table)
     repository.append_buffer_message("s1", "first")
+    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="owner", expires_at=now + timedelta(minutes=1))
+    assert repository.try_acquire_processing_lease("s1", now=now, lease=lease).acquired
     result: list[BufferMessage] = []
 
     thread = Thread(
-        target=lambda: result.extend(repository.claim_buffer_messages("s1")),
+        target=lambda: result.extend(
+            repository.claim_buffer_messages("s1", lease.token)
+        ),
         name="buffer-claim",
     )
     thread.start()
@@ -960,6 +1032,7 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
     repository: DynamoDBStateRepository,
 ) -> None:
     now = datetime(2026, 7, 29, microsecond=123456, tzinfo=timezone.utc)
+    repository.append_buffer_message("s1", "work")
     start = Barrier(2)
 
     def acquire(token: str):
@@ -976,6 +1049,7 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
     winner = next(result.lease for result in results if result.acquired)
     assert winner is not None
     assert winner.expires_at == now + timedelta(seconds=60)
+    assert repository.claim_buffer_messages("s1", winner.token)
 
     replacement = ProcessingLease(
         token="replacement", expires_at=now + timedelta(seconds=120)
@@ -987,10 +1061,32 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
         "s1", now=winner.expires_at, lease=replacement
     )
     assert takeover.acquired and takeover.lease == replacement
-    assert repository.release_processing_lease("s1", winner.token).released is False
+    assert repository.claim_buffer_messages("s1", replacement.token)
+    assert not repository.complete_processing("s1", winner.token, '"stale"').completed
     assert repository.get_buffer_state("s1").processing_lease == replacement
     assert repository.release_processing_lease("s1", replacement.token).released is True
     assert not repository.release_processing_lease("s1", replacement.token).released
+
+
+def test_processing_lease_requires_recoverable_work() -> None:
+    now = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="owner", expires_at=now + timedelta(minutes=1))
+    valid = [{"message": "work", "timestamp": now.isoformat()}]
+    rows = ({}, {"messages": "invalid"}, {"processing_payload": {}})
+    rows += (
+        {"messages": valid, "processing_payload": {}},
+        {"processing_payload": valid, "messages": "invalid"},
+        {"messages": []},
+    )
+    for work in rows:
+        table = FakeDynamoDBTable()
+        table.put_item(Item={"PK": "SESSION#s1", "SK": "BUFFER", **work})
+        repository = DynamoDBStateRepository(table=table)
+        assert not repository.try_acquire_processing_lease(
+            "s1", now=now, lease=lease
+        ).acquired
+    repository.append_buffer_message("s1", "later")
+    assert repository.get_buffer_state("s1").messages[0].message == "later"
 
 
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:
@@ -1019,6 +1115,7 @@ def test_processing_lease_recovers_malformed_legacy_state(missing: str) -> None:
     item.pop(missing)
     table.put_item(Item=item)
     repository = DynamoDBStateRepository(table=table)
+    repository.append_buffer_message("s1", "work")
     now = datetime(2026, 7, 29, tzinfo=timezone.utc)
     lease = ProcessingLease(token="new", expires_at=now + timedelta(seconds=60))
 
@@ -1049,6 +1146,7 @@ def test_processing_lease_translates_only_conditional_errors() -> None:
         "s1", now=now, lease=lease
     ).acquired
     assert not repository.release_processing_lease("s1", "token").released
+    assert not repository.complete_processing("s1", "token", '"ready"').completed
 
     table.code = "ProvisionedThroughputExceededException"
     with pytest.raises(ClientError):

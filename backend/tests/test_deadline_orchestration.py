@@ -134,11 +134,10 @@ async def test_buffered_path_stores_controlled_timeout() -> None:
     with (
         patch("backend.main._request_deadline", return_value=deadline),
         patch(LLM_CALL, side_effect=_sdk_timeout),
-        patch("backend.main.set_pending_chat_response", stored),
-        patch("backend.main.release_processing_lease"),
+        patch("backend.main.complete_processing", stored),
     ):
         await backend_main._on_buffer_window_expired("buffer-session", "paneles", lease)
-    data = json.loads(stored.call_args.args[1])
+    data = json.loads(stored.call_args.args[2])
     outcome = data["intent_type"], data["escalate"], data["input_tokens"]
     assert outcome == ("request_timeout", True, 0)
     assert data["source_documents"] == [] and data["num_sources"] == 0

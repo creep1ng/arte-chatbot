@@ -86,11 +86,18 @@ class ProcessingLeaseReleaseResult(_FrozenModel):
     released: bool
 
 
+class ProcessingCompletionResult(_FrozenModel):
+    """Outcome of a lease-fenced terminal processing transition."""
+
+    completed: bool
+
+
 class BufferState(BaseModel):
     """Durable multi-message buffer and polling state."""
 
     session_id: str
     messages: list[BufferMessage] = Field(default_factory=list)
+    processing_payload: list[BufferMessage] = Field(default_factory=list)
     pending_result: Optional[str] = None
     pending_chat_response: Optional[str] = None
     processing_started_at: Optional[datetime] = None
@@ -150,7 +157,9 @@ class ChatbotStateRepository(Protocol):
     def append_buffer_message(self, session_id: str, message: str) -> BufferState:
         """Append one message to the durable buffer."""
 
-    def claim_buffer_messages(self, session_id: str) -> list[BufferMessage]:
+    def claim_buffer_messages(
+        self, session_id: str, token: str, resume: bool = False
+    ) -> list[BufferMessage]:
         """Atomically remove and return the messages present at claim time."""
 
     def clear_buffer_messages(self, session_id: str) -> None:
@@ -193,3 +202,8 @@ class ChatbotStateRepository(Protocol):
         self, session_id: str, token: str
     ) -> ProcessingLeaseReleaseResult:
         """Release processing ownership only when the token matches."""
+
+    def complete_processing(
+        self, session_id: str, token: str, response_json: Optional[str]
+    ) -> ProcessingCompletionResult:
+        """Publish optionally and clean up only for the current lease token."""

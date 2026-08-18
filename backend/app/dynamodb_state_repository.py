@@ -13,6 +13,7 @@ from backend.app.state_repository import (
     BufferState,
     ChatTurn,
     OwnershipConflictError,
+    ProcessingCompletionResult,
     ProcessingLease,
     ProcessingLeaseReleaseResult,
     ProcessingLeaseResult,
@@ -222,19 +223,50 @@ class DynamoDBStateRepository:
             },
         )
 
-    def claim_buffer_messages(self, session_id: str) -> list[BufferMessage]:
+    def claim_buffer_messages(
+        self, session_id: str, token: str, resume: bool = False
+    ) -> list[BufferMessage]:
         """Atomically rotate the current message batch out of the buffer."""
-        response = self._table.update_item(
-            Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
-            UpdateExpression="SET messages = :messages, expires_at = :ttl",
-            ExpressionAttributeValues={
-                ":messages": [],
-                ":ttl": self._ttl(self._buffer_ttl_seconds),
-            },
-            ReturnValues="ALL_OLD",
-        )
-        item = response.get("Attributes", {})
-        return self._buffer_state_from_item(session_id, item).messages
+        names = {
+            "#payload": "processing_payload",
+            "#response": "pending_chat_response",
+            "#expires_at": "expires_at",
+            "#lease_token": "lease_token",
+        }
+        if resume:
+            update = "SET #expires_at = :ttl REMOVE #response"
+            condition = "#lease_token = :token AND attribute_exists(#payload)"
+        else:
+            names["#messages"] = "messages"
+            update = (
+                "SET #payload = #messages, #expires_at = :ttl "
+                "REMOVE #messages, #response"
+            )
+            condition = (
+                "#lease_token = :token AND attribute_not_exists(#payload) "
+                "AND attribute_exists(#messages)"
+            )
+        try:
+            response = self._table.update_item(
+                Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+                UpdateExpression=update,
+                ConditionExpression=condition,
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues={
+                    ":token": token,
+                    ":ttl": self._ttl(self._buffer_ttl_seconds),
+                },
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as exc:
+            if self._is_conditional_failure(exc):
+                if resume:
+                    return []
+                return self.claim_buffer_messages(session_id, token, True)
+            raise
+        return self._buffer_state_from_item(
+            session_id, response.get("Attributes", {})
+        ).processing_payload
 
     def set_pending_result(self, session_id: str, joined_message: str) -> None:
         """Persist a joined buffer result."""
@@ -338,15 +370,24 @@ class DynamoDBStateRepository:
                     "#processing_started_at = :started, #expires_at = :ttl"
                 ),
                 ConditionExpression=(
-                    "attribute_not_exists(#lease_token) OR "
+                    "(attribute_not_exists(#payload) OR "
+                    "attribute_type(#payload, :list_type)) AND "
+                    "(attribute_not_exists(#messages) OR "
+                    "attribute_type(#messages, :list_type)) AND "
+                    "((attribute_type(#payload, :list_type) AND "
+                    "size(#payload) > :zero) OR (attribute_type(#messages, "
+                    ":list_type) AND size(#messages) > :zero)) AND "
+                    "(attribute_not_exists(#lease_token) OR "
                     "attribute_not_exists(#lease_expires_at) OR "
-                    "#lease_expires_at <= :now"
+                    "#lease_expires_at <= :now)"
                 ),
                 ExpressionAttributeNames={
                     "#lease_token": "lease_token",
                     "#lease_expires_at": "lease_expires_at",
                     "#processing_started_at": "processing_started_at",
                     "#expires_at": "expires_at",
+                    "#payload": "processing_payload",
+                    "#messages": "messages",
                 },
                 ExpressionAttributeValues={
                     ":token": lease.token,
@@ -354,6 +395,8 @@ class DynamoDBStateRepository:
                     ":started": now_utc.isoformat(),
                     ":now": self._epoch_seconds(now_utc),
                     ":ttl": self._ttl(self._buffer_ttl_seconds),
+                    ":list_type": "L",
+                    ":zero": 0,
                 },
                 ReturnValues="ALL_NEW",
             )
@@ -392,6 +435,48 @@ class DynamoDBStateRepository:
                 return ProcessingLeaseReleaseResult(released=False)
             raise
         return ProcessingLeaseReleaseResult(released=True)
+
+    def complete_processing(
+        self, session_id: str, token: str, response_json: Optional[str]
+    ) -> ProcessingCompletionResult:
+        """Fence response publication and lease payload cleanup by token."""
+        names = {
+            "#lease_token": "lease_token",
+            "#lease_expires_at": "lease_expires_at",
+            "#processing_started_at": "processing_started_at",
+            "#payload": "processing_payload",
+            "#pending_result": "pending_result",
+            "#response": "pending_chat_response",
+            "#expires_at": "expires_at",
+        }
+        values: dict[str, Any] = {
+            ":token": token,
+            ":ttl": self._ttl(self._buffer_ttl_seconds),
+        }
+        update = (
+            "SET #expires_at = :ttl REMOVE #lease_token, #lease_expires_at, "
+            "#processing_started_at, #payload, #pending_result, #response"
+        )
+        if response_json is not None:
+            values[":response"] = response_json
+            update = (
+                "SET #expires_at = :ttl, #response = :response REMOVE "
+                "#lease_token, #lease_expires_at, #processing_started_at, "
+                "#payload, #pending_result"
+            )
+        try:
+            self._table.update_item(
+                Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+                UpdateExpression=update,
+                ConditionExpression="#lease_token = :token",
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as exc:
+            if self._is_conditional_failure(exc):
+                return ProcessingCompletionResult(completed=False)
+            raise
+        return ProcessingCompletionResult(completed=True)
 
     def _get_turns(self, session_id: str, max_turns: int) -> list[ChatTurn]:
         items: list[dict[str, Any]] = []
@@ -476,6 +561,13 @@ class DynamoDBStateRepository:
                     timestamp=datetime.fromisoformat(message["timestamp"]),
                 )
                 for message in item.get("messages", [])
+            ],
+            processing_payload=[
+                BufferMessage(
+                    message=message["message"],
+                    timestamp=datetime.fromisoformat(message["timestamp"]),
+                )
+                for message in item.get("processing_payload", [])
             ],
             pending_result=item.get("pending_result"),
             pending_chat_response=item.get("pending_chat_response"),

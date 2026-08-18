@@ -49,6 +49,8 @@ def _reset_runtime_state() -> None:
     message_buffer._pending_results.clear()
     message_buffer._pending_chat_responses.clear()
     message_buffer._processing_sessions.clear()
+    message_buffer._processing_leases.clear()
+    message_buffer._processing_payloads.clear()
 
     for task in list(message_buffer._buffer_tasks.values()):
         if not task.done():
