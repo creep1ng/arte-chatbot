@@ -94,7 +94,19 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: Run deterministic Python suites
-        run: uv run pytest backend/tests backend/app/tests rag/tests -m "not live"
+        run: uv run pytest backend/tests backend/app/tests rag/tests evaluation/tests evaluation/harness/tests evaluation/context_budget -m "not live"
+
+      - name: Prove quality-failure fixture blocks the harness
+        run: |
+          if uv run python -m evaluation.harness.run \
+            --from-report evaluation/harness/tests/fixtures/quality-fail-report.json \
+            --no-upload; then
+            echo "Expected the quality fixture to fail"
+            exit 1
+          else
+            status=$?
+          fi
+          test "${status}" -eq 1
 
   build:
     name: Build Docker Images

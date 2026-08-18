@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "query_id": "fixture-1",
+      "should_escalate": false,
+      "response": "El panel entrega 500 W.",
+      "latency_ms": 100.0,
+      "escalated": false,
+      "error": "",
+      "num_sources": 0,
+      "source_documents": []
+    }
+  ]
+}
