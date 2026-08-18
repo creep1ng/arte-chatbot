@@ -15,6 +15,10 @@ class OwnershipConflictError(StateRepositoryError):
     """Raised when a session is already owned by another principal."""
 
 
+class StaleProcessingOwnershipError(StateRepositoryError):
+    """Raised when processing side effects have lost lease ownership."""
+
+
 class ChatTurn(BaseModel):
     """A single persisted conversation turn."""
 
@@ -128,7 +132,7 @@ class ChatbotStateRepository(Protocol):
     def get_session(self, session_id: str, max_turns: int = 20) -> SessionState:
         """Return persisted session state with at most the latest turns."""
 
-    def append_turn(self, session_id: str, turn: ChatTurn) -> None:
+    def append_turn(self, session_id: str, turn: ChatTurn, **_: Optional[str]) -> None:
         """Append one conversation turn."""
 
     def bind_owner(self, session_id: str, owner: str) -> None:
@@ -140,7 +144,7 @@ class ChatbotStateRepository(Protocol):
     def set_user_profile(self, session_id: str, profile: str) -> None:
         """Persist the user profile for a session."""
 
-    def add_token_usage(self, session_id: str, totals: TokenTotals) -> None:
+    def add_token_usage(self, sid: str, t: TokenTotals, **_: Optional[str]) -> None:
         """Accumulate token usage for a session."""
 
     def get_token_totals(self, session_id: str) -> TokenTotals:

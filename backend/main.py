@@ -68,6 +68,7 @@ from backend.app.message_buffer import (
     add_to_buffer,
     clear_pending_chat_response,
     complete_processing,
+    get_processing_generation,
     get_buffer_count,
     has_active_processing_lease,
     has_processing_payload,
@@ -958,11 +959,14 @@ async def _process_chat_message(
     file_inputs_client: FileInputsClient,
     request_id: Optional[str] = None,
     deadline: Optional[RequestDeadline] = None,
+    processing_generation: Optional[str] = None,
+    processing_token: Optional[str] = None,
 ) -> ChatResponse:
     """Core chat processing logic shared between endpoint and buffer callback."""
     request_id = request_id or str(uuid.uuid4())
     deadline = deadline or _request_deadline()
     request_start = time.time()
+    fence = {"generation_id": processing_generation, "lease_token": processing_token}
 
     logger.debug(
         "Incoming request: request_id=%s, session_id=%s, message_preview=%s",
@@ -1029,6 +1033,7 @@ async def _process_chat_message(
             question=message,
             answer=response_text,
             source_documents=[],
+            **fence,
         )
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
@@ -1164,12 +1169,14 @@ async def _process_chat_message(
                         question=message,
                         answer=response_text,
                         source_documents=[],
+                        **fence,
                     )
                     session_manager.add_token_usage(
                         session_id,
                         acc_input_tokens,
                         acc_output_tokens,
                         acc_total_tokens,
+                        **fence,
                     )
                     response_time_ms = (time.time() - request_start) * 1000
                     _fire_conversation_log(
@@ -1205,12 +1212,14 @@ async def _process_chat_message(
                         question=message,
                         answer=OUT_OF_DOMAIN_MESSAGE,
                         source_documents=[],
+                        **fence,
                     )
                     session_manager.add_token_usage(
                         session_id,
                         acc_input_tokens,
                         acc_output_tokens,
                         acc_total_tokens,
+                        **fence,
                     )
                     response_time_ms = (time.time() - request_start) * 1000
                     _fire_conversation_log(
@@ -1272,9 +1281,14 @@ async def _process_chat_message(
                     question=message,
                     answer=response_text,
                     source_documents=[],
+                    **fence,
                 )
                 session_manager.add_token_usage(
-                    session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+                    session_id,
+                    acc_input_tokens,
+                    acc_output_tokens,
+                    acc_total_tokens,
+                    **fence,
                 )
                 response_time_ms = (time.time() - request_start) * 1000
                 _fire_conversation_log(
@@ -1518,9 +1532,14 @@ async def _process_chat_message(
                     question=message,
                     answer=response_text,
                     source_documents=[s.ruta for s in source_docs],
+                    **fence,
                 )
                 session_manager.add_token_usage(
-                    session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+                    session_id,
+                    acc_input_tokens,
+                    acc_output_tokens,
+                    acc_total_tokens,
+                    **fence,
                 )
                 response_time_ms = (time.time() - request_start) * 1000
                 _fire_conversation_log(
@@ -1561,9 +1580,14 @@ async def _process_chat_message(
                     question=message,
                     answer=error_content,
                     source_documents=[],
+                    **fence,
                 )
                 session_manager.add_token_usage(
-                    session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+                    session_id,
+                    acc_input_tokens,
+                    acc_output_tokens,
+                    acc_total_tokens,
+                    **fence,
                 )
                 response_time_ms = (time.time() - request_start) * 1000
                 _fire_conversation_log(
@@ -1623,9 +1647,14 @@ async def _process_chat_message(
                 question=message,
                 answer=response_text,
                 source_documents=[],
+                **fence,
             )
             session_manager.add_token_usage(
-                session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+                session_id,
+                acc_input_tokens,
+                acc_output_tokens,
+                acc_total_tokens,
+                **fence,
             )
             response_time_ms = (time.time() - request_start) * 1000
             _fire_conversation_log(
@@ -1656,7 +1685,11 @@ async def _process_chat_message(
             )
 
         session_manager.add_token_usage(
-            session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+            session_id,
+            acc_input_tokens,
+            acc_output_tokens,
+            acc_total_tokens,
+            **fence,
         )
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
@@ -1706,9 +1739,13 @@ async def _process_chat_message(
             error.iteration,
             int(deadline.elapsed_seconds() * 1000),
         )
-        session_manager.add_turn(session_id, message, response_text, [])
+        session_manager.add_turn(session_id, message, response_text, [], **fence)
         session_manager.add_token_usage(
-            session_id, acc_input_tokens, acc_output_tokens, acc_total_tokens
+            session_id,
+            acc_input_tokens,
+            acc_output_tokens,
+            acc_total_tokens,
+            **fence,
         )
         return ChatResponse(
             response=response_text,
@@ -1749,6 +1786,7 @@ async def _on_buffer_window_expired(
     Processes the joined message with the chatbot in the background
     and stores the response for polling by the client.
     """
+    generation_id = get_processing_generation(session_id)
     logger.info(
         "Buffer window expired for session %s: %d chars accumulated, "
         "processing in background",
@@ -1762,6 +1800,8 @@ async def _on_buffer_window_expired(
             llm_client=llm_client,
             s3_client=s3_client,
             file_inputs_client=file_inputs_client,
+            processing_generation=generation_id,
+            processing_token=lease.token if generation_id is not None else None,
         )
         response_json = response.model_dump_json()
         logger.info(
@@ -1823,6 +1863,7 @@ async def chat_endpoint(
     deadline = _request_deadline(http_request.scope)
     request_id = str(uuid.uuid4())
     processing_lease: Optional[ProcessingLease] = None
+    processing_generation: Optional[str] = None
 
     # P4: Multi-message buffer — intercept before normal processing
     if settings.multi_message_buffer_enabled:
@@ -1837,6 +1878,7 @@ async def chat_endpoint(
         )
         if owned_message is not None:
             processing_lease = owned_message.lease
+            processing_generation = owned_message.generation_id
             if len(owned_message.message) > settings.max_chat_message_chars:
                 complete_processing(session_id, processing_lease.token, None)
                 processing_lease = None
@@ -1872,6 +1914,10 @@ async def chat_endpoint(
             file_inputs_client=file_inputs_client,
             request_id=request_id,
             deadline=deadline,
+            processing_generation=processing_generation,
+            processing_token=(
+                processing_lease.token if processing_lease is not None else None
+            ),
         )
         if processing_lease is not None:
             completion = complete_processing(

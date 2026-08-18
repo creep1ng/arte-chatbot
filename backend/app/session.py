@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from backend.app.config import settings
 from backend.app.context_budget import SelectedContext, select_history
 from backend.app.context_budget_config import ContextBudgetConfig
+from backend.app.message_buffer import commit_local_processing_side_effect
 from backend.app.state_repository import (
     ChatbotStateRepository,
     ChatTurn as RepositoryChatTurn,
@@ -97,6 +98,9 @@ class SessionManager:
         question: str,
         answer: str,
         source_documents: Optional[List[str]] = None,
+        *,
+        generation_id: Optional[str] = None,
+        lease_token: Optional[str] = None,
     ) -> None:
         """
         Añade un turno a la sesión.
@@ -107,6 +111,15 @@ class SessionManager:
             answer: Respuesta del asistente
             source_documents: Lista de documentos fuente utilizados (opcional)
         """
+        if generation_id is not None and self.state_repository is None:
+            commit_local_processing_side_effect(
+                session_id,
+                generation_id,
+                lease_token or "",
+                "turn",
+                lambda: self.add_turn(session_id, question, answer, source_documents),
+            )
+            return
         turn = ChatTurn(
             question=question,
             answer=answer,
@@ -122,6 +135,8 @@ class SessionManager:
                     timestamp=turn.timestamp,
                     source_documents=turn.source_documents,
                 ),
+                generation_id=generation_id,
+                lease_token=lease_token,
             )
             return
 
@@ -266,6 +281,9 @@ class SessionManager:
         input_tokens: int,
         output_tokens: int,
         total_tokens: int,
+        *,
+        generation_id: Optional[str] = None,
+        lease_token: Optional[str] = None,
     ) -> None:
         """Acumula el uso de tokens para una sesión.
 
@@ -277,6 +295,17 @@ class SessionManager:
             output_tokens: Tokens de salida a acumular.
             total_tokens: Total de tokens a acumular.
         """
+        if generation_id is not None and self.state_repository is None:
+            commit_local_processing_side_effect(
+                session_id,
+                generation_id,
+                lease_token or "",
+                "tokens",
+                lambda: self.add_token_usage(
+                    session_id, input_tokens, output_tokens, total_tokens
+                ),
+            )
+            return
         if self.state_repository is not None:
             self.state_repository.add_token_usage(
                 session_id,
@@ -285,6 +314,8 @@ class SessionManager:
                     output_tokens=output_tokens,
                     total_tokens=total_tokens,
                 ),
+                generation_id=generation_id,
+                lease_token=lease_token,
             )
             return
         with self._lock:

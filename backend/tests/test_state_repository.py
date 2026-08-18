@@ -6,9 +6,11 @@ from datetime import datetime, timedelta, timezone
 from numbers import Number
 import re
 from threading import Barrier, Event, RLock, Thread, current_thread
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
+from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 from pydantic import ValidationError
 
@@ -19,6 +21,7 @@ from backend.app.state_repository import (
     OwnershipConflictError,
     ProcessingLease,
     ProcessingLeaseResult,
+    StaleProcessingOwnershipError,
     TokenTotals,
 )
 
@@ -27,6 +30,9 @@ class FakeDynamoDBTable:
     """Small in-memory DynamoDB Table fake for repository unit tests."""
 
     def __init__(self, query_page_size: int | None = None) -> None:
+        self.name = "test-table"
+        self.meta = SimpleNamespace(client=self)
+        self.transaction_failure: dict[str, Any] | None = None
         self.items: dict[tuple[str, str], dict[str, Any]] = {}
         self.query_calls: list[dict[str, Any]] = []
         self.query_page_size = query_page_size
@@ -40,6 +46,67 @@ class FakeDynamoDBTable:
     def put_item(self, Item: dict[str, Any]) -> None:
         with self._lock:
             self.items[(Item["PK"], Item["SK"])] = deepcopy(Item)
+
+    def transact_write_items(self, TransactItems: list[dict[str, Any]]) -> None:
+        if self.transaction_failure:
+            raise ClientError(self.transaction_failure, "TransactWriteItems")
+
+        def decode(values: dict[str, Any]) -> dict[str, Any]:
+            return {
+                key: TypeDeserializer().deserialize(value)
+                for key, value in values.items()
+            }
+
+        condition = TransactItems[0]["ConditionCheck"]
+        assert condition["ConditionExpression"] == "#lease_token = :token"
+        with self._lock:
+            buffer_key = decode(condition["Key"])["PK"], "BUFFER"
+            token = decode(condition["ExpressionAttributeValues"])[":token"]
+            lease_failed = self.items.get(buffer_key, {}).get("lease_token") != token
+            operation, request = next(iter(TransactItems[1].items()))
+            assert condition["TableName"] == request["TableName"] == self.name
+            if operation == "Put":
+                item = decode(request["Item"])
+                item_key = item["PK"], item["SK"]
+                assert request.get("ConditionExpression") == "attribute_not_exists(PK)"
+                self._transaction_failure(lease_failed, item_key in self.items)
+                self.items[item_key] = item
+                return
+            assert request["Key"]["SK"] == {"S": "TOKENS"}
+            assert "NOT contains" in request["ConditionExpression"]
+            names = request["ExpressionAttributeNames"]
+            assert names["#generations"] == "processing_generations"
+            assert request["ExpressionAttributeValues"][":generation_set"]["SS"]
+            key = decode(request["Key"])
+            item_key = key["PK"], key["SK"]
+            values = decode(request["ExpressionAttributeValues"])
+            item = deepcopy(
+                self.items.get(item_key, {"PK": key["PK"], "SK": key["SK"]})
+            )
+            generations = set(item.get("processing_generations", set()))
+            marker_failed = values[":generation"] in generations
+            self._transaction_failure(lease_failed, marker_failed)
+            for field in ("input_tokens", "output_tokens", "total_tokens"):
+                source = f":{field.removesuffix('_tokens')}"
+                item[field] = int(item.get(field, 0)) + int(values[source])
+            item["expires_at"] = values[":ttl"]
+            item["processing_generations"] = generations | values[":generation_set"]
+            self.items[item_key] = item
+
+    def _transaction_failure(self, lease_failed: bool, marker_failed: bool) -> None:
+        if not lease_failed and not marker_failed:
+            return
+        reasons = [
+            {"Code": "ConditionalCheckFailed" if failed else "None"}
+            for failed in (lease_failed, marker_failed)
+        ]
+        raise ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException"},
+                "CancellationReasons": reasons,
+            },
+            "TransactWriteItems",
+        )
 
     def query(
         self,
@@ -1179,6 +1246,60 @@ def test_expired_orphan_response_is_consumed_and_fences_stale_owner() -> None:
     assert repository.pop_pending_chat_response_if_unowned("s1") is None
     assert not repository.complete_processing("s1", lease.token, '"stale"').completed
     assert repository.get_buffer_state("s1").processing_lease is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("durable", [False, True])
+async def test_processing_side_effect_cancellation_parity(durable: bool) -> None:
+    from backend.app import message_buffer
+    from backend.app.session import SessionManager
+
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table) if durable else None
+    manager = SessionManager(state_repository=repository)
+    message_buffer.set_state_repository(repository)
+    try:
+        await message_buffer.add_to_buffer("s1", "work")
+        owned = await message_buffer.acquire_and_flush_buffer("s1")
+
+        def persist(effect: str, **fence: str | None) -> None:
+            if effect != "tokens":
+                manager.add_turn("s1", "work", "ready", **fence)
+            if effect != "turn":
+                manager.add_token_usage("s1", 2, 3, 5, **fence)
+
+        owner_fence = {
+            "generation_id": owned.generation_id,
+            "lease_token": owned.lease.token,
+        }
+        persist("turn", **owner_fence)
+        successor = message_buffer.acquire_processing_lease(
+            "s1", now=owned.lease.expires_at, token="successor"
+        ).lease
+        for effect in ("turn", "tokens"):
+            with pytest.raises(StaleProcessingOwnershipError):
+                persist(effect, **owner_fence)
+
+        successor_fence = owner_fence | {"lease_token": successor.token}
+        for _ in range(2):
+            persist("both", **successor_fence)
+        assert len(manager.get_history("s1")) == 1
+        assert manager.get_token_totals("s1").total_tokens == 5
+        if durable:
+            failures = ("TransactionConflict", "ThrottlingError", "Unknown", 42, None)
+            for code in failures:
+                response = {"Error": {"Code": "TransactionCanceledException"}}
+                if code is not None:
+                    response["CancellationReasons"] = [{"Code": "None"}, {"Code": code}]
+                table.transaction_failure = response
+                with pytest.raises(ClientError):
+                    persist("tokens", **successor_fence)
+            table.transaction_failure = {"Error": {"Code": "InternalServerError"}}
+            with pytest.raises(ClientError):
+                persist("tokens", **successor_fence)
+    finally:
+        message_buffer.complete_processing("s1", "successor", None)
+        message_buffer.set_state_repository(None)
 
 
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:
