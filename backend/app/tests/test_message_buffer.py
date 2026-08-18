@@ -9,7 +9,7 @@ Strict TDD: tests written BEFORE implementation.
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from threading import Barrier
+from threading import Barrier, Event, RLock, Thread
 from typing import Generator
 from unittest.mock import MagicMock, patch
 
@@ -537,6 +537,46 @@ class TestLocalProcessingLease:
 
 class TestOverflow:
     """Test buffer overflow behavior."""
+
+    @pytest.mark.asyncio
+    async def test_append_decides_overflow_before_concurrent_claim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A claim after append unlock cannot invalidate its overflow read."""
+        from backend.app import message_buffer
+
+        claim_started = Event()
+        claim_finished = Event()
+        claimed: list[str | None] = []
+
+        class ClaimOnReleaseLock:
+            def __init__(self) -> None:
+                self.lock = RLock()
+                self.is_armed = True
+
+            def __enter__(self) -> None:
+                self.lock.acquire()
+
+            def __exit__(self, *args: object) -> None:
+                self.lock.release()
+                if self.is_armed:
+                    self.is_armed = False
+                    claim_started.set()
+                    assert claim_finished.wait(timeout=2)
+
+        def claim() -> None:
+            assert claim_started.wait(timeout=2)
+            claimed.append(asyncio.run(message_buffer.flush_buffer("race")))
+            claim_finished.set()
+
+        monkeypatch.setattr(message_buffer, "_state_lock", ClaimOnReleaseLock())
+        thread = Thread(target=claim)
+        thread.start()
+        result = await add_to_buffer("race", "first", max_messages=1)
+        thread.join(timeout=2)
+
+        assert result is None
+        assert claimed == ["first"] and not thread.is_alive()
 
     @pytest.mark.asyncio
     async def test_overflow_at_max_messages(self) -> None:

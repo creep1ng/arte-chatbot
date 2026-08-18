@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from backend.app.dynamodb_state_repository import DynamoDBStateRepository
 from backend.app.state_repository import (
+    BufferMessage,
     ChatTurn,
     OwnershipConflictError,
     ProcessingLease,
@@ -370,6 +371,46 @@ class MessageInterleavingTable(ProcessingInterleavingTable):
             ConditionExpression,
             ReturnValues,
         )
+
+
+class ClaimInterleavingTable(FakeDynamoDBTable):
+    """Pause a claim immediately before or after its atomic rotation."""
+
+    def __init__(self, pause: str) -> None:
+        super().__init__()
+        self.pause = pause
+        self.claim_reached = Event()
+        self.allow_claim = Event()
+
+    def update_item(
+        self,
+        Key: dict[str, str],
+        UpdateExpression: str,
+        ExpressionAttributeValues: dict[str, Any],
+        ExpressionAttributeNames: dict[str, str] | None = None,
+        ConditionExpression: str | None = None,
+        ReturnValues: str | None = None,
+    ) -> dict[str, Any]:
+        is_claim = (
+            current_thread().name == "buffer-claim"
+            and UpdateExpression == "SET messages = :messages, expires_at = :ttl"
+            and ReturnValues == "ALL_OLD"
+        )
+        if is_claim and self.pause == "before":
+            self.claim_reached.set()
+            assert self.allow_claim.wait(timeout=2)
+        response = super().update_item(
+            Key,
+            UpdateExpression,
+            ExpressionAttributeValues,
+            ExpressionAttributeNames,
+            ConditionExpression,
+            ReturnValues,
+        )
+        if is_claim and self.pause == "after":
+            self.claim_reached.set()
+            assert self.allow_claim.wait(timeout=2)
+        return response
 
 
 def run_paused_buffer_mutation(
@@ -881,6 +922,38 @@ def test_concurrent_buffer_appends_retain_each_message_exactly_once() -> None:
     assert sorted(messages) == ["Hola", "mundo"]
     assert messages.count("Hola") == 1
     assert messages.count("mundo") == 1
+
+
+@pytest.mark.parametrize(
+    ("pause", "claimed", "remaining"),
+    [
+        ("before", ["first", "interleaved"], []),
+        ("after", ["first"], ["interleaved"]),
+    ],
+)
+def test_atomic_buffer_claim_partitions_deterministic_interleaving(
+    pause: str, claimed: list[str], remaining: list[str]
+) -> None:
+    """Appends on either side of the claim belong to exactly one batch."""
+    table = ClaimInterleavingTable(pause)
+    repository = DynamoDBStateRepository(table=table)
+    repository.append_buffer_message("s1", "first")
+    result: list[BufferMessage] = []
+
+    thread = Thread(
+        target=lambda: result.extend(repository.claim_buffer_messages("s1")),
+        name="buffer-claim",
+    )
+    thread.start()
+    assert table.claim_reached.wait(timeout=2)
+    repository.append_buffer_message("s1", "interleaved")
+    table.allow_claim.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert [message.message for message in result] == claimed
+    state = repository.get_buffer_state("s1")
+    assert [message.message for message in state.messages] == remaining
 
 
 def test_processing_lease_has_one_winner_and_exact_expiry_takeover(

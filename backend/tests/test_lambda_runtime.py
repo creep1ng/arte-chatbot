@@ -193,6 +193,58 @@ def test_mangum_chat_http_api_event() -> None:
     assert body["session_id"]
 
 
+def test_chat_processes_owned_batch_from_stale_precount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A concurrent overflow result is processed even after a zero pre-count."""
+    from backend.app.message_buffer import OwnedBufferedMessage
+    from backend.app.state_repository import ProcessingLease
+    from backend.main import ChatResponse, handler
+
+    monkeypatch.setenv("MULTI_MESSAGE_BUFFER_ENABLED", "true")
+    settings.reset()
+    lease = ProcessingLease(
+        token="concurrent-overflow",
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+    )
+    owned = OwnedBufferedMessage(message="first\nsecond", lease=lease)
+    processed: list[str] = []
+    released: list[str] = []
+
+    async def overflow(*_: Any, **__: Any) -> OwnedBufferedMessage:
+        return owned
+
+    async def process(**kwargs: Any) -> ChatResponse:
+        processed.append(kwargs["message"])
+        return ChatResponse(response="processed", session_id=kwargs["session_id"])
+
+    def reject_schedule(*_: Any, **__: Any) -> None:
+        pytest.fail("owned batches must not schedule a second flush")
+
+    monkeypatch.setattr("backend.main.get_buffer_count", lambda _: 0)
+    monkeypatch.setattr("backend.main.add_to_buffer", overflow)
+    monkeypatch.setattr("backend.main.schedule_flush", reject_schedule)
+    monkeypatch.setattr("backend.main._process_chat_message", process)
+    monkeypatch.setattr(
+        "backend.main.release_processing_lease",
+        lambda _session_id, token: released.append(token),
+    )
+
+    response = handler(
+        _http_api_v2_event(
+            "POST",
+            "/chat",
+            body={"message": "second"},
+            headers={"x-api-key": "lambda-test-key"},
+        ),
+        LambdaContext(),
+    )
+
+    assert response["statusCode"] == 200
+    assert processed == ["first\nsecond"]
+    assert released == [lease.token]
+
+
 def test_mangum_buffer_result_http_api_event() -> None:
     """Buffered polling responses are returned through Mangum."""
     from backend.app.message_buffer import set_pending_chat_response

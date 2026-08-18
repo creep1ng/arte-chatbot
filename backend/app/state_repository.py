@@ -150,6 +150,9 @@ class ChatbotStateRepository(Protocol):
     def append_buffer_message(self, session_id: str, message: str) -> BufferState:
         """Append one message to the durable buffer."""
 
+    def claim_buffer_messages(self, session_id: str) -> list[BufferMessage]:
+        """Atomically remove and return the messages present at claim time."""
+
     def clear_buffer_messages(self, session_id: str) -> None:
         """Remove buffered input messages while preserving polling state."""
 
