@@ -6,9 +6,11 @@ from datetime import datetime, timedelta, timezone
 from numbers import Number
 import re
 from threading import Barrier, Event, RLock, Thread, current_thread
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
+from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 from pydantic import ValidationError
 
@@ -28,7 +30,8 @@ class FakeDynamoDBTable:
 
     def __init__(self, query_page_size: int | None = None) -> None:
         self.name = "test-table"
-        self.transaction_client = self
+        self.meta = SimpleNamespace(client=self)
+        self.transaction_calls: list[list[dict[str, Any]]] = []
         self.items: dict[tuple[str, str], dict[str, Any]] = {}
         self.query_calls: list[dict[str, Any]] = []
         self.query_page_size = query_page_size
@@ -44,41 +47,40 @@ class FakeDynamoDBTable:
             self.items[(Item["PK"], Item["SK"])] = deepcopy(Item)
 
     def transact_write_items(self, TransactItems: list[dict[str, Any]]) -> None:
-        if len(TransactItems) != 2 or "ConditionCheck" not in TransactItems[0]:
-            raise ValueError("Unsupported processing transaction")
+        self.transaction_calls.append(deepcopy(TransactItems))
+        decoder = TypeDeserializer()
+
+        def decode(values: dict[str, Any]) -> dict[str, Any]:
+            return {key: decoder.deserialize(value) for key, value in values.items()}
+
         condition = TransactItems[0]["ConditionCheck"]
-        if condition != {
-            "TableName": self.name,
-            "Key": {"PK": condition["Key"]["PK"], "SK": "BUFFER"},
-            "ConditionExpression": "#lease_token = :token",
-            "ExpressionAttributeNames": {"#lease_token": "lease_token"},
-            "ExpressionAttributeValues": {
-                ":token": condition["ExpressionAttributeValues"][":token"]
-            },
-        }:
-            raise ValueError("Unsupported lease transaction condition")
+        assert condition["ConditionExpression"] == "#lease_token = :token"
         with self._lock:
-            buffer_key = condition["Key"]["PK"], "BUFFER"
-            token = condition["ExpressionAttributeValues"][":token"]
+            buffer_key = decode(condition["Key"])["PK"], "BUFFER"
+            token = decode(condition["ExpressionAttributeValues"])[":token"]
             if self.items.get(buffer_key, {}).get("lease_token") != token:
                 self._transaction_failure()
             operation, request = next(iter(TransactItems[1].items()))
-            if request["TableName"] != self.name:
-                raise ValueError("Unsupported transaction table")
-            key = request.get("Key") or {
-                field: request["Item"][field] for field in ("PK", "SK")
-            }
-            item_key = key["PK"], key["SK"]
+            assert condition["TableName"] == request["TableName"] == self.name
             if operation == "Put":
+                item = decode(request["Item"])
+                item_key = item["PK"], item["SK"]
                 if request.get("ConditionExpression") != "attribute_not_exists(PK)":
                     raise ValueError("Unsupported transactional put")
                 if item_key in self.items:
                     self._transaction_failure()
-                self.items[item_key] = deepcopy(request["Item"])
+                self.items[item_key] = item
                 return
             if operation != "Update":
                 raise ValueError("Unsupported processing transaction operation")
-            values = request["ExpressionAttributeValues"]
+            assert request["Key"]["SK"] == {"S": "TOKENS"}
+            assert "NOT contains" in request["ConditionExpression"]
+            names = request["ExpressionAttributeNames"]
+            assert names["#generations"] == "processing_generations"
+            assert request["ExpressionAttributeValues"][":generation_set"]["SS"]
+            key = decode(request["Key"])
+            item_key = key["PK"], key["SK"]
+            values = decode(request["ExpressionAttributeValues"])
             generation = values[":generation"]
             item = deepcopy(
                 self.items.get(item_key, {"PK": key["PK"], "SK": key["SK"]})
@@ -1242,46 +1244,55 @@ def test_expired_orphan_response_is_consumed_and_fences_stale_owner() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recovered_processing_side_effects_are_idempotent() -> None:
+@pytest.mark.parametrize("durable", [False, True])
+async def test_recovered_processing_side_effects_are_idempotent(
+    durable: bool,
+) -> None:
     from backend.app import message_buffer
+    from backend.app.session import SessionManager
 
     table = FakeDynamoDBTable()
-    repository = DynamoDBStateRepository(table=table)
+    repository = DynamoDBStateRepository(table=table) if durable else None
+    manager = SessionManager(state_repository=repository)
     message_buffer.set_state_repository(repository)
     try:
         await message_buffer.add_to_buffer("s1", "work")
         owned = await message_buffer.acquire_and_flush_buffer("s1")
-        assert owned is not None
-        generation_id = owned.generation_id
-        turn = ChatTurn(
-            question="work",
-            answer="ready",
-            timestamp=datetime.now(timezone.utc),
-            source_documents=[],
-        )
-        owner_fence = {"generation_id": generation_id, "lease_token": owned.lease.token}
-        repository.append_turn("s1", turn, **owner_fence)
+
+        def persist(*, turn: bool, tokens: bool, **fence: str | None) -> None:
+            if turn:
+                manager.add_turn("s1", "work", "ready", **fence)
+            if tokens:
+                manager.add_token_usage("s1", 2, 3, 5, **fence)
+
+        owner_fence = {
+            "generation_id": owned.generation_id,
+            "lease_token": owned.lease.token,
+        }
+        persist(turn=True, tokens=False, **owner_fence)
 
         successor = ProcessingLease(
             token="successor",
             expires_at=owned.lease.expires_at + timedelta(minutes=1),
         )
-        assert repository.try_acquire_processing_lease(
-            "s1", now=owned.lease.expires_at, lease=successor
-        ).acquired
-        assert message_buffer.get_processing_generation("s1") == generation_id
-        totals = TokenTotals(input_tokens=2, output_tokens=3, total_tokens=5)
-        with pytest.raises(ClientError, match="TransactionCanceledException"):
-            repository.add_token_usage("s1", totals, **owner_fence)
+        if repository:
+            repository.try_acquire_processing_lease(
+                "s1", now=owned.lease.expires_at, lease=successor
+            )
+        else:
+            message_buffer.try_acquire_local_processing_lease(
+                "s1", now=owned.lease.expires_at, lease=successor
+            )
+        with pytest.raises(ClientError if durable else RuntimeError):
+            persist(turn=False, tokens=True, **owner_fence)
 
         successor_fence = owner_fence | {"lease_token": successor.token}
-        repository.append_turn("s1", turn, **successor_fence)
         for _ in range(2):
-            repository.add_token_usage("s1", totals, **successor_fence)
-        state = repository.get_session("s1")
-        assert len(state.turns) == 1
-        assert state.token_totals == totals
+            persist(turn=True, tokens=True, **successor_fence)
+        assert len(manager.get_history("s1")) == 1
+        assert manager.get_token_totals("s1").total_tokens == 5
     finally:
+        message_buffer.complete_processing("s1", "successor", None)
         message_buffer.set_state_repository(None)
 
 

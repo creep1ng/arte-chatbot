@@ -54,6 +54,7 @@ _pending_state_lock = RLock()
 _processing_leases: dict[str, ProcessingLease] = {}
 _processing_payloads: dict[str, str] = {}
 _processing_generations: dict[str, str] = {}
+_processing_side_effects: dict[str, set[str]] = {}
 _state_lock = RLock()
 
 
@@ -258,6 +259,29 @@ def get_processing_generation(session_id: str) -> Optional[str]:
         return _processing_generations.get(session_id)
 
 
+def commit_local_processing_side_effect(
+    session_id: str,
+    generation_id: str,
+    token: str,
+    effect: str,
+    commit: Callable[[], None],
+) -> None:
+    """Fence and deduplicate one in-memory processing side effect."""
+    with _state_lock:
+        if _state_repository is not None:
+            commit()
+            return
+        lease = _processing_leases.get(session_id)
+        owner = lease.token if lease is not None else None
+        if (owner, _processing_generations.get(session_id)) != (token, generation_id):
+            raise RuntimeError("stale buffer processing owner")
+        applied = _processing_side_effects.setdefault(session_id, set())
+        marker = f"{generation_id}:{effect}"
+        if marker not in applied:
+            commit()
+            applied.add(marker)
+
+
 def clear_buffer(session_id: str) -> None:
     """Clear buffer state for a session.
 
@@ -372,6 +396,7 @@ def pop_pending_chat_response_if_unowned(
             return None
         _processing_leases.pop(session_id, None)
         _processing_generations.pop(session_id, None)
+        _processing_side_effects.pop(session_id, None)
         _processing_sessions.pop(session_id, None)
         return result[0]
 
@@ -492,6 +517,7 @@ def complete_processing(
         _processing_leases.pop(session_id, None)
         _processing_payloads.pop(session_id, None)
         _processing_generations.pop(session_id, None)
+        _processing_side_effects.pop(session_id, None)
         _processing_sessions.pop(session_id, None)
         _pending_results.pop(session_id, None)
         return ProcessingCompletionResult(completed=True)

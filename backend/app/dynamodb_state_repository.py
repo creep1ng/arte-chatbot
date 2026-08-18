@@ -620,10 +620,6 @@ class DynamoDBStateRepository:
         }
 
     def _transact_write(self, items: list[dict[str, Any]]) -> None:
-        transaction_client = getattr(self._table, "transaction_client", None)
-        if transaction_client is not None:
-            transaction_client.transact_write_items(TransactItems=items)
-            return
         serializer = TypeSerializer()
         serialized = []
         for action in items:

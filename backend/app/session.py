@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from backend.app.config import settings
 from backend.app.context_budget import SelectedContext, select_history
 from backend.app.context_budget_config import ContextBudgetConfig
+from backend.app.message_buffer import commit_local_processing_side_effect
 from backend.app.state_repository import (
     ChatbotStateRepository,
     ChatTurn as RepositoryChatTurn,
@@ -110,6 +111,15 @@ class SessionManager:
             answer: Respuesta del asistente
             source_documents: Lista de documentos fuente utilizados (opcional)
         """
+        if generation_id is not None and self.state_repository is None:
+            commit_local_processing_side_effect(
+                session_id,
+                generation_id,
+                lease_token or "",
+                "turn",
+                lambda: self.add_turn(session_id, question, answer, source_documents),
+            )
+            return
         turn = ChatTurn(
             question=question,
             answer=answer,
@@ -285,6 +295,17 @@ class SessionManager:
             output_tokens: Tokens de salida a acumular.
             total_tokens: Total de tokens a acumular.
         """
+        if generation_id is not None and self.state_repository is None:
+            commit_local_processing_side_effect(
+                session_id,
+                generation_id,
+                lease_token or "",
+                "tokens",
+                lambda: self.add_token_usage(
+                    session_id, input_tokens, output_tokens, total_tokens
+                ),
+            )
+            return
         if self.state_repository is not None:
             self.state_repository.add_token_usage(
                 session_id,
