@@ -32,14 +32,13 @@ class FakeDynamoDBTable:
     def __init__(self, query_page_size: int | None = None) -> None:
         self.name = "test-table"
         self.meta = SimpleNamespace(client=self)
-        self.transaction_calls: list[list[dict[str, Any]]] = []
-        self.transaction_error_code: str | None = None
+        self.transaction_failure: dict[str, Any] | None = None
         self.items: dict[tuple[str, str], dict[str, Any]] = {}
         self.query_calls: list[dict[str, Any]] = []
         self.query_page_size = query_page_size
         self._lock = RLock()
 
-    def get_item(self, Key: dict[str, str], **_: Any) -> dict[str, Any]:
+    def get_item(self, Key: dict[str, str]) -> dict[str, Any]:
         with self._lock:
             item = self.items.get((Key["PK"], Key["SK"]))
             return {"Item": deepcopy(item)} if item else {}
@@ -49,28 +48,28 @@ class FakeDynamoDBTable:
             self.items[(Item["PK"], Item["SK"])] = deepcopy(Item)
 
     def transact_write_items(self, TransactItems: list[dict[str, Any]]) -> None:
-        self.transaction_calls.append(deepcopy(TransactItems))
-        decoder = TypeDeserializer()
+        if self.transaction_failure:
+            raise ClientError(self.transaction_failure, "TransactWriteItems")
 
         def decode(values: dict[str, Any]) -> dict[str, Any]:
-            return {key: decoder.deserialize(value) for key, value in values.items()}
+            return {
+                key: TypeDeserializer().deserialize(value)
+                for key, value in values.items()
+            }
 
         condition = TransactItems[0]["ConditionCheck"]
         assert condition["ConditionExpression"] == "#lease_token = :token"
         with self._lock:
             buffer_key = decode(condition["Key"])["PK"], "BUFFER"
             token = decode(condition["ExpressionAttributeValues"])[":token"]
-            if self.items.get(buffer_key, {}).get("lease_token") != token:
-                self._transaction_failure()
+            lease_failed = self.items.get(buffer_key, {}).get("lease_token") != token
             operation, request = next(iter(TransactItems[1].items()))
             assert condition["TableName"] == request["TableName"] == self.name
             if operation == "Put":
                 item = decode(request["Item"])
                 item_key = item["PK"], item["SK"]
-                if request.get("ConditionExpression") != "attribute_not_exists(PK)":
-                    raise ValueError("Unsupported transactional put")
-                if item_key in self.items:
-                    self._transaction_failure()
+                assert request.get("ConditionExpression") == "attribute_not_exists(PK)"
+                self._transaction_failure(lease_failed, item_key in self.items)
                 self.items[item_key] = item
                 return
             assert request["Key"]["SK"] == {"S": "TOKENS"}
@@ -81,24 +80,33 @@ class FakeDynamoDBTable:
             key = decode(request["Key"])
             item_key = key["PK"], key["SK"]
             values = decode(request["ExpressionAttributeValues"])
-            generation = values[":generation"]
             item = deepcopy(
                 self.items.get(item_key, {"PK": key["PK"], "SK": key["SK"]})
             )
             generations = set(item.get("processing_generations", set()))
-            if generation in generations:
-                self._transaction_failure()
+            marker_failed = values[":generation"] in generations
+            self._transaction_failure(lease_failed, marker_failed)
             for field in ("input_tokens", "output_tokens", "total_tokens"):
-                item[field] = int(item.get(field, 0)) + int(
-                    values[f":{field.removesuffix('_tokens')}"]
-                )
+                source = f":{field.removesuffix('_tokens')}"
+                item[field] = int(item.get(field, 0)) + int(values[source])
             item["expires_at"] = values[":ttl"]
             item["processing_generations"] = generations | values[":generation_set"]
             self.items[item_key] = item
 
-    def _transaction_failure(self) -> None:
-        code = self.transaction_error_code or "TransactionCanceledException"
-        raise ClientError({"Error": {"Code": code}}, "TransactWriteItems")
+    def _transaction_failure(self, lease_failed: bool, marker_failed: bool) -> None:
+        if not lease_failed and not marker_failed:
+            return
+        reasons = [
+            {"Code": "ConditionalCheckFailed" if failed else "None"}
+            for failed in (lease_failed, marker_failed)
+        ]
+        raise ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException"},
+                "CancellationReasons": reasons,
+            },
+            "TransactWriteItems",
+        )
 
     def query(
         self,
@@ -1242,9 +1250,7 @@ def test_expired_orphan_response_is_consumed_and_fences_stale_owner() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("durable", [False, True])
-async def test_recovered_processing_side_effects_are_idempotent(
-    durable: bool,
-) -> None:
+async def test_processing_side_effect_cancellation_parity(durable: bool) -> None:
     from backend.app import message_buffer
     from backend.app.session import SessionManager
 
@@ -1256,42 +1262,41 @@ async def test_recovered_processing_side_effects_are_idempotent(
         await message_buffer.add_to_buffer("s1", "work")
         owned = await message_buffer.acquire_and_flush_buffer("s1")
 
-        def persist(*, turn: bool, tokens: bool, **fence: str | None) -> None:
-            if turn:
+        def persist(effect: str, **fence: str | None) -> None:
+            if effect != "tokens":
                 manager.add_turn("s1", "work", "ready", **fence)
-            if tokens:
+            if effect != "turn":
                 manager.add_token_usage("s1", 2, 3, 5, **fence)
 
         owner_fence = {
             "generation_id": owned.generation_id,
             "lease_token": owned.lease.token,
         }
-        persist(turn=True, tokens=False, **owner_fence)
-
-        successor = ProcessingLease(
-            token="successor",
-            expires_at=owned.lease.expires_at + timedelta(minutes=1),
-        )
-        if repository:
-            repository.try_acquire_processing_lease(
-                "s1", now=owned.lease.expires_at, lease=successor
-            )
-        else:
-            message_buffer.try_acquire_local_processing_lease(
-                "s1", now=owned.lease.expires_at, lease=successor
-            )
-        with pytest.raises(StaleProcessingOwnershipError):
-            persist(turn=False, tokens=True, **owner_fence)
+        persist("turn", **owner_fence)
+        successor = message_buffer.acquire_processing_lease(
+            "s1", now=owned.lease.expires_at, token="successor"
+        ).lease
+        for effect in ("turn", "tokens"):
+            with pytest.raises(StaleProcessingOwnershipError):
+                persist(effect, **owner_fence)
 
         successor_fence = owner_fence | {"lease_token": successor.token}
         for _ in range(2):
-            persist(turn=True, tokens=True, **successor_fence)
+            persist("both", **successor_fence)
         assert len(manager.get_history("s1")) == 1
         assert manager.get_token_totals("s1").total_tokens == 5
         if durable:
-            table.transaction_error_code = "ProvisionedThroughputExceededException"
+            failures = ("TransactionConflict", "ThrottlingError", "Unknown", 42, None)
+            for code in failures:
+                response = {"Error": {"Code": "TransactionCanceledException"}}
+                if code is not None:
+                    response["CancellationReasons"] = [{"Code": "None"}, {"Code": code}]
+                table.transaction_failure = response
+                with pytest.raises(ClientError):
+                    persist("tokens", **successor_fence)
+            table.transaction_failure = {"Error": {"Code": "InternalServerError"}}
             with pytest.raises(ClientError):
-                persist(turn=False, tokens=True, **successor_fence)
+                persist("tokens", **successor_fence)
     finally:
         message_buffer.complete_processing("s1", "successor", None)
         message_buffer.set_state_repository(None)

@@ -110,12 +110,8 @@ class DynamoDBStateRepository:
                 ]
             )
         except ClientError as exc:
-            existing = self._get_item(item["PK"], item["SK"], consistent=True) or {}
-            if not self._is_transaction_canceled(exc):
-                raise
-            if existing.get("processing_generation") == generation_id:
+            if self._is_duplicate_side_effect(exc):
                 return
-            raise StaleProcessingOwnershipError from exc
 
     def bind_owner(self, session_id: str, owner: str) -> None:
         """Conditionally bind a session owner."""
@@ -201,12 +197,8 @@ class DynamoDBStateRepository:
                     ]
                 )
             except ClientError as exc:
-                item = self._get_item(pk, "TOKENS", consistent=True) or {}
-                if not self._is_transaction_canceled(exc):
-                    raise
-                if generation_id in item.get("processing_generations", set()):
+                if self._is_duplicate_side_effect(exc):
                     return
-                raise StaleProcessingOwnershipError from exc
             return
         self._table.update_item(
             Key={"PK": self._session_pk(session_id), "SK": "TOKENS"},
@@ -640,8 +632,23 @@ class DynamoDBStateRepository:
             raise ValueError("generation_id and lease_token must be provided together")
 
     @staticmethod
-    def _is_transaction_canceled(exc: ClientError) -> bool:
-        return exc.response["Error"]["Code"] == "TransactionCanceledException"
+    def _is_duplicate_side_effect(exc: ClientError) -> bool:
+        if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+            raise exc
+        try:
+            lease_reason, marker_reason = (
+                reason["Code"] for reason in exc.response["CancellationReasons"]
+            )
+        except (KeyError, TypeError, ValueError):
+            raise exc
+        if lease_reason == "ConditionalCheckFailed" and marker_reason in (
+            "None",
+            "ConditionalCheckFailed",
+        ):
+            raise StaleProcessingOwnershipError from exc
+        if (lease_reason, marker_reason) == ("None", "ConditionalCheckFailed"):
+            return True
+        raise exc
 
     def _get_turns(self, session_id: str, max_turns: int) -> list[ChatTurn]:
         items: list[dict[str, Any]] = []
@@ -668,13 +675,8 @@ class DynamoDBStateRepository:
 
         return [self._turn_from_item(item) for item in reversed(items)]
 
-    def _get_item(
-        self, pk: str, sk: str, *, consistent: bool = False
-    ) -> dict[str, Any]:
-        response = self._table.get_item(
-            Key={"PK": pk, "SK": sk},
-            **({"ConsistentRead": True} if consistent else {}),
-        )
+    def _get_item(self, pk: str, sk: str) -> dict[str, Any]:
+        response = self._table.get_item(Key={"PK": pk, "SK": sk})
         return response.get("Item", {})
 
     def _session_pk(self, session_id: str) -> str:
