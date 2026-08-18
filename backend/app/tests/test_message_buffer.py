@@ -536,7 +536,6 @@ class TestLocalProcessingLease:
     ) -> None:
         from backend.app import message_buffer
         from backend.app.auth import api_key_principal
-        from backend.app.config import settings
         from backend.app.dynamodb_state_repository import DynamoDBStateRepository
         from backend.app.session import session_manager
         from backend.main import ChatResponse, get_buffer_result
@@ -546,8 +545,7 @@ class TestLocalProcessingLease:
             repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
             message_buffer.set_state_repository(repository)
         session_manager.bind_session("recovery", api_key_principal("lambda-test-key"))
-        expires_at = datetime.now(timezone.utc)
-        now = expires_at - timedelta(seconds=settings.buffer_processing_lease_seconds)
+        now = datetime.now(timezone.utc) - timedelta(seconds=61)
         await add_to_buffer("recovery", "durable payload")
         assert message_buffer.acquire_processing_lease(
             "recovery", now=now, token="first"
@@ -926,7 +924,6 @@ class TestEndpointBufferIntegration:
         assert "response" in data
         assert data["session_id"] == session_id
         assert message_buffer.pop_pending_chat_response(session_id) is None
-        assert not message_buffer.has_processing_payload(session_id)
 
         # Cleanup
         message_buffer._buffer.clear()

@@ -239,14 +239,14 @@ class DynamoDBStateRepository:
         }
         transitions = (
             (
-                "SET #expires_at = :ttl REMOVE #response",
-                "#lease_token = :token AND attribute_exists(#payload)",
-            ),
-            (
                 "SET #payload = #messages, #messages = :empty, "
                 "#expires_at = :ttl REMOVE #response",
                 "#lease_token = :token AND attribute_not_exists(#payload) "
                 "AND attribute_exists(#messages)",
+            ),
+            (
+                "SET #expires_at = :ttl REMOVE #response",
+                "#lease_token = :token AND attribute_exists(#payload)",
             ),
         )
         for update, condition in transitions:
@@ -261,6 +261,8 @@ class DynamoDBStateRepository:
                 )
             except ClientError as exc:
                 if self._is_conditional_failure(exc):
+                    names.pop("#messages", None)
+                    values.pop(":empty", None)
                     continue
                 raise
             item = response.get("Attributes", {})

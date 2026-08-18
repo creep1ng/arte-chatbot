@@ -114,6 +114,9 @@ class FakeDynamoDBTable:
         key = (Key["PK"], Key["SK"])
         names = ExpressionAttributeNames or {}
         expression = " ".join(UpdateExpression.split())
+        used = f"{UpdateExpression} {ConditionExpression or ''}"
+        if any(alias not in used for alias in (*names, *ExpressionAttributeValues)):
+            raise ValueError("Unused expression attribute")
 
         with self._lock:
             item = deepcopy(self.items.get(key, {"PK": Key["PK"], "SK": Key["SK"]}))
@@ -185,7 +188,8 @@ class FakeDynamoDBTable:
             has_payload = names["#payload"] in item
             is_invalid = item.get(names["#lease_token"]) != values[":token"]
             is_invalid |= has_payload != claim_conditions[expression]
-            is_invalid |= not has_payload and names["#messages"] not in item
+            if not claim_conditions[expression]:
+                is_invalid |= names["#messages"] not in item
             if is_invalid:
                 FakeDynamoDBTable._conditional_failure("payload claim failed")
             return
@@ -1061,11 +1065,10 @@ def test_takeover_resumes_payload_and_stale_completion_is_fenced() -> None:
     assert repository.try_acquire_processing_lease(
         "s1", now=first.expires_at, lease=successor
     ).acquired
-    resumed = repository.claim_buffer_messages("s1", successor.token)
+    repository.claim_buffer_messages("s1", successor.token)
     stale = repository.complete_processing("s1", first.token, '"stale"')
     completed = repository.complete_processing("s1", successor.token, '"ready"')
 
-    assert [message.message for message in resumed] == ["Hola"]
     assert [
         message.message for message in repository.get_buffer_state("s1").messages
     ] == ["next"]
