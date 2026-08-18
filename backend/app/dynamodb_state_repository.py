@@ -222,6 +222,20 @@ class DynamoDBStateRepository:
             },
         )
 
+    def claim_buffer_messages(self, session_id: str) -> list[BufferMessage]:
+        """Atomically rotate the current message batch out of the buffer."""
+        response = self._table.update_item(
+            Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+            UpdateExpression="SET messages = :messages, expires_at = :ttl",
+            ExpressionAttributeValues={
+                ":messages": [],
+                ":ttl": self._ttl(self._buffer_ttl_seconds),
+            },
+            ReturnValues="ALL_OLD",
+        )
+        item = response.get("Attributes", {})
+        return self._buffer_state_from_item(session_id, item).messages
+
     def set_pending_result(self, session_id: str, joined_message: str) -> None:
         """Persist a joined buffer result."""
         self._table.update_item(

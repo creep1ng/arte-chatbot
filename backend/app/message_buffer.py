@@ -158,16 +158,15 @@ async def _flush_owned_buffer(session_id: str) -> Optional[str]:
         Messages joined with newline separator, or None if buffer empty.
     """
     if _state_repository is not None:
-        state = _state_repository.get_buffer_state(session_id)
-        buffer_messages = state.messages
+        buffer_messages = _state_repository.claim_buffer_messages(session_id)
         if not buffer_messages:
             return None
         joined = "\n".join(message.message for message in buffer_messages)
-        _state_repository.clear_buffer_messages(session_id)
         _state_repository.set_pending_result(session_id, joined)
         return joined
 
-    buffered_entries = _buffer.pop(session_id, [])
+    with _state_lock:
+        buffered_entries = _buffer.pop(session_id, [])
     task = _buffer_tasks.pop(session_id, None)
     current_task = asyncio.current_task()
     if task and task is not current_task and not task.done():
