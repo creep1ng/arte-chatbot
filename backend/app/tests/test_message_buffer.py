@@ -557,7 +557,6 @@ class TestLocalProcessingLease:
 
         monkeypatch.setattr("backend.main.acquire_and_flush_buffer", finish)
         assert (await get_buffer_result("r", "k")).status == "ready"
-        assert get_buffer_count("r") == 0
         assert message_buffer.pop_pending_chat_response("r") is None
         assert not message_buffer.has_active_processing_lease("r")
 

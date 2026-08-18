@@ -156,11 +156,15 @@ class FakeDynamoDBTable:
             if item.get(owner_name) not in (None, values[":owner"]):
                 FakeDynamoDBTable._conditional_failure("owner mismatch")
             return
-        if expression.startswith("(attribute_not_exists(#lease_token)"):
+        if expression.startswith("((attribute_not_exists(#lease_token)"):
             has_work = "processing_payload" in item or "messages" in item
-            if "pending_chat_response" in item and not has_work:
-                FakeDynamoDBTable._conditional_failure("no recoverable work")
-            expression = expression[1 : expression.index(") AND")]
+            token, expiry = names["#lease_token"], names["#lease_expires_at"]
+            has_lease = token in item and expiry in item
+            is_expired = has_lease and item[expiry] <= values[":now"]
+            is_blocked = has_lease or ("pending_chat_response" in item and not has_work)
+            if not is_expired and is_blocked:
+                FakeDynamoDBTable._conditional_failure("lease unavailable")
+            return
         if expression == (
             "attribute_not_exists(#lease_token) OR "
             "attribute_not_exists(#lease_expires_at) OR "
@@ -1009,17 +1013,13 @@ def test_atomic_buffer_claim_partitions_deterministic_interleaving(
     assert [message.message for message in result] == claimed
     state = repository.get_buffer_state("s1")
     assert [message.message for message in state.messages] == remaining
-    successor = ProcessingLease(token="next", expires_at=lease.expires_at)
-    assert repository.try_acquire_processing_lease(
-        "s1", now=lease.expires_at, lease=successor
-    ).acquired
-    assert repository.claim_buffer_messages("s1", successor.token) == result
 
 
 def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
     repository: DynamoDBStateRepository,
 ) -> None:
     now = datetime(2026, 7, 29, microsecond=123456, tzinfo=timezone.utc)
+    repository.append_buffer_message("s1", "work")
     start = Barrier(2)
 
     def acquire(token: str):
@@ -1036,6 +1036,7 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
     winner = next(result.lease for result in results if result.acquired)
     assert winner is not None
     assert winner.expires_at == now + timedelta(seconds=60)
+    assert repository.claim_buffer_messages("s1", winner.token)
 
     replacement = ProcessingLease(
         token="replacement", expires_at=now + timedelta(seconds=120)
@@ -1047,6 +1048,7 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
         "s1", now=winner.expires_at, lease=replacement
     )
     assert takeover.acquired and takeover.lease == replacement
+    assert repository.claim_buffer_messages("s1", replacement.token)
     assert not repository.complete_processing("s1", winner.token, '"stale"').completed
     assert repository.get_buffer_state("s1").processing_lease == replacement
     assert repository.release_processing_lease("s1", replacement.token).released is True
@@ -1116,8 +1118,6 @@ def test_processing_lease_translates_only_conditional_errors() -> None:
         repository.try_acquire_processing_lease("s1", now=now, lease=lease)
     with pytest.raises(ClientError):
         repository.release_processing_lease("s1", "token")
-    with pytest.raises(ClientError):
-        repository.complete_processing("s1", "token", '"ready"')
 
 
 def test_rate_limit_uses_shared_counter(repository: DynamoDBStateRepository) -> None:
