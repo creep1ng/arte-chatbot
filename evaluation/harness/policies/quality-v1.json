@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "version": "quality-v1",
+  "status": "provisional-pending-210-213",
+  "description": "Provisional CI quality gate pending final policy inputs from issues #210 and #213 and dependency resolution across #210-#213.",
+  "policy_inputs": ["#210", "#213"],
+  "dependencies": ["#210", "#211", "#212", "#213"],
+  "hallucination_detector": {
+    "name": "unsupported_technical_numeric_claims_v1",
+    "description": "Flags technical numeric claims without a source reference, or claims absent from inspectable source text; source-less nontechnical responses are not flagged."
+  },
+  "checks": [
+    {"metric": "failed_query_rate_percent", "operator": "<=", "threshold": 5.0, "required": true},
+    {"metric": "escalation_accuracy_percent", "operator": ">=", "threshold": 90.0, "required": true},
+    {"metric": "hallucination_rate_percent", "operator": "<=", "threshold": 20.0, "required": true},
+    {"metric": "p95_latency_ms", "operator": "<=", "threshold": 5000.0, "required": true}
+  ]
+}

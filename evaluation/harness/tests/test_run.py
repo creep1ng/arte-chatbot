@@ -1,7 +1,10 @@
+import csv
+import json
+
 import httpx
 import pytest
 
-from evaluation.harness.run import run_single_query
+from evaluation.harness.run import run_single_query, save_results_csv
 
 
 @pytest.mark.asyncio
@@ -87,3 +90,26 @@ async def test_run_single_query_preserves_explicit_api_latency() -> None:
 
     assert result["latency_ms"] == 123.45
     assert result["escalated"] is True
+
+
+def test_save_results_csv_normalizes_source_document_objects(tmp_path) -> None:
+    """Structured source metadata is serialized instead of joined as strings."""
+    output_path = save_results_csv(
+        [
+            {
+                "query_id": "q001",
+                "source_documents": [
+                    {"ruta": "raw/paneles/test.pdf", "contenido_relevante": None}
+                ],
+            }
+        ],
+        "fixture",
+        tmp_path,
+    )
+
+    with output_path.open(encoding="utf-8") as csv_file:
+        row = next(csv.DictReader(csv_file))
+
+    assert json.loads(row["source_documents"]) == [
+        {"contenido_relevante": None, "ruta": "raw/paneles/test.pdf"}
+    ]

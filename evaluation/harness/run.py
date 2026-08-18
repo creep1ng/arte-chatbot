@@ -13,9 +13,9 @@ Usage:
 import argparse
 import asyncio
 import csv
+import getpass
 import json
 import logging
-import getpass
 import os
 import sys
 import time
@@ -27,6 +27,14 @@ import httpx
 from dotenv import load_dotenv
 
 from evaluation.harness.config import harness_settings
+from evaluation.harness.quality import (
+    INFRASTRUCTURE_FAILURE,
+    QualityConfigurationError,
+    build_quality_gate,
+    load_policy,
+    normalize_source_documents,
+    quality_exit_code,
+)
 from evaluation.harness.s3_upload import (
     build_prefix,
     upload_results_with_metadata,
@@ -46,13 +54,12 @@ CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
 DATASET_PATH = harness_settings.dataset_path
 OUTPUT_DIR = harness_settings.output_dir
 CHAT_API_KEY = harness_settings.chat_api_key
+DEFAULT_QUALITY_POLICY = Path(__file__).parent / "policies" / "quality-v1.json"
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Evaluation Harness for ARTE Chatbot"
-    )
+    parser = argparse.ArgumentParser(description="Evaluation Harness for ARTE Chatbot")
     parser.add_argument(
         "--no-upload",
         action="store_true",
@@ -64,23 +71,51 @@ def parse_args() -> argparse.Namespace:
         default="sprint_5",
         help="Sprint identifier for the evaluation run (default: sprint_5)",
     )
+    parser.add_argument(
+        "--quality-policy",
+        type=Path,
+        default=DEFAULT_QUALITY_POLICY,
+        help=f"Quality policy JSON (default: {DEFAULT_QUALITY_POLICY})",
+    )
+    parser.add_argument(
+        "--from-report",
+        type=Path,
+        help="Re-evaluate raw results from a JSON report without calling the API",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_DIR,
+        help=f"Report output directory (default: {OUTPUT_DIR})",
+    )
     return parser.parse_args()
 
 
 def load_dataset() -> list[dict[str, Any]]:
     """Load the test dataset from JSON file."""
     if not DATASET_PATH.exists():
-        logger.error("Dataset not found at %s", DATASET_PATH)
-        sys.exit(1)
+        raise QualityConfigurationError(f"Dataset not found at {DATASET_PATH}")
 
-    with open(DATASET_PATH, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(DATASET_PATH, encoding="utf-8") as dataset_file:
+            dataset = json.load(dataset_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise QualityConfigurationError(
+            f"Cannot load dataset {DATASET_PATH}: {exc}"
+        ) from exc
+    if not isinstance(dataset, list) or not all(
+        isinstance(query, dict) for query in dataset
+    ):
+        raise QualityConfigurationError("Dataset must contain a JSON object array")
+    return dataset
 
 
-def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
+def save_results_csv(
+    results: list[dict[str, Any]], timestamp: str, output_dir: Path = OUTPUT_DIR
+) -> Path:
     """Save results to CSV file."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_DIR / f"results_{timestamp}.csv"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"results_{timestamp}.csv"
 
     if not results:
         return output_path
@@ -118,9 +153,7 @@ def save_results_csv(results: list[dict[str, Any]], timestamp: str) -> Path:
                 "error": result.get("error", ""),
                 "timestamp": result.get("timestamp", ""),
                 "num_sources": result.get("num_sources", 0),
-                "source_documents": "; ".join(source_docs)
-                if isinstance(source_docs, list)
-                else source_docs,
+                "source_documents": normalize_source_documents(source_docs),
             }
             writer.writerow(row)
 
@@ -217,11 +250,11 @@ async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
                     health_response.status_code,
                 )
                 print(f"⚠ API returned status {health_response.status_code}")
-    except httpx.ConnectError:
+    except httpx.HTTPError as exc:
         logger.error("Cannot connect to API at %s", API_BASE_URL)
         print(f"✗ Error: Cannot connect to API at {API_BASE_URL}")
         print("  Make sure the backend is running (docker compose up)")
-        sys.exit(1)
+        raise RuntimeError(f"Cannot connect to API at {API_BASE_URL}: {exc}") from exc
 
     print()
     print("Running queries asynchronously...")
@@ -271,7 +304,6 @@ async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
     max_latency = max(latencies) if latencies else 0
 
     # Calculate escalation rate
-    expected_escalations = sum(1 for r in results if r.get("should_escalate", False))
     actual_escalations = sum(1 for r in results if r.get("escalated", False))
     correct_escalations = sum(
         1
@@ -296,62 +328,146 @@ async def run_harness(args: argparse.Namespace) -> list[dict[str, Any]]:
     print(f"Escalation rate: {escalation_rate:.1f}%")
     print(f"Escalation accuracy: {escalation_accuracy:.1f}%")
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
-    csv_path = save_results_csv(results, timestamp)
-    print()
-    print("CSV saved to:", csv_path)
-
-    commit_hash = get_commit_hash()
-
-    payload = {
-        "total_queries": len(results),
-        "successful": successful,
-        "failed": failed,
-        "avg_latency_ms": round(avg_latency, 2),
-        "min_latency_ms": round(min_latency, 2),
-        "max_latency_ms": round(max_latency, 2),
-        "results": results,
-    }
-
-    json_path, s3_key = save_results(
-        OUTPUT_DIR, "harness", payload, commit_hash, timestamp
-    )
-    print(f"JSON saved to: {json_path}")
-
-    if EVAL_S3_UPLOAD_ENABLED and not args.no_upload:
-        import getpass
-
-        if os.getenv("GITHUB_ACTIONS"):
-            trigger = "ci"
-            branch = os.getenv("GITHUB_REF_NAME", "unknown")
-        else:
-            trigger = "manual"
-            branch = getpass.getuser()
-
-        if EVAL_S3_PREFIX:
-            prefix = EVAL_S3_PREFIX
-        else:
-            prefix = build_prefix(trigger, branch, timestamp)
-
-        print()
-        print("Uploading results to S3...")
-        uploaded_keys = upload_results_with_metadata(OUTPUT_DIR, prefix, trigger, branch)
-        if uploaded_keys is None:
-            print("✗ Failed to upload results to S3 (check credentials or network)")
-        elif uploaded_keys:
-            print(f"✓ Successfully uploaded {len(uploaded_keys)} files to S3:")
-            for key in uploaded_keys:
-                print(f"  - s3://{harness_settings.aws_bucket_name}/{key}")
-        else:
-            print("⚠ No files available for upload")
-
-    print()
-    print("=" * 60)
-
     return results
 
 
-if __name__ == "__main__":
+def load_report_results(report_path: Path) -> list[dict[str, Any]]:
+    """Load raw result rows from an existing report, ignoring its aggregates."""
+    try:
+        with report_path.open(encoding="utf-8") as report_file:
+            report = json.load(report_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise QualityConfigurationError(
+            f"Cannot load raw report {report_path}: {exc}"
+        ) from exc
+
+    results = report.get("results") if isinstance(report, dict) else None
+    if not isinstance(results, list) or not all(
+        isinstance(result, dict) for result in results
+    ):
+        raise QualityConfigurationError(
+            f"Raw report {report_path} must contain a results object array"
+        )
+    return results
+
+
+def build_report(
+    results: list[dict[str, Any]],
+    policy: dict[str, Any],
+    infrastructure_errors: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Build a backward-compatible report plus metrics and gate details."""
+    successful_results = [result for result in results if not result.get("error")]
+    latencies = [
+        float(result["latency_ms"])
+        for result in successful_results
+        if isinstance(result.get("latency_ms"), (int, float))
+        and not isinstance(result.get("latency_ms"), bool)
+        and result["latency_ms"] >= 0
+    ]
+    metrics, quality_gate = build_quality_gate(results, policy)
+    if infrastructure_errors:
+        quality_gate["infrastructure_errors"].extend(infrastructure_errors)
+
+    return {
+        "total_queries": len(results),
+        "successful": len(successful_results),
+        "failed": len(results) - len(successful_results),
+        "avg_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else 0,
+        "min_latency_ms": round(min(latencies), 2) if latencies else 0,
+        "max_latency_ms": round(max(latencies), 2) if latencies else 0,
+        "metrics": metrics,
+        "quality_gate": quality_gate,
+        "results": results,
+    }
+
+
+def save_report(
+    results: list[dict[str, Any]],
+    policy: dict[str, Any],
+    args: argparse.Namespace,
+    infrastructure_errors: list[dict[str, str]] | None = None,
+) -> tuple[dict[str, Any], Path]:
+    """Persist CSV and JSON reports before upload or process exit."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(args.output_dir)
+    csv_path = save_results_csv(results, timestamp, output_dir)
+    print(f"CSV saved to: {csv_path}")
+
+    payload = build_report(results, policy, infrastructure_errors)
+    json_path, _ = save_results(
+        output_dir, "harness", payload, get_commit_hash(), timestamp
+    )
+    print(f"JSON saved to: {json_path}")
+    return payload, json_path
+
+
+def upload_report(output_dir: Path, timestamp: str) -> None:
+    """Upload an already-persisted report without affecting gate status."""
+    if os.getenv("GITHUB_ACTIONS"):
+        trigger = "ci"
+        branch = os.getenv("GITHUB_REF_NAME", "unknown")
+    else:
+        trigger = "manual"
+        branch = getpass.getuser()
+
+    prefix = EVAL_S3_PREFIX or build_prefix(trigger, branch, timestamp)
+    print("Uploading results to S3...")
+    uploaded_keys = upload_results_with_metadata(output_dir, prefix, trigger, branch)
+    if uploaded_keys is None:
+        print("✗ Failed to upload results to S3 (check credentials or network)")
+    elif uploaded_keys:
+        print(f"✓ Successfully uploaded {len(uploaded_keys)} files to S3:")
+        for key in uploaded_keys:
+            print(f"  - s3://{harness_settings.aws_bucket_name}/{key}")
+    else:
+        print("⚠ No files available for upload")
+
+
+def main() -> int:
+    """Run or replay the harness and return its stable gate exit code."""
     args = parse_args()
-    results = asyncio.run(run_harness(args))
+    try:
+        policy = load_policy(args.quality_policy)
+    except QualityConfigurationError as exc:
+        logger.error("Quality policy configuration failed: %s", exc)
+        print(f"Configuration error: {exc}")
+        return INFRASTRUCTURE_FAILURE
+
+    infrastructure_errors: list[dict[str, str]] = []
+    try:
+        results = (
+            load_report_results(args.from_report)
+            if args.from_report
+            else asyncio.run(run_harness(args))
+        )
+    except (QualityConfigurationError, RuntimeError) as exc:
+        logger.error("Harness infrastructure failed: %s", exc)
+        results = []
+        infrastructure_errors.append({"error": str(exc)})
+
+    payload, json_path = save_report(
+        results, policy, args, infrastructure_errors=infrastructure_errors
+    )
+    if EVAL_S3_UPLOAD_ENABLED and not args.no_upload:
+        name_parts = json_path.stem.rsplit("_", 2)
+        timestamp = f"{name_parts[-2]}_{name_parts[-1]}"
+        upload_report(Path(args.output_dir), timestamp)
+
+    exit_code = quality_exit_code(payload["quality_gate"])
+    print(
+        "Quality gate: "
+        + (
+            "PASS"
+            if exit_code == 0
+            else "QUALITY FAILURE"
+            if exit_code == 1
+            else "INFRASTRUCTURE FAILURE"
+        )
+    )
+    print("=" * 60)
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
