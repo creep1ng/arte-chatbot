@@ -436,6 +436,37 @@ async def test_competing_pollers_cannot_consume_response_before_owner_release() 
 
 
 @pytest.mark.asyncio
+async def test_final_poll_recheck_consumes_response_published_between_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completion after the first consume cannot create a not-found window."""
+    from backend.app import message_buffer
+    from backend.app.auth import api_key_principal
+    from backend.app.session import session_manager
+    from backend.main import get_buffer_result
+
+    session_id = "late-poll-response"
+    session_manager.bind_session(session_id, api_key_principal("lambda-test-key"))
+    published = False
+
+    def publish_during_state_check(_: str) -> bool:
+        nonlocal published
+        if not published:
+            message_buffer.set_pending_chat_response(session_id, '"late"')
+            published = True
+        return False
+
+    monkeypatch.setattr(
+        "backend.main.has_processing_payload", publish_during_state_check
+    )
+
+    result = await get_buffer_result(session_id, "lambda-test-key")
+
+    assert result.status == "ready" and result.result == '"late"'
+    assert message_buffer.pop_pending_chat_response(session_id) is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
 async def test_buffer_callback_commits_errors_but_preserves_cancelled_work(
     monkeypatch: pytest.MonkeyPatch,

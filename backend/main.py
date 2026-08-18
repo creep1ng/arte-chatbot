@@ -1970,6 +1970,14 @@ async def get_buffer_result(
             session_id=session_id,
         )
 
+    chat_response_json = pop_pending_chat_response_if_unowned(session_id)
+    if chat_response_json is not None:
+        return BufferResultResponse(
+            status="ready",
+            session_id=session_id,
+            result=chat_response_json,
+        )
+
     return BufferResultResponse(
         status="not_found",
         session_id=session_id,
