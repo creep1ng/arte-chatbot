@@ -724,17 +724,17 @@ class TestLocalPendingState:
         acquired = message_buffer.acquire_processing_lease("s1", now=now, token="owner")
         message_buffer.set_pending_chat_response("s1", '"early"')
 
-        assert (
-            message_buffer.pop_pending_chat_response_if_unowned("s1", now=now) is None
-        )
         assert acquired.lease is not None
-        assert message_buffer.complete_processing(
-            "s1", acquired.lease.token, '"ready"'
-        ).completed
-        assert (
-            message_buffer.pop_pending_chat_response_if_unowned("s1", now=now)
-            == '"ready"'
+        assert message_buffer.pop_pending_chat_response_if_unowned("s1") is None
+        successor = message_buffer.acquire_processing_lease(
+            "s1", now=acquired.lease.expires_at, token="next"
         )
+        assert successor.lease is not None
+        assert message_buffer.pop_pending_chat_response_if_unowned("s1") is None
+        assert message_buffer.complete_processing(
+            "s1", successor.lease.token, '"ready"'
+        ).completed
+        assert message_buffer.pop_pending_chat_response_if_unowned("s1") == '"ready"'
 
     @pytest.mark.parametrize(
         ("setter_name", "popper_name"),

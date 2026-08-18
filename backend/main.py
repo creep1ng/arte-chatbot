@@ -1936,7 +1936,7 @@ async def get_buffer_result(
             await _on_buffer_window_expired(
                 session_id, owned_message.message, owned_message.lease
             )
-        chat_response_json = pop_pending_chat_response(session_id)
+        chat_response_json = pop_pending_chat_response_if_unowned(session_id)
         status = "ready" if chat_response_json is not None else "pending"
         return BufferResultResponse(
             status=status, session_id=session_id, result=chat_response_json

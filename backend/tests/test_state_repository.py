@@ -155,19 +155,11 @@ class FakeDynamoDBTable:
             return
         if expression == (
             "attribute_type(#response, :string_type) AND "
-            "(attribute_not_exists(#lease_token) OR "
-            "attribute_not_exists(#lease_expires_at) OR "
-            "#lease_expires_at <= :now)"
+            "attribute_not_exists(#lease_token)"
         ):
             response_name = names["#response"]
             lease_token = names["#lease_token"]
-            lease_expiry = names["#lease_expires_at"]
-            has_active_lease = (
-                lease_token in item
-                and lease_expiry in item
-                and item[lease_expiry] > values[":now"]
-            )
-            if not isinstance(item.get(response_name), str) or has_active_lease:
+            if not isinstance(item.get(response_name), str) or lease_token in item:
                 FakeDynamoDBTable._conditional_failure("response is owned")
             return
         if expression == "attribute_not_exists(#owner) OR #owner = :owner":
@@ -1119,11 +1111,18 @@ def test_owned_response_is_hidden_until_fenced_terminal_transition() -> None:
     assert repository.try_acquire_processing_lease("s1", now=now, lease=lease).acquired
     repository.set_pending_chat_response("s1", '"early"')
 
-    assert repository.pop_pending_chat_response_if_unowned("s1", now) is None
+    assert repository.pop_pending_chat_response_if_unowned("s1") is None
     assert repository.get_buffer_state("s1").pending_chat_response == '"early"'
-    assert repository.complete_processing("s1", lease.token, '"ready"').completed
-    assert repository.pop_pending_chat_response_if_unowned("s1", now) == '"ready"'
-    assert repository.pop_pending_chat_response_if_unowned("s1", now) is None
+    successor = ProcessingLease(
+        token="next", expires_at=lease.expires_at + timedelta(seconds=30)
+    )
+    assert repository.try_acquire_processing_lease(
+        "s1", now=lease.expires_at, lease=successor
+    ).acquired
+    assert repository.pop_pending_chat_response_if_unowned("s1") is None
+    assert repository.complete_processing("s1", successor.token, '"ready"').completed
+    assert repository.pop_pending_chat_response_if_unowned("s1") == '"ready"'
+    assert repository.pop_pending_chat_response_if_unowned("s1") is None
 
 
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:
@@ -1184,7 +1183,7 @@ def test_processing_lease_translates_only_conditional_errors() -> None:
     ).acquired
     assert not repository.release_processing_lease("s1", "token").released
     assert not repository.complete_processing("s1", "token", '"ready"').completed
-    assert repository.pop_pending_chat_response_if_unowned("s1", now) is None
+    assert repository.pop_pending_chat_response_if_unowned("s1") is None
 
     table.code = "ProvisionedThroughputExceededException"
     with pytest.raises(ClientError):
@@ -1194,7 +1193,7 @@ def test_processing_lease_translates_only_conditional_errors() -> None:
     with pytest.raises(ClientError):
         repository.complete_processing("s1", "token", '"ready"')
     with pytest.raises(ClientError):
-        repository.pop_pending_chat_response_if_unowned("s1", now)
+        repository.pop_pending_chat_response_if_unowned("s1")
 
 
 def test_rate_limit_uses_shared_counter(repository: DynamoDBStateRepository) -> None:

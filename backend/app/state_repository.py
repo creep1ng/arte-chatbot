@@ -187,9 +187,7 @@ class ChatbotStateRepository(Protocol):
         response leaves the marker unchanged.
         """
 
-    def pop_pending_chat_response_if_unowned(
-        self, session_id: str, now: datetime
-    ) -> Optional[str]:
+    def pop_pending_chat_response_if_unowned(self, session_id: str) -> Optional[str]:
         """Consume a response only when no processing lease is active."""
 
     def set_processing(self, session_id: str) -> None:

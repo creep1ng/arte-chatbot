@@ -330,18 +330,12 @@ def pop_pending_chat_response(session_id: str) -> Optional[str]:
         return result[0]
 
 
-def pop_pending_chat_response_if_unowned(
-    session_id: str, *, now: Optional[datetime] = None
-) -> Optional[str]:
+def pop_pending_chat_response_if_unowned(session_id: str) -> Optional[str]:
     """Consume a response only when processing ownership is not active."""
-    current_time = _to_utc(now or datetime.now(timezone.utc))
     if _state_repository is not None:
-        return _state_repository.pop_pending_chat_response_if_unowned(
-            session_id, current_time
-        )
+        return _state_repository.pop_pending_chat_response_if_unowned(session_id)
     with _state_lock, _pending_state_lock:
-        lease = _processing_leases.get(session_id)
-        if lease is not None and current_time < _to_utc(lease.expires_at):
+        if session_id in _processing_leases:
             return None
         result = _pending_chat_responses.pop(session_id, None)
         if result is None:
