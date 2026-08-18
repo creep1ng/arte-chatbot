@@ -15,6 +15,10 @@ class OwnershipConflictError(StateRepositoryError):
     """Raised when a session is already owned by another principal."""
 
 
+class StaleProcessingOwnershipError(StateRepositoryError):
+    """Raised when processing side effects have lost lease ownership."""
+
+
 class ChatTurn(BaseModel):
     """A single persisted conversation turn."""
 

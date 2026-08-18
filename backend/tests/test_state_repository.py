@@ -21,6 +21,7 @@ from backend.app.state_repository import (
     OwnershipConflictError,
     ProcessingLease,
     ProcessingLeaseResult,
+    StaleProcessingOwnershipError,
     TokenTotals,
 )
 
@@ -32,6 +33,7 @@ class FakeDynamoDBTable:
         self.name = "test-table"
         self.meta = SimpleNamespace(client=self)
         self.transaction_calls: list[list[dict[str, Any]]] = []
+        self.transaction_error_code: str | None = None
         self.items: dict[tuple[str, str], dict[str, Any]] = {}
         self.query_calls: list[dict[str, Any]] = []
         self.query_page_size = query_page_size
@@ -71,8 +73,6 @@ class FakeDynamoDBTable:
                     self._transaction_failure()
                 self.items[item_key] = item
                 return
-            if operation != "Update":
-                raise ValueError("Unsupported processing transaction operation")
             assert request["Key"]["SK"] == {"S": "TOKENS"}
             assert "NOT contains" in request["ConditionExpression"]
             names = request["ExpressionAttributeNames"]
@@ -96,12 +96,9 @@ class FakeDynamoDBTable:
             item["processing_generations"] = generations | values[":generation_set"]
             self.items[item_key] = item
 
-    @staticmethod
-    def _transaction_failure() -> None:
-        raise ClientError(
-            {"Error": {"Code": "TransactionCanceledException"}},
-            "TransactWriteItems",
-        )
+    def _transaction_failure(self) -> None:
+        code = self.transaction_error_code or "TransactionCanceledException"
+        raise ClientError({"Error": {"Code": code}}, "TransactWriteItems")
 
     def query(
         self,
@@ -1283,7 +1280,7 @@ async def test_recovered_processing_side_effects_are_idempotent(
             message_buffer.try_acquire_local_processing_lease(
                 "s1", now=owned.lease.expires_at, lease=successor
             )
-        with pytest.raises(ClientError if durable else RuntimeError):
+        with pytest.raises(StaleProcessingOwnershipError):
             persist(turn=False, tokens=True, **owner_fence)
 
         successor_fence = owner_fence | {"lease_token": successor.token}
@@ -1291,6 +1288,10 @@ async def test_recovered_processing_side_effects_are_idempotent(
             persist(turn=True, tokens=True, **successor_fence)
         assert len(manager.get_history("s1")) == 1
         assert manager.get_token_totals("s1").total_tokens == 5
+        if durable:
+            table.transaction_error_code = "ProvisionedThroughputExceededException"
+            with pytest.raises(ClientError):
+                persist(turn=False, tokens=True, **successor_fence)
     finally:
         message_buffer.complete_processing("s1", "successor", None)
         message_buffer.set_state_repository(None)

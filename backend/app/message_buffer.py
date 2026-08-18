@@ -25,6 +25,7 @@ from backend.app.state_repository import (
     ProcessingCompletionResult,
     ProcessingLeaseReleaseResult,
     ProcessingLeaseResult,
+    StaleProcessingOwnershipError,
 )
 
 logger = logging.getLogger(__name__)
@@ -274,7 +275,7 @@ def commit_local_processing_side_effect(
         lease = _processing_leases.get(session_id)
         owner = lease.token if lease is not None else None
         if (owner, _processing_generations.get(session_id)) != (token, generation_id):
-            raise RuntimeError("stale buffer processing owner")
+            raise StaleProcessingOwnershipError("stale buffer processing owner")
         applied = _processing_side_effects.setdefault(session_id, set())
         marker = f"{generation_id}:{effect}"
         if marker not in applied:

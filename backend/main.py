@@ -966,10 +966,7 @@ async def _process_chat_message(
     request_id = request_id or str(uuid.uuid4())
     deadline = deadline or _request_deadline()
     request_start = time.time()
-    side_effect_fence = {
-        "generation_id": processing_generation,
-        "lease_token": processing_token,
-    }
+    fence = {"generation_id": processing_generation, "lease_token": processing_token}
 
     logger.debug(
         "Incoming request: request_id=%s, session_id=%s, message_preview=%s",
@@ -1036,7 +1033,7 @@ async def _process_chat_message(
             question=message,
             answer=response_text,
             source_documents=[],
-            **side_effect_fence,
+            **fence,
         )
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
@@ -1172,14 +1169,14 @@ async def _process_chat_message(
                         question=message,
                         answer=response_text,
                         source_documents=[],
-                        **side_effect_fence,
+                        **fence,
                     )
                     session_manager.add_token_usage(
                         session_id,
                         acc_input_tokens,
                         acc_output_tokens,
                         acc_total_tokens,
-                        **side_effect_fence,
+                        **fence,
                     )
                     response_time_ms = (time.time() - request_start) * 1000
                     _fire_conversation_log(
@@ -1215,14 +1212,14 @@ async def _process_chat_message(
                         question=message,
                         answer=OUT_OF_DOMAIN_MESSAGE,
                         source_documents=[],
-                        **side_effect_fence,
+                        **fence,
                     )
                     session_manager.add_token_usage(
                         session_id,
                         acc_input_tokens,
                         acc_output_tokens,
                         acc_total_tokens,
-                        **side_effect_fence,
+                        **fence,
                     )
                     response_time_ms = (time.time() - request_start) * 1000
                     _fire_conversation_log(
@@ -1284,14 +1281,14 @@ async def _process_chat_message(
                     question=message,
                     answer=response_text,
                     source_documents=[],
-                    **side_effect_fence,
+                    **fence,
                 )
                 session_manager.add_token_usage(
                     session_id,
                     acc_input_tokens,
                     acc_output_tokens,
                     acc_total_tokens,
-                    **side_effect_fence,
+                    **fence,
                 )
                 response_time_ms = (time.time() - request_start) * 1000
                 _fire_conversation_log(
@@ -1535,14 +1532,14 @@ async def _process_chat_message(
                     question=message,
                     answer=response_text,
                     source_documents=[s.ruta for s in source_docs],
-                    **side_effect_fence,
+                    **fence,
                 )
                 session_manager.add_token_usage(
                     session_id,
                     acc_input_tokens,
                     acc_output_tokens,
                     acc_total_tokens,
-                    **side_effect_fence,
+                    **fence,
                 )
                 response_time_ms = (time.time() - request_start) * 1000
                 _fire_conversation_log(
@@ -1583,14 +1580,14 @@ async def _process_chat_message(
                     question=message,
                     answer=error_content,
                     source_documents=[],
-                    **side_effect_fence,
+                    **fence,
                 )
                 session_manager.add_token_usage(
                     session_id,
                     acc_input_tokens,
                     acc_output_tokens,
                     acc_total_tokens,
-                    **side_effect_fence,
+                    **fence,
                 )
                 response_time_ms = (time.time() - request_start) * 1000
                 _fire_conversation_log(
@@ -1650,14 +1647,14 @@ async def _process_chat_message(
                 question=message,
                 answer=response_text,
                 source_documents=[],
-                **side_effect_fence,
+                **fence,
             )
             session_manager.add_token_usage(
                 session_id,
                 acc_input_tokens,
                 acc_output_tokens,
                 acc_total_tokens,
-                **side_effect_fence,
+                **fence,
             )
             response_time_ms = (time.time() - request_start) * 1000
             _fire_conversation_log(
@@ -1692,7 +1689,7 @@ async def _process_chat_message(
             acc_input_tokens,
             acc_output_tokens,
             acc_total_tokens,
-            **side_effect_fence,
+            **fence,
         )
         response_time_ms = (time.time() - request_start) * 1000
         _fire_conversation_log(
@@ -1742,15 +1739,13 @@ async def _process_chat_message(
             error.iteration,
             int(deadline.elapsed_seconds() * 1000),
         )
-        session_manager.add_turn(
-            session_id, message, response_text, [], **side_effect_fence
-        )
+        session_manager.add_turn(session_id, message, response_text, [], **fence)
         session_manager.add_token_usage(
             session_id,
             acc_input_tokens,
             acc_output_tokens,
             acc_total_tokens,
-            **side_effect_fence,
+            **fence,
         )
         return ChatResponse(
             response=response_text,

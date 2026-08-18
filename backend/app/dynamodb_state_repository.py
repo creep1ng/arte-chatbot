@@ -20,6 +20,7 @@ from backend.app.state_repository import (
     ProcessingLeaseResult,
     RateLimitDecision,
     SessionState,
+    StaleProcessingOwnershipError,
     TokenTotals,
 )
 
@@ -110,12 +111,11 @@ class DynamoDBStateRepository:
             )
         except ClientError as exc:
             existing = self._get_item(item["PK"], item["SK"], consistent=True) or {}
-            if (
-                self._is_transaction_canceled(exc)
-                and existing.get("processing_generation") == generation_id
-            ):
+            if not self._is_transaction_canceled(exc):
+                raise
+            if existing.get("processing_generation") == generation_id:
                 return
-            raise
+            raise StaleProcessingOwnershipError from exc
 
     def bind_owner(self, session_id: str, owner: str) -> None:
         """Conditionally bind a session owner."""
@@ -202,11 +202,11 @@ class DynamoDBStateRepository:
                 )
             except ClientError as exc:
                 item = self._get_item(pk, "TOKENS", consistent=True) or {}
-                if self._is_transaction_canceled(exc) and generation_id in item.get(
-                    "processing_generations", set()
-                ):
+                if not self._is_transaction_canceled(exc):
+                    raise
+                if generation_id in item.get("processing_generations", set()):
                     return
-                raise
+                raise StaleProcessingOwnershipError from exc
             return
         self._table.update_item(
             Key={"PK": self._session_pk(session_id), "SK": "TOKENS"},
@@ -641,9 +641,7 @@ class DynamoDBStateRepository:
 
     @staticmethod
     def _is_transaction_canceled(exc: ClientError) -> bool:
-        return (
-            exc.response.get("Error", {}).get("Code") == "TransactionCanceledException"
-        )
+        return exc.response["Error"]["Code"] == "TransactionCanceledException"
 
     def _get_turns(self, session_id: str, max_turns: int) -> list[ChatTurn]:
         items: list[dict[str, Any]] = []
