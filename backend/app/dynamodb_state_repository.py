@@ -223,37 +223,49 @@ class DynamoDBStateRepository:
             },
         )
 
-    def claim_buffer_messages(
-        self, session_id: str, token: str
-    ) -> list[BufferMessage]:
+    def claim_buffer_messages(self, session_id: str, token: str) -> list[BufferMessage]:
         """Atomically rotate new messages or resume the lease-owned payload."""
-        try:
-            response = self._table.update_item(
-                Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
-                UpdateExpression=(
-                    "SET #payload = if_not_exists(#payload, #messages), "
-                    "#messages = :messages, #expires_at = :ttl"
-                ),
-                ConditionExpression="#lease_token = :token",
-                ExpressionAttributeNames={
-                    "#payload": "processing_payload",
-                    "#messages": "messages",
-                    "#expires_at": "expires_at",
-                    "#lease_token": "lease_token",
-                },
-                ExpressionAttributeValues={
-                    ":messages": [],
-                    ":token": token,
-                    ":ttl": self._ttl(self._buffer_ttl_seconds),
-                },
-                ReturnValues="ALL_NEW",
-            )
-        except ClientError as exc:
-            if self._is_conditional_failure(exc):
-                return []
-            raise
-        item = response.get("Attributes", {})
-        return self._buffer_state_from_item(session_id, item).processing_payload
+        names = {
+            "#payload": "processing_payload",
+            "#messages": "messages",
+            "#response": "pending_chat_response",
+            "#expires_at": "expires_at",
+            "#lease_token": "lease_token",
+        }
+        values = {
+            ":empty": [],
+            ":token": token,
+            ":ttl": self._ttl(self._buffer_ttl_seconds),
+        }
+        transitions = (
+            (
+                "SET #expires_at = :ttl REMOVE #response",
+                "#lease_token = :token AND attribute_exists(#payload)",
+            ),
+            (
+                "SET #payload = #messages, #messages = :empty, "
+                "#expires_at = :ttl REMOVE #response",
+                "#lease_token = :token AND attribute_not_exists(#payload) "
+                "AND attribute_exists(#messages)",
+            ),
+        )
+        for update, condition in transitions:
+            try:
+                response = self._table.update_item(
+                    Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+                    UpdateExpression=update,
+                    ConditionExpression=condition,
+                    ExpressionAttributeNames=names,
+                    ExpressionAttributeValues=values,
+                    ReturnValues="ALL_NEW",
+                )
+            except ClientError as exc:
+                if self._is_conditional_failure(exc):
+                    continue
+                raise
+            item = response.get("Attributes", {})
+            return self._buffer_state_from_item(session_id, item).processing_payload
+        return []
 
     def set_pending_result(self, session_id: str, joined_message: str) -> None:
         """Persist a joined buffer result."""
@@ -422,6 +434,7 @@ class DynamoDBStateRepository:
             "#processing_started_at": "processing_started_at",
             "#payload": "processing_payload",
             "#pending_result": "pending_result",
+            "#response": "pending_chat_response",
             "#expires_at": "expires_at",
         }
         values: dict[str, Any] = {
@@ -430,10 +443,9 @@ class DynamoDBStateRepository:
         }
         update = (
             "SET #expires_at = :ttl REMOVE #lease_token, #lease_expires_at, "
-            "#processing_started_at, #payload, #pending_result"
+            "#processing_started_at, #payload, #pending_result, #response"
         )
         if response_json is not None:
-            names["#response"] = "pending_chat_response"
             values[":response"] = response_json
             update = (
                 "SET #expires_at = :ttl, #response = :response REMOVE "

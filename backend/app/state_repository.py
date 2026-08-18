@@ -157,9 +157,7 @@ class ChatbotStateRepository(Protocol):
     def append_buffer_message(self, session_id: str, message: str) -> BufferState:
         """Append one message to the durable buffer."""
 
-    def claim_buffer_messages(
-        self, session_id: str, token: str
-    ) -> list[BufferMessage]:
+    def claim_buffer_messages(self, session_id: str, token: str) -> list[BufferMessage]:
         """Atomically claim or resume the payload owned by ``token``."""
 
     def clear_buffer_messages(self, session_id: str) -> None:

@@ -167,27 +167,24 @@ async def _flush_owned_buffer(session_id: str, token: str) -> Optional[str]:
         joined = "\n".join(message.message for message in buffer_messages)
         return joined
 
-    with _state_lock:
+    with _state_lock, _pending_state_lock:
         current = _processing_leases.get(session_id)
         if current is None or current.token != token:
             return None
         existing_payload = _processing_payloads.get(session_id)
-        buffered_entries = _buffer.pop(session_id, [])
+        buffered_entries = [] if existing_payload else _buffer.pop(session_id, [])
         joined = existing_payload or "\n".join(msg for msg, _ in buffered_entries)
         if joined:
             _processing_payloads[session_id] = joined
+        _pending_results.pop(session_id, None)
+        _pending_chat_responses.pop(session_id, None)
+        _processing_sessions.pop(session_id, None)
     task = _buffer_tasks.pop(session_id, None)
     current_task = asyncio.current_task()
     if task and task is not current_task and not task.done():
         task.cancel()
     if not joined:
         return None
-    # Clean up stale state from previous flushes to prevent memory leaks
-    # and avoid false "not_found" responses while background processing runs.
-    with _pending_state_lock:
-        _pending_results.pop(session_id, None)
-        _pending_chat_responses.pop(session_id, None)
-        _processing_sessions.pop(session_id, None)
     return joined
 
 
@@ -217,6 +214,14 @@ def get_buffer_count(session_id: str) -> int:
     if _state_repository is not None:
         return len(_state_repository.get_buffer_state(session_id).messages)
     return len(_buffer.get(session_id, []))
+
+
+def has_processing_payload(session_id: str) -> bool:
+    """Return whether failed processing has a recoverable claimed payload."""
+    if _state_repository is not None:
+        return bool(_state_repository.get_buffer_state(session_id).processing_payload)
+    with _state_lock:
+        return session_id in _processing_payloads
 
 
 def clear_buffer(session_id: str) -> None:
@@ -422,6 +427,8 @@ def complete_processing(
                 response_json,
                 datetime.now(timezone.utc),
             )
+        else:
+            _pending_chat_responses.pop(session_id, None)
         _processing_leases.pop(session_id, None)
         _processing_payloads.pop(session_id, None)
         _processing_sessions.pop(session_id, None)

@@ -176,6 +176,19 @@ class FakeDynamoDBTable:
             if item.get(token_name) != values[":token"]:
                 FakeDynamoDBTable._conditional_failure("token mismatch")
             return
+        claim_conditions = {
+            "#lease_token = :token AND attribute_exists(#payload)": True,
+            "#lease_token = :token AND attribute_not_exists(#payload) "
+            "AND attribute_exists(#messages)": False,
+        }
+        if expression in claim_conditions:
+            has_payload = names["#payload"] in item
+            is_invalid = item.get(names["#lease_token"]) != values[":token"]
+            is_invalid |= has_payload != claim_conditions[expression]
+            is_invalid |= not has_payload and names["#messages"] not in item
+            if is_invalid:
+                FakeDynamoDBTable._conditional_failure("payload claim failed")
+            return
         else:
             raise ValueError(f"Unsupported condition expression: {expression}")
 
@@ -251,26 +264,27 @@ class FakeDynamoDBTable:
             item["expires_at"] = deepcopy(values[":ttl"])
             return
 
-        if expression == (
-            "SET #payload = if_not_exists(#payload, #messages), "
-            "#messages = :messages, #expires_at = :ttl"
+        if expression in (
+            "SET #expires_at = :ttl REMOVE #response",
+            "SET #payload = #messages, #messages = :empty, #expires_at = :ttl "
+            "REMOVE #response",
         ):
-            payload_name = names["#payload"]
-            if payload_name not in item:
-                item[payload_name] = deepcopy(item.get(names["#messages"], []))
-            item[names["#messages"]] = deepcopy(values[":messages"])
+            if expression.startswith("SET #payload"):
+                item[names["#payload"]] = deepcopy(item[names["#messages"]])
+                item[names["#messages"]] = deepcopy(values[":empty"])
             item[names["#expires_at"]] = deepcopy(values[":ttl"])
+            item.pop(names["#response"], None)
             return
 
         if expression in (
             "SET #expires_at = :ttl REMOVE #lease_token, #lease_expires_at, "
-            "#processing_started_at, #payload, #pending_result",
+            "#processing_started_at, #payload, #pending_result, #response",
             "SET #expires_at = :ttl, #response = :response REMOVE "
             "#lease_token, #lease_expires_at, #processing_started_at, "
             "#payload, #pending_result",
         ):
             item[names["#expires_at"]] = deepcopy(values[":ttl"])
-            if "#response" in names:
+            if ":response" in values:
                 item[names["#response"]] = deepcopy(values[":response"])
             for alias in (
                 "#lease_token",
@@ -280,6 +294,8 @@ class FakeDynamoDBTable:
                 "#pending_result",
             ):
                 item.pop(names[alias], None)
+            if ":response" not in values:
+                item.pop(names["#response"], None)
             return
 
         if expression == (
@@ -424,7 +440,7 @@ class ClaimInterleavingTable(FakeDynamoDBTable):
     ) -> dict[str, Any]:
         is_claim = (
             current_thread().name == "buffer-claim"
-            and UpdateExpression.startswith("SET #payload = if_not_exists")
+            and UpdateExpression.startswith("SET #payload = #messages")
             and ReturnValues == "ALL_NEW"
         )
         if is_claim and self.pause == "before":
@@ -971,9 +987,7 @@ def test_atomic_buffer_claim_partitions_deterministic_interleaving(
     repository.append_buffer_message("s1", "first")
     now = datetime(2026, 8, 17, tzinfo=timezone.utc)
     lease = ProcessingLease(token="owner", expires_at=now + timedelta(minutes=1))
-    assert repository.try_acquire_processing_lease(
-        "s1", now=now, lease=lease
-    ).acquired
+    assert repository.try_acquire_processing_lease("s1", now=now, lease=lease).acquired
     result: list[BufferMessage] = []
 
     thread = Thread(
@@ -1032,7 +1046,6 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
 
 
 def test_takeover_resumes_payload_and_stale_completion_is_fenced() -> None:
-    """Worker death preserves its batch until the exact-expiry successor commits."""
     repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
     now = datetime(2026, 8, 17, tzinfo=timezone.utc)
     first = ProcessingLease(token="first", expires_at=now + timedelta(seconds=30))
@@ -1040,12 +1053,11 @@ def test_takeover_resumes_payload_and_stale_completion_is_fenced() -> None:
         token="successor", expires_at=now + timedelta(seconds=60)
     )
     repository.append_buffer_message("s1", "Hola")
-    assert repository.try_acquire_processing_lease(
-        "s1", now=now, lease=first
-    ).acquired
-    claimed = repository.claim_buffer_messages("s1", first.token)
+    assert repository.try_acquire_processing_lease("s1", now=now, lease=first).acquired
+    repository.claim_buffer_messages("s1", first.token)
+    repository.append_buffer_message("s1", "next")
+    repository.set_pending_chat_response("s1", '"stale"')
 
-    assert [message.message for message in claimed] == ["Hola"]
     assert repository.try_acquire_processing_lease(
         "s1", now=first.expires_at, lease=successor
     ).acquired
@@ -1054,12 +1066,13 @@ def test_takeover_resumes_payload_and_stale_completion_is_fenced() -> None:
     completed = repository.complete_processing("s1", successor.token, '"ready"')
 
     assert [message.message for message in resumed] == ["Hola"]
-    assert stale.completed is False
-    assert completed.completed is True
-    state = repository.get_buffer_state("s1")
-    assert state.processing_payload == []
-    assert state.processing_lease is None
-    assert state.pending_chat_response == '"ready"'
+    assert [
+        message.message for message in repository.get_buffer_state("s1").messages
+    ] == ["next"]
+    assert (stale.completed, completed.completed) == (False, True)
+    empty = ProcessingLease(token="empty", expires_at=successor.expires_at)
+    assert repository.try_acquire_processing_lease("e", now=now, lease=empty).acquired
+    assert repository.claim_buffer_messages("e", empty.token) == []
 
 
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:

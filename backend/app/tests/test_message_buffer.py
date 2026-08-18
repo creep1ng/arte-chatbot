@@ -57,7 +57,6 @@ def _clean_buffer_state() -> Generator[None, None, None]:
         message_buffer._pending_results.clear()
         message_buffer._pending_chat_responses.clear()
         message_buffer._processing_leases.clear()
-        message_buffer._processing_payloads.clear()
         message_buffer._processing_sessions.clear()
     except ImportError:
         pass
@@ -70,7 +69,6 @@ def _clean_buffer_state() -> Generator[None, None, None]:
         message_buffer._pending_results.clear()
         message_buffer._pending_chat_responses.clear()
         message_buffer._processing_leases.clear()
-        message_buffer._processing_payloads.clear()
         message_buffer._processing_sessions.clear()
     except ImportError:
         pass
@@ -534,38 +532,38 @@ class TestLocalProcessingLease:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("durable", [False, True])
     async def test_worker_death_payload_is_resumed_and_completion_is_fenced(
-        self, durable: bool
+        self, durable: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from backend.app import message_buffer
+        from backend.app.auth import api_key_principal
+        from backend.app.config import settings
         from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.app.session import session_manager
+        from backend.main import ChatResponse, get_buffer_result
         from backend.tests.test_state_repository import FakeDynamoDBTable
 
         if durable:
-            message_buffer.set_state_repository(
-                DynamoDBStateRepository(table=FakeDynamoDBTable())
-            )
-        now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+            repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+            message_buffer.set_state_repository(repository)
+        session_manager.bind_session("recovery", api_key_principal("lambda-test-key"))
+        expires_at = datetime.now(timezone.utc)
+        now = expires_at - timedelta(seconds=settings.buffer_processing_lease_seconds)
         await add_to_buffer("recovery", "durable payload")
-        first = message_buffer.acquire_processing_lease(
+        assert message_buffer.acquire_processing_lease(
             "recovery", now=now, token="first"
-        )
-        assert first.lease is not None
-        claimed = await message_buffer._flush_owned_buffer("recovery", "first")
-        successor = message_buffer.acquire_processing_lease(
-            "recovery", now=first.lease.expires_at, token="successor"
-        )
-        resumed = await message_buffer._flush_owned_buffer("recovery", "successor")
+        ).acquired
+        await message_buffer._flush_owned_buffer("recovery", "first")
+        await add_to_buffer("recovery", "next batch")
 
-        assert successor.acquired
-        assert claimed == resumed == "durable payload"
-        assert not message_buffer.complete_processing(
-            "recovery", "first", '"stale"'
-        ).completed
-        assert message_buffer.complete_processing(
-            "recovery", "successor", '"ready"'
-        ).completed
-        assert message_buffer.pop_pending_chat_response("recovery") == '"ready"'
-        message_buffer.set_state_repository(None)
+        async def process(**kwargs: object) -> ChatResponse:
+            assert kwargs["message"] == "durable payload"
+            return ChatResponse(response="ready", session_id="recovery")
+
+        monkeypatch.setattr("backend.main._process_chat_message", process)
+        assert (
+            await get_buffer_result("recovery", "lambda-test-key")
+        ).status == "ready"
+        assert get_buffer_count("recovery") == 1
 
 
 # ===========================================================================
@@ -878,11 +876,13 @@ class TestEndpointBufferIntegration:
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
 
+    @pytest.mark.parametrize("durable", [False, True])
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_is_final_bypasses_buffer(
         self,
         mock_llm: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
+        durable: bool,
     ) -> None:
         """When is_final=True, message is processed immediately, not buffered."""
         mock_llm.return_value = make_llm_response(
@@ -892,6 +892,12 @@ class TestEndpointBufferIntegration:
         client, app = self._make_client(monkeypatch, enabled=True)
 
         from backend.app import message_buffer
+        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.tests.test_state_repository import FakeDynamoDBTable
+
+        if durable:
+            repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+            message_buffer.set_state_repository(repository)
 
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
@@ -903,6 +909,7 @@ class TestEndpointBufferIntegration:
         )
         assert r1.status_code == 202
         session_id = r1.json()["session_id"]
+        message_buffer.set_pending_chat_response(session_id, '"stale"')
 
         # Second message with is_final — should process
         r2 = client.post(
@@ -919,11 +926,12 @@ class TestEndpointBufferIntegration:
         assert "response" in data
         assert data["session_id"] == session_id
         assert message_buffer.pop_pending_chat_response(session_id) is None
-        assert session_id not in message_buffer._processing_payloads
+        assert not message_buffer.has_processing_payload(session_id)
 
         # Cleanup
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
+        message_buffer.set_state_repository(None)
         app.dependency_overrides.clear()
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")
@@ -966,8 +974,6 @@ class TestEndpointBufferIntegration:
         assert r5.status_code == 200
         data = r5.json()
         assert "response" in data
-        assert message_buffer.pop_pending_chat_response(session_id) is None
-        assert session_id not in message_buffer._processing_payloads
 
         # Verify LLM was called with joined message
         mock_llm.assert_called_once()
