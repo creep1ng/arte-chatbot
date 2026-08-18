@@ -158,11 +158,9 @@ class FakeDynamoDBTable:
             return
         if expression.startswith("((attribute_not_exists(#lease_token)"):
             has_work = "processing_payload" in item or "messages" in item
-            token, expiry = names["#lease_token"], names["#lease_expires_at"]
-            has_lease = token in item and expiry in item
-            is_expired = has_lease and item[expiry] <= values[":now"]
-            is_blocked = has_lease or ("pending_chat_response" in item and not has_work)
-            if not is_expired and is_blocked:
+            has_lease = "lease_token" in item and "lease_expires_at" in item
+            is_expired = has_lease and item["lease_expires_at"] <= values[":now"]
+            if not is_expired and (has_lease or not has_work):
                 FakeDynamoDBTable._conditional_failure("lease unavailable")
             return
         if expression == (
@@ -190,14 +188,10 @@ class FakeDynamoDBTable:
             return
         if expression.startswith("#lease_token = :token AND attribute_"):
             is_resume = expression.endswith("attribute_exists(#payload)")
-            has_payload = names["#payload"] in item
-            if any(
-                (
-                    item.get(names["#lease_token"]) != values[":token"],
-                    has_payload != is_resume,
-                    not is_resume and names["#messages"] not in item,
-                )
-            ):
+            is_invalid = item.get(names["#lease_token"]) != values[":token"]
+            is_invalid |= (names["#payload"] in item) != is_resume
+            is_invalid |= not is_resume and names["#messages"] not in item
+            if is_invalid:
                 FakeDynamoDBTable._conditional_failure("payload claim failed")
             return
         else:
@@ -291,16 +285,15 @@ class FakeDynamoDBTable:
             and "#lease_token" in expression
         ):
             item[names["#expires_at"]] = deepcopy(values[":ttl"])
-            for alias in (
-                "#lease_token",
-                "#lease_expires_at",
-                "#processing_started_at",
-                "#payload",
-                "#pending_result",
-                "#response",
+            for attribute in (
+                "lease_token",
+                "lease_expires_at",
+                "processing_started_at",
+                "processing_payload",
+                "pending_result",
+                "pending_chat_response",
             ):
-                if alias in names:
-                    item.pop(names[alias], None)
+                item.pop(attribute, None)
             if ":response" in values:
                 item[names["#response"]] = deepcopy(values[":response"])
             return
@@ -1019,6 +1012,10 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
     repository: DynamoDBStateRepository,
 ) -> None:
     now = datetime(2026, 7, 29, microsecond=123456, tzinfo=timezone.utc)
+    empty = ProcessingLease(token="empty", expires_at=now + timedelta(seconds=60))
+    assert not repository.try_acquire_processing_lease(
+        "s1", now=now, lease=empty
+    ).acquired
     repository.append_buffer_message("s1", "work")
     start = Barrier(2)
 
@@ -1081,6 +1078,7 @@ def test_processing_lease_recovers_malformed_legacy_state(missing: str) -> None:
     item.pop(missing)
     table.put_item(Item=item)
     repository = DynamoDBStateRepository(table=table)
+    repository.append_buffer_message("s1", "work")
     now = datetime(2026, 7, 29, tzinfo=timezone.utc)
     lease = ProcessingLease(token="new", expires_at=now + timedelta(seconds=60))
 

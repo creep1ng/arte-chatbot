@@ -376,8 +376,7 @@ class DynamoDBStateRepository:
                 ConditionExpression=(
                     "((attribute_not_exists(#lease_token) OR "
                     "attribute_not_exists(#lease_expires_at)) AND "
-                    "(attribute_not_exists(pending_chat_response) OR "
-                    "attribute_exists(processing_payload) OR "
+                    "(attribute_exists(processing_payload) OR "
                     "attribute_exists(messages))) OR #lease_expires_at <= :now"
                 ),
                 ExpressionAttributeNames={
