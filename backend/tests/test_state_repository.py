@@ -1108,7 +1108,9 @@ def test_owned_response_is_hidden_until_fenced_terminal_transition() -> None:
     repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
     now = datetime(2026, 8, 17, tzinfo=timezone.utc)
     lease = ProcessingLease(token="owner", expires_at=now + timedelta(seconds=30))
+    repository.append_buffer_message("s1", "work")
     assert repository.try_acquire_processing_lease("s1", now=now, lease=lease).acquired
+    assert repository.claim_buffer_messages("s1", lease.token)
     repository.set_pending_chat_response("s1", '"early"')
 
     assert repository.pop_pending_chat_response_if_unowned("s1") is None

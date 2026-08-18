@@ -407,8 +407,10 @@ async def test_competing_pollers_cannot_consume_response_before_owner_release() 
     session_manager.set_state_repository(repository)
     message_buffer.set_state_repository(repository)
     repository.bind_owner(session_id, principal)
+    repository.append_buffer_message(session_id, "work")
     lease = message_buffer.acquire_processing_lease(session_id, now=now, token="owner")
     assert lease.lease is not None
+    assert repository.claim_buffer_messages(session_id, lease.lease.token)
     repository.set_pending_chat_response(session_id, '"early"')
 
     try:
