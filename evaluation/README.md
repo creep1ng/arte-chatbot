@@ -33,8 +33,57 @@ Results are saved in both JSON and CSV formats with timestamps.
 ### Output Files
 
 Results are saved to `evaluation/harness/output/` with timestamps:
-- `results_YYYYMMDD_HHMMSS.json` - Full JSON output
+- `results_harness_COMMIT_YYYYMMDD_HHMMSS.json` - Full JSON output
 - `results_YYYYMMDD_HHMMSS.csv` - CSV format for analysis
+
+## Quality Gate
+
+`quality-v1` is provisional pending policy inputs #210 and #213 and dependencies
+#210-#213. Thresholds are versioned in the policy, not CI shell:
+
+| Metric | Required threshold | Semantics |
+|--------|--------------------|-----------|
+| Failed query rate | `<= 5%` | Queries with a non-empty `error` |
+| Escalation accuracy | `>= 90%` | Correct escalation decisions among successful queries |
+| Hallucination rate | `<= 20%` | `unsupported_technical_numeric_claims_v1` detector |
+| p95 latency | `<= 5000 ms` | Nearest-rank p95 among successful queries |
+
+Escalation accuracy and p95 latency are advisory pending #210-#213 because their
+stable baseline behavior does not yet meet the provisional thresholds.
+
+The hallucination detector flags technical numeric claims without a source or
+absent from inspectable source text. Source-less nontechnical prose is allowed.
+
+Run the gate, optionally with a compatible policy:
+
+```bash
+python -m evaluation.harness.run --no-upload
+python -m evaluation.harness.run --quality-policy path/to/policy.json --no-upload
+```
+
+Re-evaluate raw results without contacting the API:
+
+```bash
+python -m evaluation.harness.run \
+  --from-report evaluation/harness/tests/fixtures/quality-fail-report.json \
+  --no-upload
+```
+
+`--from-report` recomputes metrics from `results` and ignores input aggregates.
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Required checks pass; advisory failures may be present |
+| `1` | At least one required quality check fails |
+| `2` | Infrastructure, input, or policy configuration failure |
+
+Infrastructure errors take precedence over quality failures when both occur;
+reports retain both categories. JSON keeps existing summaries and adds
+`metrics` plus `quality_gate` policy, checks, failures, and infrastructure
+errors. Reports are saved before upload or exit, and CI uploads them with
+`if: always()`.
 
 ## Adding New Test Queries
 
@@ -112,7 +161,7 @@ The harness is designed to run as part of the GitHub Actions pipeline. Add this 
   run: |
     docker compose up -d
     sleep 5
-    docker compose exec -T backend python -m evaluation.harness.run
+    docker compose exec -T backend python -m evaluation.harness.run --no-upload
 ```
 
 ## Output Format
@@ -262,10 +311,10 @@ arte-chatbot-data/
 
 ```bash
 # Run and upload to S3
-python -m evaluation.harness.run --sprint sprint_5 --upload-s3
+python -m evaluation.harness.run --sprint sprint_5
 
-# With custom API endpoint
-python -m evaluation.harness.run --sprint sprint_2 --api-url http://localhost:8000
+# With a custom API endpoint
+API_BASE_URL=http://localhost:8000 python -m evaluation.harness.run --sprint sprint_2
 ```
 
 ### Generating Mock Data
