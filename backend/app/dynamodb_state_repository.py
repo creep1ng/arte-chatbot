@@ -302,22 +302,43 @@ class DynamoDBStateRepository:
             additional_remove="processing_started_at",
         )
 
-    def pop_pending_chat_response_if_unowned(self, session_id: str) -> Optional[str]:
+    def pop_pending_chat_response_if_unowned(
+        self, session_id: str, *, now: Optional[datetime] = None
+    ) -> Optional[str]:
         """Atomically consume a response only outside active ownership."""
+        current_time = self._to_utc(now or datetime.now(timezone.utc))
         try:
             response = self._table.update_item(
                 Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
-                UpdateExpression=("REMOVE #response, #processing_started_at"),
+                UpdateExpression=(
+                    "REMOVE #response, #processing_started_at, #lease_token, "
+                    "#lease_expires_at"
+                ),
                 ConditionExpression=(
                     "attribute_type(#response, :string_type) AND "
-                    "attribute_not_exists(#lease_token)"
+                    "(attribute_not_exists(#lease_token) OR "
+                    "(#lease_expires_at <= :now AND "
+                    "(attribute_not_exists(#payload) OR "
+                    "(attribute_type(#payload, :list_type) AND "
+                    "size(#payload) = :zero)) AND "
+                    "(attribute_not_exists(#messages) OR "
+                    "(attribute_type(#messages, :list_type) AND "
+                    "size(#messages) = :zero))))"
                 ),
                 ExpressionAttributeNames={
                     "#response": "pending_chat_response",
                     "#processing_started_at": "processing_started_at",
                     "#lease_token": "lease_token",
+                    "#lease_expires_at": "lease_expires_at",
+                    "#payload": "processing_payload",
+                    "#messages": "messages",
                 },
-                ExpressionAttributeValues={":string_type": "S"},
+                ExpressionAttributeValues={
+                    ":string_type": "S",
+                    ":list_type": "L",
+                    ":zero": 0,
+                    ":now": self._epoch_seconds(current_time),
+                },
                 ReturnValues="ALL_OLD",
             )
         except ClientError as exc:

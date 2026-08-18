@@ -155,11 +155,32 @@ class FakeDynamoDBTable:
             return
         if expression == (
             "attribute_type(#response, :string_type) AND "
-            "attribute_not_exists(#lease_token)"
+            "(attribute_not_exists(#lease_token) OR (#lease_expires_at <= :now AND "
+            "(attribute_not_exists(#payload) OR (attribute_type(#payload, "
+            ":list_type) AND size(#payload) = :zero)) AND "
+            "(attribute_not_exists(#messages) OR (attribute_type(#messages, "
+            ":list_type) AND size(#messages) = :zero))))"
         ):
             response_name = names["#response"]
             lease_token = names["#lease_token"]
-            if not isinstance(item.get(response_name), str) or lease_token in item:
+            work = [item.get(names[field], []) for field in ("#payload", "#messages")]
+            has_no_work = all(isinstance(value, list) and not value for value in work)
+            expiry = item.get(names["#lease_expires_at"])
+            is_orphan = (
+                lease_token in item
+                and isinstance(expiry, Number)
+                and expiry <= values[":now"]
+                and has_no_work
+            )
+            if (values[":string_type"], values[":list_type"], values[":zero"]) != (
+                "S",
+                "L",
+                0,
+            ):
+                raise ValueError("Unsupported orphan response values")
+            if not isinstance(item.get(response_name), str) or (
+                lease_token in item and not is_orphan
+            ):
                 FakeDynamoDBTable._conditional_failure("response is owned")
             return
         if expression == "attribute_not_exists(#owner) OR #owner = :owner":
@@ -282,9 +303,16 @@ class FakeDynamoDBTable:
                 item.pop(names.get(alias, alias), None)
             return
 
-        if expression == "REMOVE #response, #processing_started_at":
-            item.pop(names["#response"], None)
-            item.pop(names["#processing_started_at"], None)
+        if expression == (
+            "REMOVE #response, #processing_started_at, #lease_token, #lease_expires_at"
+        ):
+            for alias in (
+                "#response",
+                "#processing_started_at",
+                "#lease_token",
+                "#lease_expires_at",
+            ):
+                item.pop(names[alias], None)
             return
 
         if expression == (
@@ -1125,6 +1153,32 @@ def test_owned_response_is_hidden_until_fenced_terminal_transition() -> None:
     assert repository.complete_processing("s1", successor.token, '"ready"').completed
     assert repository.pop_pending_chat_response_if_unowned("s1") == '"ready"'
     assert repository.pop_pending_chat_response_if_unowned("s1") is None
+
+
+def test_expired_orphan_response_is_consumed_and_fences_stale_owner() -> None:
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table)
+    now = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="orphan", expires_at=now + timedelta(seconds=30))
+    repository.append_buffer_message("s1", "work")
+    assert repository.try_acquire_processing_lease("s1", now=now, lease=lease).acquired
+    assert repository.claim_buffer_messages("s1", lease.token)
+    table.items[("SESSION#s1", "BUFFER")].pop("processing_payload")
+    repository.set_pending_chat_response("s1", '"ready"')
+
+    assert (
+        repository.pop_pending_chat_response_if_unowned(
+            "s1", now=lease.expires_at - timedelta(microseconds=1)
+        )
+        is None
+    )
+    assert (
+        repository.pop_pending_chat_response_if_unowned("s1", now=lease.expires_at)
+        == '"ready"'
+    )
+    assert repository.pop_pending_chat_response_if_unowned("s1") is None
+    assert not repository.complete_processing("s1", lease.token, '"stale"').completed
+    assert repository.get_buffer_state("s1").processing_lease is None
 
 
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:
