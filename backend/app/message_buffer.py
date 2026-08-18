@@ -98,13 +98,14 @@ async def add_to_buffer(
         if session_id not in _buffer:
             _buffer[session_id] = []
         _buffer[session_id].append((message, datetime.now(timezone.utc)))
+        message_count = len(_buffer[session_id])
 
-    if len(_buffer[session_id]) >= max_messages:
+    if message_count >= max_messages:
         # Overflow: flush immediately
         logger.info(
             "Buffer overflow for session %s: %d messages, flushing",
             session_id,
-            len(_buffer[session_id]),
+            message_count,
         )
         return await acquire_and_flush_buffer(session_id)
     return None
