@@ -137,9 +137,7 @@ async def acquire_and_flush_buffer(
         with _state_lock:
             if not _processing_payloads.get(session_id) and not _buffer.get(session_id):
                 return None
-            acquired = acquire_processing_lease(session_id)
-    else:
-        acquired = acquire_processing_lease(session_id)
+    acquired = acquire_processing_lease(session_id)
     if not acquired.acquired or acquired.lease is None:
         return None
 

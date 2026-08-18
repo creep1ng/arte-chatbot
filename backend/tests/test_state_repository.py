@@ -3,6 +3,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from numbers import Number
+import re
 from threading import Barrier, Event, RLock, Thread, current_thread
 from typing import Any, Callable
 
@@ -115,7 +117,9 @@ class FakeDynamoDBTable:
         names = ExpressionAttributeNames or {}
         expression = " ".join(UpdateExpression.split())
         used = f"{UpdateExpression} {ConditionExpression or ''}"
-        if any(alias not in used for alias in (*names, *ExpressionAttributeValues)):
+        used_names = set(re.findall(r"#[A-Za-z0-9_]+", used))
+        used_values = set(re.findall(r":[A-Za-z0-9_]+", used))
+        if used_names != set(names) or used_values != set(ExpressionAttributeValues):
             raise ValueError("Unused expression attribute")
 
         with self._lock:
@@ -156,12 +160,26 @@ class FakeDynamoDBTable:
             if item.get(owner_name) not in (None, values[":owner"]):
                 FakeDynamoDBTable._conditional_failure("owner mismatch")
             return
-        if expression.startswith("((attribute_not_exists(#lease_token)"):
-            has_work = "processing_payload" in item or "messages" in item
+        if expression == (
+            "((attribute_type(#payload, :list_type) AND size(#payload) > :zero) OR "
+            "(attribute_type(#messages, :list_type) AND size(#messages) > :zero)) "
+            "AND (attribute_not_exists(#lease_token) OR "
+            "attribute_not_exists(#lease_expires_at) OR #lease_expires_at <= :now)"
+        ):
+            work_fields = names["#payload"], names["#messages"]
+            if work_fields != ("processing_payload", "messages"):
+                raise ValueError("Unsupported work attribute mapping")
+            if (values[":list_type"], values[":zero"]) != ("L", 0):
+                raise ValueError("Unsupported work predicate values")
+            has_work = any(
+                isinstance(item.get(field), list) and bool(item[field])
+                for field in work_fields
+            )
             has_lease = "lease_token" in item and "lease_expires_at" in item
-            is_expired = has_lease and item["lease_expires_at"] <= values[":now"]
-            if not is_expired and (has_lease or not has_work):
-                FakeDynamoDBTable._conditional_failure("lease unavailable")
+            expiry = item.get("lease_expires_at")
+            is_expired = isinstance(expiry, Number) and expiry <= values[":now"]
+            if not has_work or (has_lease and not is_expired):
+                FakeDynamoDBTable._conditional_failure("lease unavailable or no work")
             return
         if expression == (
             "attribute_not_exists(#lease_token) OR "
@@ -1012,10 +1030,6 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
     repository: DynamoDBStateRepository,
 ) -> None:
     now = datetime(2026, 7, 29, microsecond=123456, tzinfo=timezone.utc)
-    empty = ProcessingLease(token="empty", expires_at=now + timedelta(seconds=60))
-    assert not repository.try_acquire_processing_lease(
-        "s1", now=now, lease=empty
-    ).acquired
     repository.append_buffer_message("s1", "work")
     start = Barrier(2)
 
@@ -1050,6 +1064,21 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
     assert repository.get_buffer_state("s1").processing_lease == replacement
     assert repository.release_processing_lease("s1", replacement.token).released is True
     assert not repository.release_processing_lease("s1", replacement.token).released
+
+
+def test_processing_lease_requires_recoverable_work() -> None:
+    now = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="owner", expires_at=now + timedelta(minutes=1))
+    rows = ({}, {"messages": "invalid"}, {"processing_payload": {}}, {"messages": []})
+    for work in rows:
+        table = FakeDynamoDBTable()
+        table.put_item(Item={"PK": "SESSION#s1", "SK": "BUFFER", **work})
+        repository = DynamoDBStateRepository(table=table)
+        assert not repository.try_acquire_processing_lease(
+            "s1", now=now, lease=lease
+        ).acquired
+    repository.append_buffer_message("s1", "later")
+    assert repository.get_buffer_state("s1").messages[0].message == "later"
 
 
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:

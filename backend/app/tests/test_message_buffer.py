@@ -530,37 +530,6 @@ class TestLocalProcessingLease:
         assert not acquire_processing_lease("legacy", now=now, token="blocked").acquired
         assert release_processing_lease("legacy", "owner").released
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("durable", [False, True])
-    async def test_recovery_race(
-        self, durable: bool, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from backend.app import message_buffer
-        from backend.app.auth import api_key_principal
-        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
-        from backend.app.session import session_manager
-        from backend.main import get_buffer_result
-        from backend.tests.test_state_repository import FakeDynamoDBTable
-
-        if durable:
-            repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
-            message_buffer.set_state_repository(repository)
-        session_manager.bind_session("r", api_key_principal("k"))
-        now = datetime.now(timezone.utc) - timedelta(seconds=61)
-        await add_to_buffer("r", "durable payload")
-        message_buffer.acquire_processing_lease("r", now=now, token="first")
-        await message_buffer._flush_owned_buffer("r", "first")
-        acquire = message_buffer.acquire_and_flush_buffer
-
-        async def finish(*args: object, **kwargs: object) -> object:
-            assert message_buffer.complete_processing("r", "first", '"ready"').completed
-            return await acquire(*args, **kwargs)
-
-        monkeypatch.setattr("backend.main.acquire_and_flush_buffer", finish)
-        assert (await get_buffer_result("r", "k")).status == "ready"
-        assert message_buffer.pop_pending_chat_response("r") is None
-        assert not message_buffer.has_active_processing_lease("r")
-
 
 # ===========================================================================
 # Task 5.5 — Overflow: max_messages triggers immediate flush

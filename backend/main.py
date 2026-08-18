@@ -1937,13 +1937,10 @@ async def get_buffer_result(
                 session_id, owned_message.message, owned_message.lease
             )
         chat_response_json = pop_pending_chat_response(session_id)
-        if chat_response_json is not None:
-            return BufferResultResponse(
-                status="ready",
-                session_id=session_id,
-                result=chat_response_json,
-            )
-        return BufferResultResponse(status="pending", session_id=session_id)
+        status = "ready" if chat_response_json is not None else "pending"
+        return BufferResultResponse(
+            status=status, session_id=session_id, result=chat_response_json
+        )
 
     if is_buffering(session_id):
         if is_buffer_ready_to_flush(

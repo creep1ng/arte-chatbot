@@ -229,48 +229,44 @@ class DynamoDBStateRepository:
         """Atomically rotate the current message batch out of the buffer."""
         names = {
             "#payload": "processing_payload",
-            "#messages": "messages",
             "#response": "pending_chat_response",
             "#expires_at": "expires_at",
             "#lease_token": "lease_token",
         }
-        values = {
-            ":token": token,
-            ":ttl": self._ttl(self._buffer_ttl_seconds),
-        }
-        transitions = (
-            (
-                "SET #payload = #messages, #expires_at = :ttl "
-                "REMOVE #messages, #response",
-                "#lease_token = :token AND attribute_not_exists(#payload) "
-                "AND attribute_exists(#messages)",
-            ),
-            (
-                "SET #expires_at = :ttl REMOVE #response",
-                "#lease_token = :token AND attribute_exists(#payload)",
-            ),
-        )
         if resume:
-            transitions = transitions[1:]
-            names.pop("#messages")
-        for update, condition in transitions:
-            try:
-                response = self._table.update_item(
-                    Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
-                    UpdateExpression=update,
-                    ConditionExpression=condition,
-                    ExpressionAttributeNames=names,
-                    ExpressionAttributeValues=values,
-                    ReturnValues="ALL_NEW",
-                )
-            except ClientError as exc:
-                if self._is_conditional_failure(exc):
-                    names.pop("#messages", None)
-                    continue
-                raise
-            item = response.get("Attributes", {})
-            return self._buffer_state_from_item(session_id, item).processing_payload
-        return []
+            update = "SET #expires_at = :ttl REMOVE #response"
+            condition = "#lease_token = :token AND attribute_exists(#payload)"
+        else:
+            names["#messages"] = "messages"
+            update = (
+                "SET #payload = #messages, #expires_at = :ttl "
+                "REMOVE #messages, #response"
+            )
+            condition = (
+                "#lease_token = :token AND attribute_not_exists(#payload) "
+                "AND attribute_exists(#messages)"
+            )
+        try:
+            response = self._table.update_item(
+                Key={"PK": self._session_pk(session_id), "SK": "BUFFER"},
+                UpdateExpression=update,
+                ConditionExpression=condition,
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues={
+                    ":token": token,
+                    ":ttl": self._ttl(self._buffer_ttl_seconds),
+                },
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as exc:
+            if self._is_conditional_failure(exc):
+                if resume:
+                    return []
+                return self.claim_buffer_messages(session_id, token, True)
+            raise
+        return self._buffer_state_from_item(
+            session_id, response.get("Attributes", {})
+        ).processing_payload
 
     def set_pending_result(self, session_id: str, joined_message: str) -> None:
         """Persist a joined buffer result."""
@@ -374,16 +370,20 @@ class DynamoDBStateRepository:
                     "#processing_started_at = :started, #expires_at = :ttl"
                 ),
                 ConditionExpression=(
-                    "((attribute_not_exists(#lease_token) OR "
-                    "attribute_not_exists(#lease_expires_at)) AND "
-                    "(attribute_exists(processing_payload) OR "
-                    "attribute_exists(messages))) OR #lease_expires_at <= :now"
+                    "((attribute_type(#payload, :list_type) AND "
+                    "size(#payload) > :zero) OR (attribute_type(#messages, "
+                    ":list_type) AND size(#messages) > :zero)) AND "
+                    "(attribute_not_exists(#lease_token) OR "
+                    "attribute_not_exists(#lease_expires_at) OR "
+                    "#lease_expires_at <= :now)"
                 ),
                 ExpressionAttributeNames={
                     "#lease_token": "lease_token",
                     "#lease_expires_at": "lease_expires_at",
                     "#processing_started_at": "processing_started_at",
                     "#expires_at": "expires_at",
+                    "#payload": "processing_payload",
+                    "#messages": "messages",
                 },
                 ExpressionAttributeValues={
                     ":token": lease.token,
@@ -391,6 +391,8 @@ class DynamoDBStateRepository:
                     ":started": now_utc.isoformat(),
                     ":now": self._epoch_seconds(now_utc),
                     ":ttl": self._ttl(self._buffer_ttl_seconds),
+                    ":list_type": "L",
+                    ":zero": 0,
                 },
                 ReturnValues="ALL_NEW",
             )

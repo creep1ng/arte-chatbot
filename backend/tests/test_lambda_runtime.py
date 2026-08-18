@@ -210,6 +210,7 @@ def test_chat_processes_owned_batch_from_stale_precount(
     owned = OwnedBufferedMessage(message="first\nsecond", lease=lease)
     processed: list[str] = []
     released: list[str] = []
+    completion = type("Completion", (), {"completed": True})()
 
     async def overflow(*_: Any, **__: Any) -> OwnedBufferedMessage:
         return owned
@@ -226,8 +227,8 @@ def test_chat_processes_owned_batch_from_stale_precount(
     monkeypatch.setattr("backend.main.schedule_flush", reject_schedule)
     monkeypatch.setattr("backend.main._process_chat_message", process)
     monkeypatch.setattr(
-        "backend.main.release_processing_lease",
-        lambda _session_id, token: released.append(token),
+        "backend.main.complete_processing",
+        lambda _session_id, token, response_json: released.append(token) or completion,
     )
 
     response = handler(
