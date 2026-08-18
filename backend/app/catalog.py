@@ -3,8 +3,9 @@ Catalog module for product indexing and search functionality.
 Loads catalog index from S3 and provides search capabilities.
 """
 
-import logging
 import json
+import logging
+import math
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -16,6 +17,33 @@ s3_client = S3Client()
 logger = logging.getLogger(__name__)
 
 CATALOG_INDEX_PATH = "index/catalog_index.json"
+
+CAPACITY_FIELD_BY_CATEGORY = {
+    "paneles": "potencia_w",
+    "inversores": "capacidad",
+    "controladores": "capacidad_a",
+    "baterias": "capacidad",
+}
+
+TYPE_FIELD_BY_CATEGORY = {
+    "paneles": "tipo_celda",
+    "inversores": "tipo",
+    "controladores": "tipo",
+    "baterias": "tipo",
+}
+
+
+def _normalize_numeric(value: Any) -> Optional[float]:
+    """Return a finite float for a supported catalog numeric value."""
+    if value is None or isinstance(value, bool):
+        return None
+
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    return normalized if math.isfinite(normalized) else None
 
 
 class CatalogError(Exception):
@@ -92,13 +120,31 @@ class Catalog:
         if fabricante:
             results = [p for p in results if fabricante.lower() in p.fabricante.lower()]
 
-        if modelo_contiene:
+        if (
+            modelo_contiene
+            or capacidad_min is not None
+            or capacidad_max is not None
+            or tipo
+        ):
             filtered = []
             for product in results:
+                category = product.categoria.lower()
+                capacity_field = CAPACITY_FIELD_BY_CATEGORY.get(category)
+                type_field = TYPE_FIELD_BY_CATEGORY.get(category)
                 matching_variants = [
                     v
                     for v in product.variantes
-                    if modelo_contiene.lower() in v.modelo.lower()
+                    if (
+                        not modelo_contiene
+                        or modelo_contiene.lower() in v.modelo.lower()
+                    )
+                    and self._matches_capacity(
+                        v,
+                        capacity_field,
+                        capacidad_min,
+                        capacidad_max,
+                    )
+                    and self._matches_type(product, v, type_field, tipo)
                 ]
                 if matching_variants:
                     filtered.append(product)
@@ -112,6 +158,49 @@ class Catalog:
         )
 
         return results
+
+    @staticmethod
+    def _matches_capacity(
+        variant: ProductVariant,
+        capacity_field: Optional[str],
+        capacidad_min: Optional[float],
+        capacidad_max: Optional[float],
+    ) -> bool:
+        """Return whether a variant satisfies inclusive capacity bounds."""
+        if capacidad_min is None and capacidad_max is None:
+            return True
+        if capacity_field is None:
+            return False
+
+        capacity = _normalize_numeric(variant.parametros_clave.get(capacity_field))
+        if capacity is None:
+            return False
+        if capacidad_min is not None and capacity < capacidad_min:
+            return False
+        if capacidad_max is not None and capacity > capacidad_max:
+            return False
+        return True
+
+    @staticmethod
+    def _matches_type(
+        product: CatalogProduct,
+        variant: ProductVariant,
+        type_field: Optional[str],
+        tipo: Optional[str],
+    ) -> bool:
+        """Return whether a variant matches its category's documented type field."""
+        if not tipo:
+            return True
+        if type_field is None:
+            return False
+
+        product_type = variant.parametros_clave.get(
+            type_field,
+            product.parametros_comunes.get(type_field),
+        )
+        return isinstance(product_type, str) and (
+            product_type.casefold() == tipo.casefold()
+        )
 
     def contains_ruta_s3(self, ruta_s3: str) -> bool:
         """Return whether the S3 key is declared by the catalog."""
