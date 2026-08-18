@@ -566,7 +566,7 @@ class TestOverflow:
 
         def claim() -> None:
             assert claim_started.wait(timeout=2)
-            claimed.append(asyncio.run(message_buffer._flush_owned_buffer("race")))
+            claimed.append(asyncio.run(message_buffer.flush_buffer("race")))
             claim_finished.set()
 
         monkeypatch.setattr(message_buffer, "_state_lock", ClaimOnReleaseLock())
