@@ -207,7 +207,9 @@ def test_chat_processes_owned_batch_from_stale_precount(
         token="concurrent-overflow",
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
     )
-    owned = OwnedBufferedMessage(message="first\nsecond", lease=lease)
+    owned = OwnedBufferedMessage(
+        message="first\nsecond", lease=lease, generation_id="generation"
+    )
     processed: list[str] = []
     released: list[str] = []
     completion = type("Completion", (), {"completed": True})()
