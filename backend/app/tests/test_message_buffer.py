@@ -531,37 +531,35 @@ class TestLocalProcessingLease:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("durable", [False, True])
-    async def test_worker_death_payload_is_resumed_and_completion_is_fenced(
+    async def test_recovery_race(
         self, durable: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from backend.app import message_buffer
         from backend.app.auth import api_key_principal
         from backend.app.dynamodb_state_repository import DynamoDBStateRepository
         from backend.app.session import session_manager
-        from backend.main import ChatResponse, get_buffer_result
+        from backend.main import get_buffer_result
         from backend.tests.test_state_repository import FakeDynamoDBTable
 
         if durable:
             repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
             message_buffer.set_state_repository(repository)
-        session_manager.bind_session("recovery", api_key_principal("lambda-test-key"))
+        session_manager.bind_session("r", api_key_principal("k"))
         now = datetime.now(timezone.utc) - timedelta(seconds=61)
-        await add_to_buffer("recovery", "durable payload")
-        assert message_buffer.acquire_processing_lease(
-            "recovery", now=now, token="first"
-        ).acquired
-        await message_buffer._flush_owned_buffer("recovery", "first")
-        await add_to_buffer("recovery", "next batch")
+        await add_to_buffer("r", "durable payload")
+        message_buffer.acquire_processing_lease("r", now=now, token="first")
+        await message_buffer._flush_owned_buffer("r", "first")
+        acquire = message_buffer.acquire_and_flush_buffer
 
-        async def process(**kwargs: object) -> ChatResponse:
-            assert kwargs["message"] == "durable payload"
-            return ChatResponse(response="ready", session_id="recovery")
+        async def finish(*args: object, **kwargs: object) -> object:
+            assert message_buffer.complete_processing("r", "first", '"ready"').completed
+            return await acquire(*args, **kwargs)
 
-        monkeypatch.setattr("backend.main._process_chat_message", process)
-        assert (
-            await get_buffer_result("recovery", "lambda-test-key")
-        ).status == "ready"
-        assert get_buffer_count("recovery") == 1
+        monkeypatch.setattr("backend.main.acquire_and_flush_buffer", finish)
+        assert (await get_buffer_result("r", "k")).status == "ready"
+        assert get_buffer_count("r") == 0
+        assert message_buffer.pop_pending_chat_response("r") is None
+        assert not message_buffer.has_active_processing_lease("r")
 
 
 # ===========================================================================

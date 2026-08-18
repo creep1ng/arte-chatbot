@@ -156,6 +156,11 @@ class FakeDynamoDBTable:
             if item.get(owner_name) not in (None, values[":owner"]):
                 FakeDynamoDBTable._conditional_failure("owner mismatch")
             return
+        if expression.startswith("(attribute_not_exists(#lease_token)"):
+            has_work = "processing_payload" in item or "messages" in item
+            if "pending_chat_response" in item and not has_work:
+                FakeDynamoDBTable._conditional_failure("no recoverable work")
+            expression = expression[1 : expression.index(") AND")]
         if expression == (
             "attribute_not_exists(#lease_token) OR "
             "attribute_not_exists(#lease_expires_at) OR "
@@ -179,18 +184,16 @@ class FakeDynamoDBTable:
             if item.get(token_name) != values[":token"]:
                 FakeDynamoDBTable._conditional_failure("token mismatch")
             return
-        claim_conditions = {
-            "#lease_token = :token AND attribute_exists(#payload)": True,
-            "#lease_token = :token AND attribute_not_exists(#payload) "
-            "AND attribute_exists(#messages)": False,
-        }
-        if expression in claim_conditions:
+        if expression.startswith("#lease_token = :token AND attribute_"):
+            is_resume = expression.endswith("attribute_exists(#payload)")
             has_payload = names["#payload"] in item
-            is_invalid = item.get(names["#lease_token"]) != values[":token"]
-            is_invalid |= has_payload != claim_conditions[expression]
-            if not claim_conditions[expression]:
-                is_invalid |= names["#messages"] not in item
-            if is_invalid:
+            if any(
+                (
+                    item.get(names["#lease_token"]) != values[":token"],
+                    has_payload != is_resume,
+                    not is_resume and names["#messages"] not in item,
+                )
+            ):
                 FakeDynamoDBTable._conditional_failure("payload claim failed")
             return
         else:
@@ -270,36 +273,32 @@ class FakeDynamoDBTable:
 
         if expression in (
             "SET #expires_at = :ttl REMOVE #response",
-            "SET #payload = #messages, #messages = :empty, #expires_at = :ttl "
-            "REMOVE #response",
+            "SET #payload = #messages, #expires_at = :ttl REMOVE #messages, #response",
         ):
             if expression.startswith("SET #payload"):
                 item[names["#payload"]] = deepcopy(item[names["#messages"]])
-                item[names["#messages"]] = deepcopy(values[":empty"])
+                item.pop(names["#messages"])
             item[names["#expires_at"]] = deepcopy(values[":ttl"])
             item.pop(names["#response"], None)
             return
 
-        if expression in (
-            "SET #expires_at = :ttl REMOVE #lease_token, #lease_expires_at, "
-            "#processing_started_at, #payload, #pending_result, #response",
-            "SET #expires_at = :ttl, #response = :response REMOVE "
-            "#lease_token, #lease_expires_at, #processing_started_at, "
-            "#payload, #pending_result",
+        if (
+            expression.startswith("SET #expires_at = :ttl")
+            and "#lease_token" in expression
         ):
             item[names["#expires_at"]] = deepcopy(values[":ttl"])
-            if ":response" in values:
-                item[names["#response"]] = deepcopy(values[":response"])
             for alias in (
                 "#lease_token",
                 "#lease_expires_at",
                 "#processing_started_at",
                 "#payload",
                 "#pending_result",
+                "#response",
             ):
-                item.pop(names[alias], None)
-            if ":response" not in values:
-                item.pop(names["#response"], None)
+                if alias in names:
+                    item.pop(names[alias], None)
+            if ":response" in values:
+                item[names["#response"]] = deepcopy(values[":response"])
             return
 
         if expression == (
@@ -1010,6 +1009,11 @@ def test_atomic_buffer_claim_partitions_deterministic_interleaving(
     assert [message.message for message in result] == claimed
     state = repository.get_buffer_state("s1")
     assert [message.message for message in state.messages] == remaining
+    successor = ProcessingLease(token="next", expires_at=lease.expires_at)
+    assert repository.try_acquire_processing_lease(
+        "s1", now=lease.expires_at, lease=successor
+    ).acquired
+    assert repository.claim_buffer_messages("s1", successor.token) == result
 
 
 def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
@@ -1043,39 +1047,10 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
         "s1", now=winner.expires_at, lease=replacement
     )
     assert takeover.acquired and takeover.lease == replacement
-    assert repository.release_processing_lease("s1", winner.token).released is False
+    assert not repository.complete_processing("s1", winner.token, '"stale"').completed
     assert repository.get_buffer_state("s1").processing_lease == replacement
     assert repository.release_processing_lease("s1", replacement.token).released is True
     assert not repository.release_processing_lease("s1", replacement.token).released
-
-
-def test_takeover_resumes_payload_and_stale_completion_is_fenced() -> None:
-    repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
-    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
-    first = ProcessingLease(token="first", expires_at=now + timedelta(seconds=30))
-    successor = ProcessingLease(
-        token="successor", expires_at=now + timedelta(seconds=60)
-    )
-    repository.append_buffer_message("s1", "Hola")
-    assert repository.try_acquire_processing_lease("s1", now=now, lease=first).acquired
-    repository.claim_buffer_messages("s1", first.token)
-    repository.append_buffer_message("s1", "next")
-    repository.set_pending_chat_response("s1", '"stale"')
-
-    assert repository.try_acquire_processing_lease(
-        "s1", now=first.expires_at, lease=successor
-    ).acquired
-    repository.claim_buffer_messages("s1", successor.token)
-    stale = repository.complete_processing("s1", first.token, '"stale"')
-    completed = repository.complete_processing("s1", successor.token, '"ready"')
-
-    assert [
-        message.message for message in repository.get_buffer_state("s1").messages
-    ] == ["next"]
-    assert (stale.completed, completed.completed) == (False, True)
-    empty = ProcessingLease(token="empty", expires_at=successor.expires_at)
-    assert repository.try_acquire_processing_lease("e", now=now, lease=empty).acquired
-    assert repository.claim_buffer_messages("e", empty.token) == []
 
 
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:

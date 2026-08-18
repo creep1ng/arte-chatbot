@@ -223,8 +223,10 @@ class DynamoDBStateRepository:
             },
         )
 
-    def claim_buffer_messages(self, session_id: str, token: str) -> list[BufferMessage]:
-        """Atomically rotate new messages or resume the lease-owned payload."""
+    def claim_buffer_messages(
+        self, session_id: str, token: str, resume: bool = False
+    ) -> list[BufferMessage]:
+        """Atomically rotate the current message batch out of the buffer."""
         names = {
             "#payload": "processing_payload",
             "#messages": "messages",
@@ -233,14 +235,13 @@ class DynamoDBStateRepository:
             "#lease_token": "lease_token",
         }
         values = {
-            ":empty": [],
             ":token": token,
             ":ttl": self._ttl(self._buffer_ttl_seconds),
         }
         transitions = (
             (
-                "SET #payload = #messages, #messages = :empty, "
-                "#expires_at = :ttl REMOVE #response",
+                "SET #payload = #messages, #expires_at = :ttl "
+                "REMOVE #messages, #response",
                 "#lease_token = :token AND attribute_not_exists(#payload) "
                 "AND attribute_exists(#messages)",
             ),
@@ -249,6 +250,9 @@ class DynamoDBStateRepository:
                 "#lease_token = :token AND attribute_exists(#payload)",
             ),
         )
+        if resume:
+            transitions = transitions[1:]
+            names.pop("#messages")
         for update, condition in transitions:
             try:
                 response = self._table.update_item(
@@ -262,7 +266,6 @@ class DynamoDBStateRepository:
             except ClientError as exc:
                 if self._is_conditional_failure(exc):
                     names.pop("#messages", None)
-                    values.pop(":empty", None)
                     continue
                 raise
             item = response.get("Attributes", {})
@@ -371,9 +374,11 @@ class DynamoDBStateRepository:
                     "#processing_started_at = :started, #expires_at = :ttl"
                 ),
                 ConditionExpression=(
-                    "attribute_not_exists(#lease_token) OR "
+                    "(attribute_not_exists(#lease_token) OR "
                     "attribute_not_exists(#lease_expires_at) OR "
-                    "#lease_expires_at <= :now"
+                    "#lease_expires_at <= :now) AND "
+                    "(attribute_not_exists(pending_chat_response) OR "
+                    "attribute_exists(processing_payload) OR attribute_exists(messages))"
                 ),
                 ExpressionAttributeNames={
                     "#lease_token": "lease_token",

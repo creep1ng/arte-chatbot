@@ -1931,18 +1931,18 @@ async def get_buffer_result(
         )
 
     if has_processing_payload(session_id):
-        owned_message = await acquire_and_flush_buffer(session_id)
+        owned_message = await acquire_and_flush_buffer(session_id, resume=True)
         if owned_message is not None:
             await _on_buffer_window_expired(
                 session_id, owned_message.message, owned_message.lease
             )
-            chat_response_json = pop_pending_chat_response(session_id)
-            if chat_response_json is not None:
-                return BufferResultResponse(
-                    status="ready",
-                    session_id=session_id,
-                    result=chat_response_json,
-                )
+        chat_response_json = pop_pending_chat_response(session_id)
+        if chat_response_json is not None:
+            return BufferResultResponse(
+                status="ready",
+                session_id=session_id,
+                result=chat_response_json,
+            )
         return BufferResultResponse(status="pending", session_id=session_id)
 
     if is_buffering(session_id):

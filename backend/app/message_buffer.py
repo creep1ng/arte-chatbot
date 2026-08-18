@@ -130,25 +130,37 @@ async def flush_buffer(session_id: str) -> Optional[str]:
 
 async def acquire_and_flush_buffer(
     session_id: str,
+    resume: bool = False,
 ) -> Optional[OwnedBufferedMessage]:
     """Acquire processing ownership before destructively flushing a buffer."""
-    acquired = acquire_processing_lease(session_id)
+    if _state_repository is None:
+        with _state_lock:
+            if not _processing_payloads.get(session_id) and not _buffer.get(session_id):
+                return None
+            acquired = acquire_processing_lease(session_id)
+    else:
+        acquired = acquire_processing_lease(session_id)
     if not acquired.acquired or acquired.lease is None:
         return None
 
     lease = acquired.lease
     try:
-        joined = await _flush_owned_buffer(session_id, lease.token)
+        joined = await _flush_owned_buffer(session_id, lease.token, resume)
     except BaseException:
         release_processing_lease(session_id, lease.token)
         raise
     if joined is None:
-        complete_processing(session_id, lease.token, None)
+        if resume:
+            release_processing_lease(session_id, lease.token)
+        else:
+            complete_processing(session_id, lease.token, None)
         return None
     return OwnedBufferedMessage(message=joined, lease=lease)
 
 
-async def _flush_owned_buffer(session_id: str, token: str) -> Optional[str]:
+async def _flush_owned_buffer(
+    session_id: str, token: str, resume: bool = False
+) -> Optional[str]:
     """Flush a buffer after the caller has acquired processing ownership.
 
     Local mode clears stale pending delivery state before returning the joined
@@ -161,7 +173,9 @@ async def _flush_owned_buffer(session_id: str, token: str) -> Optional[str]:
         Messages joined with newline separator, or None if buffer empty.
     """
     if _state_repository is not None:
-        buffer_messages = _state_repository.claim_buffer_messages(session_id, token)
+        buffer_messages = _state_repository.claim_buffer_messages(
+            session_id, token, resume
+        )
         if not buffer_messages:
             return None
         joined = "\n".join(message.message for message in buffer_messages)
@@ -172,6 +186,8 @@ async def _flush_owned_buffer(session_id: str, token: str) -> Optional[str]:
         if current is None or current.token != token:
             return None
         existing_payload = _processing_payloads.get(session_id)
+        if resume and existing_payload is None:
+            return None
         buffered_entries = [] if existing_payload else _buffer.pop(session_id, [])
         joined = existing_payload or "\n".join(msg for msg, _ in buffered_entries)
         if joined:
