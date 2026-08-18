@@ -57,6 +57,7 @@ def _clean_buffer_state() -> Generator[None, None, None]:
         message_buffer._pending_results.clear()
         message_buffer._pending_chat_responses.clear()
         message_buffer._processing_leases.clear()
+        message_buffer._processing_payloads.clear()
         message_buffer._processing_sessions.clear()
     except ImportError:
         pass
@@ -69,6 +70,7 @@ def _clean_buffer_state() -> Generator[None, None, None]:
         message_buffer._pending_results.clear()
         message_buffer._pending_chat_responses.clear()
         message_buffer._processing_leases.clear()
+        message_buffer._processing_payloads.clear()
         message_buffer._processing_sessions.clear()
     except ImportError:
         pass
@@ -529,6 +531,42 @@ class TestLocalProcessingLease:
         assert not acquire_processing_lease("legacy", now=now, token="blocked").acquired
         assert release_processing_lease("legacy", "owner").released
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("durable", [False, True])
+    async def test_worker_death_payload_is_resumed_and_completion_is_fenced(
+        self, durable: bool
+    ) -> None:
+        from backend.app import message_buffer
+        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.tests.test_state_repository import FakeDynamoDBTable
+
+        if durable:
+            message_buffer.set_state_repository(
+                DynamoDBStateRepository(table=FakeDynamoDBTable())
+            )
+        now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+        await add_to_buffer("recovery", "durable payload")
+        first = message_buffer.acquire_processing_lease(
+            "recovery", now=now, token="first"
+        )
+        assert first.lease is not None
+        claimed = await message_buffer._flush_owned_buffer("recovery", "first")
+        successor = message_buffer.acquire_processing_lease(
+            "recovery", now=first.lease.expires_at, token="successor"
+        )
+        resumed = await message_buffer._flush_owned_buffer("recovery", "successor")
+
+        assert successor.acquired
+        assert claimed == resumed == "durable payload"
+        assert not message_buffer.complete_processing(
+            "recovery", "first", '"stale"'
+        ).completed
+        assert message_buffer.complete_processing(
+            "recovery", "successor", '"ready"'
+        ).completed
+        assert message_buffer.pop_pending_chat_response("recovery") == '"ready"'
+        message_buffer.set_state_repository(None)
+
 
 # ===========================================================================
 # Task 5.5 — Overflow: max_messages triggers immediate flush
@@ -880,6 +918,8 @@ class TestEndpointBufferIntegration:
         # Should contain joined message (original + is_final)
         assert "response" in data
         assert data["session_id"] == session_id
+        assert message_buffer.pop_pending_chat_response(session_id) is None
+        assert session_id not in message_buffer._processing_payloads
 
         # Cleanup
         message_buffer._buffer.clear()
@@ -926,6 +966,8 @@ class TestEndpointBufferIntegration:
         assert r5.status_code == 200
         data = r5.json()
         assert "response" in data
+        assert message_buffer.pop_pending_chat_response(session_id) is None
+        assert session_id not in message_buffer._processing_payloads
 
         # Verify LLM was called with joined message
         mock_llm.assert_called_once()

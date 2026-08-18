@@ -21,6 +21,7 @@ from backend.app.config import settings
 from backend.app.state_repository import (
     ChatbotStateRepository,
     ProcessingLease,
+    ProcessingCompletionResult,
     ProcessingLeaseReleaseResult,
     ProcessingLeaseResult,
 )
@@ -50,6 +51,7 @@ _pending_state_lock = RLock()
 
 # Tokenized leases coordinate every local destructive buffer-processing path.
 _processing_leases: dict[str, ProcessingLease] = {}
+_processing_payloads: dict[str, str] = {}
 _state_lock = RLock()
 
 
@@ -123,7 +125,7 @@ async def flush_buffer(session_id: str) -> Optional[str]:
     try:
         return owned_message.message
     finally:
-        release_processing_lease(session_id, owned_message.lease.token)
+        complete_processing(session_id, owned_message.lease.token, None)
 
 
 async def acquire_and_flush_buffer(
@@ -136,17 +138,17 @@ async def acquire_and_flush_buffer(
 
     lease = acquired.lease
     try:
-        joined = await _flush_owned_buffer(session_id)
+        joined = await _flush_owned_buffer(session_id, lease.token)
     except BaseException:
         release_processing_lease(session_id, lease.token)
         raise
     if joined is None:
-        release_processing_lease(session_id, lease.token)
+        complete_processing(session_id, lease.token, None)
         return None
     return OwnedBufferedMessage(message=joined, lease=lease)
 
 
-async def _flush_owned_buffer(session_id: str) -> Optional[str]:
+async def _flush_owned_buffer(session_id: str, token: str) -> Optional[str]:
     """Flush a buffer after the caller has acquired processing ownership.
 
     Local mode clears stale pending delivery state before returning the joined
@@ -159,22 +161,27 @@ async def _flush_owned_buffer(session_id: str) -> Optional[str]:
         Messages joined with newline separator, or None if buffer empty.
     """
     if _state_repository is not None:
-        buffer_messages = _state_repository.claim_buffer_messages(session_id)
+        buffer_messages = _state_repository.claim_buffer_messages(session_id, token)
         if not buffer_messages:
             return None
         joined = "\n".join(message.message for message in buffer_messages)
-        _state_repository.set_pending_result(session_id, joined)
         return joined
 
     with _state_lock:
+        current = _processing_leases.get(session_id)
+        if current is None or current.token != token:
+            return None
+        existing_payload = _processing_payloads.get(session_id)
         buffered_entries = _buffer.pop(session_id, [])
+        joined = existing_payload or "\n".join(msg for msg, _ in buffered_entries)
+        if joined:
+            _processing_payloads[session_id] = joined
     task = _buffer_tasks.pop(session_id, None)
     current_task = asyncio.current_task()
     if task and task is not current_task and not task.done():
         task.cancel()
-    if not buffered_entries:
+    if not joined:
         return None
-    joined = "\n".join(msg for msg, _ in buffered_entries)
     # Clean up stale state from previous flushes to prevent memory leaks
     # and avoid false "not_found" responses while background processing runs.
     with _pending_state_lock:
@@ -398,6 +405,28 @@ def release_local_processing_lease(
             return ProcessingLeaseReleaseResult(released=False)
         del _processing_leases[session_id]
         return ProcessingLeaseReleaseResult(released=True)
+
+
+def complete_processing(
+    session_id: str, token: str, response_json: Optional[str]
+) -> ProcessingCompletionResult:
+    """Commit terminal output and cleanup only for the current owner."""
+    if _state_repository is not None:
+        return _state_repository.complete_processing(session_id, token, response_json)
+    with _state_lock, _pending_state_lock:
+        current = _processing_leases.get(session_id)
+        if current is None or current.token != token:
+            return ProcessingCompletionResult(completed=False)
+        if response_json is not None:
+            _pending_chat_responses[session_id] = (
+                response_json,
+                datetime.now(timezone.utc),
+            )
+        _processing_leases.pop(session_id, None)
+        _processing_payloads.pop(session_id, None)
+        _processing_sessions.pop(session_id, None)
+        _pending_results.pop(session_id, None)
+        return ProcessingCompletionResult(completed=True)
 
 
 def is_processing(session_id: str) -> bool:

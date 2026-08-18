@@ -67,15 +67,14 @@ from backend.app.message_buffer import (
     acquire_and_flush_buffer,
     add_to_buffer,
     clear_pending_chat_response,
+    complete_processing,
     get_buffer_count,
     has_active_processing_lease,
     is_buffer_ready_to_flush,
     is_buffering,
     pop_pending_chat_response,
-    release_processing_lease,
     schedule_flush,
     set_state_repository as set_buffer_state_repository,
-    set_pending_chat_response,
 )
 
 from backend.app.message_splitter import process_split_messages
@@ -88,7 +87,11 @@ from backend.app.security import (
     validate_session_id,
 )
 from backend.app.session import session_manager
-from backend.app.state_repository import ChatbotStateRepository, ProcessingLease
+from backend.app.state_repository import (
+    ChatbotStateRepository,
+    ProcessingCompletionResult,
+    ProcessingLease,
+)
 from backend.app.tools import get_tool_definitions, validate_s3_path
 from backend.app.user_profiler import (
     PROFILE_INSTRUCTIONS,
@@ -1739,7 +1742,7 @@ async def _process_chat_message(
 
 async def _on_buffer_window_expired(
     session_id: str, joined_message: str, lease: ProcessingLease
-) -> None:
+) -> ProcessingCompletionResult:
     """Callback when buffer window expires.
 
     Processes the joined message with the chatbot in the background
@@ -1759,7 +1762,7 @@ async def _on_buffer_window_expired(
             s3_client=s3_client,
             file_inputs_client=file_inputs_client,
         )
-        set_pending_chat_response(session_id, response.model_dump_json())
+        response_json = response.model_dump_json()
         logger.info(
             "Buffered message processed for session %s, response stored for polling",
             session_id,
@@ -1787,9 +1790,8 @@ async def _on_buffer_window_expired(
             output_tokens=0,
             total_tokens=0,
         )
-        set_pending_chat_response(session_id, error_response.model_dump_json())
-    finally:
-        release_processing_lease(session_id, lease.token)
+        response_json = error_response.model_dump_json()
+    return complete_processing(session_id, lease.token, response_json)
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -1835,7 +1837,7 @@ async def chat_endpoint(
         if owned_message is not None:
             processing_lease = owned_message.lease
             if len(owned_message.message) > settings.max_chat_message_chars:
-                release_processing_lease(session_id, processing_lease.token)
+                complete_processing(session_id, processing_lease.token, None)
                 processing_lease = None
                 raise HTTPException(
                     status_code=413, detail="Buffered message too large"
@@ -1861,7 +1863,7 @@ async def chat_endpoint(
             )
 
     try:
-        return await _process_chat_message(
+        response = await _process_chat_message(
             session_id=session_id,
             message=request.message,
             llm_client=llm_client,
@@ -1870,6 +1872,20 @@ async def chat_endpoint(
             request_id=request_id,
             deadline=deadline,
         )
+        if processing_lease is not None:
+            completion = complete_processing(
+                session_id, processing_lease.token, response_json=None
+            )
+            processing_lease = None
+            if not completion.completed:
+                return JSONResponse(
+                    status_code=202,
+                    content=BufferingResponse(
+                        session_id=session_id,
+                        poll_url=f"/buffer-result/{session_id}",
+                    ).model_dump(),
+                )
+        return response
     except LLMServiceError as e:
         logger.error(
             "LLM service error: request_id=%s, session_id=%s, error=%s",
@@ -1886,9 +1902,6 @@ async def chat_endpoint(
             e,
         )
         raise HTTPException(status_code=500, detail="Internal server error")
-    finally:
-        if processing_lease is not None:
-            release_processing_lease(session_id, processing_lease.token)
 
 
 @app.get("/buffer-result/{session_id}", response_model=BufferResultResponse)

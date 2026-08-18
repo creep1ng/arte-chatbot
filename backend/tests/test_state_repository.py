@@ -252,6 +252,37 @@ class FakeDynamoDBTable:
             return
 
         if expression == (
+            "SET #payload = if_not_exists(#payload, #messages), "
+            "#messages = :messages, #expires_at = :ttl"
+        ):
+            payload_name = names["#payload"]
+            if payload_name not in item:
+                item[payload_name] = deepcopy(item.get(names["#messages"], []))
+            item[names["#messages"]] = deepcopy(values[":messages"])
+            item[names["#expires_at"]] = deepcopy(values[":ttl"])
+            return
+
+        if expression in (
+            "SET #expires_at = :ttl REMOVE #lease_token, #lease_expires_at, "
+            "#processing_started_at, #payload, #pending_result",
+            "SET #expires_at = :ttl, #response = :response REMOVE "
+            "#lease_token, #lease_expires_at, #processing_started_at, "
+            "#payload, #pending_result",
+        ):
+            item[names["#expires_at"]] = deepcopy(values[":ttl"])
+            if "#response" in names:
+                item[names["#response"]] = deepcopy(values[":response"])
+            for alias in (
+                "#lease_token",
+                "#lease_expires_at",
+                "#processing_started_at",
+                "#payload",
+                "#pending_result",
+            ):
+                item.pop(names[alias], None)
+            return
+
+        if expression == (
             "SET #lease_token = :token, #lease_expires_at = :lease_expires, "
             "#processing_started_at = :started, #expires_at = :ttl"
         ):
@@ -393,8 +424,8 @@ class ClaimInterleavingTable(FakeDynamoDBTable):
     ) -> dict[str, Any]:
         is_claim = (
             current_thread().name == "buffer-claim"
-            and UpdateExpression == "SET messages = :messages, expires_at = :ttl"
-            and ReturnValues == "ALL_OLD"
+            and UpdateExpression.startswith("SET #payload = if_not_exists")
+            and ReturnValues == "ALL_NEW"
         )
         if is_claim and self.pause == "before":
             self.claim_reached.set()
@@ -938,10 +969,17 @@ def test_atomic_buffer_claim_partitions_deterministic_interleaving(
     table = ClaimInterleavingTable(pause)
     repository = DynamoDBStateRepository(table=table)
     repository.append_buffer_message("s1", "first")
+    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    lease = ProcessingLease(token="owner", expires_at=now + timedelta(minutes=1))
+    assert repository.try_acquire_processing_lease(
+        "s1", now=now, lease=lease
+    ).acquired
     result: list[BufferMessage] = []
 
     thread = Thread(
-        target=lambda: result.extend(repository.claim_buffer_messages("s1")),
+        target=lambda: result.extend(
+            repository.claim_buffer_messages("s1", lease.token)
+        ),
         name="buffer-claim",
     )
     thread.start()
@@ -991,6 +1029,37 @@ def test_processing_lease_has_one_winner_and_exact_expiry_takeover(
     assert repository.get_buffer_state("s1").processing_lease == replacement
     assert repository.release_processing_lease("s1", replacement.token).released is True
     assert not repository.release_processing_lease("s1", replacement.token).released
+
+
+def test_takeover_resumes_payload_and_stale_completion_is_fenced() -> None:
+    """Worker death preserves its batch until the exact-expiry successor commits."""
+    repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    first = ProcessingLease(token="first", expires_at=now + timedelta(seconds=30))
+    successor = ProcessingLease(
+        token="successor", expires_at=now + timedelta(seconds=60)
+    )
+    repository.append_buffer_message("s1", "Hola")
+    assert repository.try_acquire_processing_lease(
+        "s1", now=now, lease=first
+    ).acquired
+    claimed = repository.claim_buffer_messages("s1", first.token)
+
+    assert [message.message for message in claimed] == ["Hola"]
+    assert repository.try_acquire_processing_lease(
+        "s1", now=first.expires_at, lease=successor
+    ).acquired
+    resumed = repository.claim_buffer_messages("s1", successor.token)
+    stale = repository.complete_processing("s1", first.token, '"stale"')
+    completed = repository.complete_processing("s1", successor.token, '"ready"')
+
+    assert [message.message for message in resumed] == ["Hola"]
+    assert stale.completed is False
+    assert completed.completed is True
+    state = repository.get_buffer_state("s1")
+    assert state.processing_payload == []
+    assert state.processing_lease is None
+    assert state.pending_chat_response == '"ready"'
 
 
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:
@@ -1049,12 +1118,15 @@ def test_processing_lease_translates_only_conditional_errors() -> None:
         "s1", now=now, lease=lease
     ).acquired
     assert not repository.release_processing_lease("s1", "token").released
+    assert not repository.complete_processing("s1", "token", '"ready"').completed
 
     table.code = "ProvisionedThroughputExceededException"
     with pytest.raises(ClientError):
         repository.try_acquire_processing_lease("s1", now=now, lease=lease)
     with pytest.raises(ClientError):
         repository.release_processing_lease("s1", "token")
+    with pytest.raises(ClientError):
+        repository.complete_processing("s1", "token", '"ready"')
 
 
 def test_rate_limit_uses_shared_counter(repository: DynamoDBStateRepository) -> None:
