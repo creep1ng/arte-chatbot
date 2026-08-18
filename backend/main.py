@@ -73,7 +73,7 @@ from backend.app.message_buffer import (
     has_processing_payload,
     is_buffer_ready_to_flush,
     is_buffering,
-    pop_pending_chat_response,
+    pop_pending_chat_response_if_unowned,
     schedule_flush,
     set_state_repository as set_buffer_state_repository,
 )
@@ -1922,7 +1922,7 @@ async def get_buffer_result(
     check_rate_limit(principal)
     bind_or_validate_session(session_id, principal, is_new=False)
 
-    chat_response_json = pop_pending_chat_response(session_id)
+    chat_response_json = pop_pending_chat_response_if_unowned(session_id)
     if chat_response_json is not None:
         return BufferResultResponse(
             status="ready",
@@ -1936,7 +1936,7 @@ async def get_buffer_result(
             await _on_buffer_window_expired(
                 session_id, owned_message.message, owned_message.lease
             )
-        chat_response_json = pop_pending_chat_response(session_id)
+        chat_response_json = pop_pending_chat_response_if_unowned(session_id)
         status = "ready" if chat_response_json is not None else "pending"
         return BufferResultResponse(
             status=status, session_id=session_id, result=chat_response_json
@@ -1952,7 +1952,7 @@ async def get_buffer_result(
                 await _on_buffer_window_expired(
                     session_id, owned_message.message, owned_message.lease
                 )
-                chat_response_json = pop_pending_chat_response(session_id)
+                chat_response_json = pop_pending_chat_response_if_unowned(session_id)
                 if chat_response_json is not None:
                     return BufferResultResponse(
                         status="ready",
@@ -1968,6 +1968,14 @@ async def get_buffer_result(
         return BufferResultResponse(
             status="pending",
             session_id=session_id,
+        )
+
+    chat_response_json = pop_pending_chat_response_if_unowned(session_id)
+    if chat_response_json is not None:
+        return BufferResultResponse(
+            status="ready",
+            session_id=session_id,
+            result=chat_response_json,
         )
 
     return BufferResultResponse(

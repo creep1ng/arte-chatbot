@@ -530,6 +530,38 @@ class TestLocalProcessingLease:
         assert not acquire_processing_lease("legacy", now=now, token="blocked").acquired
         assert release_processing_lease("legacy", "owner").released
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("durable", [False, True])
+    async def test_recovery_race(
+        self, durable: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from backend.app import message_buffer
+        from backend.app.auth import api_key_principal
+        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.app.session import session_manager
+        from backend.main import get_buffer_result
+        from backend.tests.test_state_repository import FakeDynamoDBTable
+
+        if durable:
+            repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+            message_buffer.set_state_repository(repository)
+        session_manager.bind_session("r", api_key_principal("k"))
+        now = datetime.now(timezone.utc) - timedelta(seconds=61)
+        await add_to_buffer("r", "durable payload")
+        message_buffer.acquire_processing_lease("r", now=now, token="first")
+        await message_buffer._flush_owned_buffer("r", "first")
+        acquire = message_buffer.acquire_and_flush_buffer
+
+        async def finish(*args: object, **kwargs: object) -> object:
+            assert message_buffer.complete_processing("r", "first", '"ready"').completed
+            return await acquire(*args, **kwargs)
+
+        monkeypatch.setattr("backend.main.acquire_and_flush_buffer", finish)
+        assert (await get_buffer_result("r", "k")).status == "ready"
+        assert message_buffer.pop_pending_chat_response("r") is None
+        assert not message_buffer.has_active_processing_lease("r")
+        message_buffer.set_state_repository(None)
+
 
 # ===========================================================================
 # Task 5.5 — Overflow: max_messages triggers immediate flush
@@ -717,6 +749,59 @@ class TestLocalPendingState:
         assert message_buffer.pop_pending_chat_response("s1") is None
         assert message_buffer.is_processing("s1") is True
 
+    def test_active_local_owner_fences_pending_response_consumption(self) -> None:
+        from backend.app import message_buffer
+
+        now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+        acquired = message_buffer.acquire_processing_lease("s1", now=now, token="owner")
+        message_buffer.set_pending_chat_response("s1", '"early"')
+
+        assert acquired.lease is not None
+        assert (
+            message_buffer.pop_pending_chat_response_if_unowned("s1", now=now) is None
+        )
+        successor = message_buffer.acquire_processing_lease(
+            "s1", now=acquired.lease.expires_at, token="next"
+        )
+        assert successor.lease is not None
+        assert (
+            message_buffer.pop_pending_chat_response_if_unowned(
+                "s1", now=acquired.lease.expires_at
+            )
+            is None
+        )
+        assert message_buffer.complete_processing(
+            "s1", successor.lease.token, '"ready"'
+        ).completed
+        assert message_buffer.pop_pending_chat_response_if_unowned("s1") == '"ready"'
+
+    def test_expired_local_orphan_response_fences_stale_owner(self) -> None:
+        from backend.app import message_buffer
+
+        now = datetime(2026, 8, 18, tzinfo=timezone.utc)
+        acquired = message_buffer.acquire_processing_lease(
+            "orphan", now=now, token="owner"
+        )
+        assert acquired.lease is not None
+        message_buffer.set_pending_chat_response("orphan", '"ready"')
+
+        assert (
+            message_buffer.pop_pending_chat_response_if_unowned(
+                "orphan", now=acquired.lease.expires_at - timedelta(microseconds=1)
+            )
+            is None
+        )
+        assert (
+            message_buffer.pop_pending_chat_response_if_unowned(
+                "orphan", now=acquired.lease.expires_at
+            )
+            == '"ready"'
+        )
+        assert message_buffer.pop_pending_chat_response_if_unowned("orphan") is None
+        assert not message_buffer.complete_processing(
+            "orphan", acquired.lease.token, '"stale"'
+        ).completed
+
     @pytest.mark.parametrize(
         ("setter_name", "popper_name"),
         [
@@ -841,11 +926,13 @@ class TestEndpointBufferIntegration:
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
 
+    @pytest.mark.parametrize("durable", [False, True])
     @patch("backend.main.llm_client.get_llm_response_with_tools")
     def test_is_final_bypasses_buffer(
         self,
         mock_llm: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
+        durable: bool,
     ) -> None:
         """When is_final=True, message is processed immediately, not buffered."""
         mock_llm.return_value = make_llm_response(
@@ -855,6 +942,12 @@ class TestEndpointBufferIntegration:
         client, app = self._make_client(monkeypatch, enabled=True)
 
         from backend.app import message_buffer
+        from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+        from backend.tests.test_state_repository import FakeDynamoDBTable
+
+        if durable:
+            repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+            message_buffer.set_state_repository(repository)
 
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
@@ -866,6 +959,7 @@ class TestEndpointBufferIntegration:
         )
         assert r1.status_code == 202
         session_id = r1.json()["session_id"]
+        message_buffer.set_pending_chat_response(session_id, '"stale"')
 
         # Second message with is_final — should process
         r2 = client.post(
@@ -881,10 +975,12 @@ class TestEndpointBufferIntegration:
         # Should contain joined message (original + is_final)
         assert "response" in data
         assert data["session_id"] == session_id
+        assert message_buffer.pop_pending_chat_response(session_id) is None
 
         # Cleanup
         message_buffer._buffer.clear()
         message_buffer._buffer_tasks.clear()
+        message_buffer.set_state_repository(None)
         app.dependency_overrides.clear()
 
     @patch("backend.main.llm_client.get_llm_response_with_tools")

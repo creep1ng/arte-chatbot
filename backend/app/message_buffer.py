@@ -10,6 +10,7 @@ flush due buffers instead of relying on ``asyncio.create_task`` after response.
 """
 
 import asyncio
+from hashlib import sha256
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,7 @@ _pending_state_lock = RLock()
 # Tokenized leases coordinate every local destructive buffer-processing path.
 _processing_leases: dict[str, ProcessingLease] = {}
 _processing_payloads: dict[str, str] = {}
+_processing_generations: dict[str, str] = {}
 _state_lock = RLock()
 
 
@@ -61,6 +63,7 @@ class OwnedBufferedMessage:
 
     message: str
     lease: ProcessingLease
+    generation_id: str
 
 
 def set_state_repository(
@@ -144,16 +147,19 @@ async def acquire_and_flush_buffer(
     lease = acquired.lease
     try:
         joined = await _flush_owned_buffer(session_id, lease.token, resume)
+        generation_id = get_processing_generation(session_id)
     except BaseException:
         release_processing_lease(session_id, lease.token)
         raise
-    if joined is None:
+    if joined is None or generation_id is None:
         if resume:
             release_processing_lease(session_id, lease.token)
         else:
             complete_processing(session_id, lease.token, None)
         return None
-    return OwnedBufferedMessage(message=joined, lease=lease)
+    return OwnedBufferedMessage(
+        message=joined, lease=lease, generation_id=generation_id
+    )
 
 
 async def _flush_owned_buffer(
@@ -190,6 +196,10 @@ async def _flush_owned_buffer(
         joined = existing_payload or "\n".join(msg for msg, _ in buffered_entries)
         if joined:
             _processing_payloads[session_id] = joined
+            if existing_payload is None:
+                _processing_generations[session_id] = _generation_id(
+                    session_id, buffered_entries
+                )
         _pending_results.pop(session_id, None)
         _pending_chat_responses.pop(session_id, None)
         _processing_sessions.pop(session_id, None)
@@ -236,6 +246,16 @@ def has_processing_payload(session_id: str) -> bool:
         return bool(_state_repository.get_buffer_state(session_id).processing_payload)
     with _state_lock:
         return session_id in _processing_payloads
+
+
+def get_processing_generation(session_id: str) -> Optional[str]:
+    """Return the stable identity of the currently claimed payload."""
+    if _state_repository is not None:
+        payload = _state_repository.get_buffer_state(session_id).processing_payload
+        entries = [(message.message, message.timestamp) for message in payload]
+        return _generation_id(session_id, entries) if entries else None
+    with _state_lock:
+        return _processing_generations.get(session_id)
 
 
 def clear_buffer(session_id: str) -> None:
@@ -326,6 +346,32 @@ def pop_pending_chat_response(session_id: str) -> Optional[str]:
         result = _pending_chat_responses.pop(session_id, None)
         if result is None:
             return None
+        _processing_sessions.pop(session_id, None)
+        return result[0]
+
+
+def pop_pending_chat_response_if_unowned(
+    session_id: str, *, now: Optional[datetime] = None
+) -> Optional[str]:
+    """Consume a response only when processing ownership is not active."""
+    if _state_repository is not None:
+        return _state_repository.pop_pending_chat_response_if_unowned(
+            session_id, now=now
+        )
+    current_time = _to_utc(now or datetime.now(timezone.utc))
+    with _state_lock, _pending_state_lock:
+        lease = _processing_leases.get(session_id)
+        if lease is not None and current_time < _to_utc(lease.expires_at):
+            return None
+        if lease is not None and (
+            _processing_payloads.get(session_id) or _buffer.get(session_id)
+        ):
+            return None
+        result = _pending_chat_responses.pop(session_id, None)
+        if result is None:
+            return None
+        _processing_leases.pop(session_id, None)
+        _processing_generations.pop(session_id, None)
         _processing_sessions.pop(session_id, None)
         return result[0]
 
@@ -445,6 +491,7 @@ def complete_processing(
             _pending_chat_responses.pop(session_id, None)
         _processing_leases.pop(session_id, None)
         _processing_payloads.pop(session_id, None)
+        _processing_generations.pop(session_id, None)
         _processing_sessions.pop(session_id, None)
         _pending_results.pop(session_id, None)
         return ProcessingCompletionResult(completed=True)
@@ -511,6 +558,14 @@ def _to_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _generation_id(session_id: str, entries: list[tuple[str, datetime]]) -> str:
+    material = "\n".join(
+        f"{_to_utc(timestamp).isoformat()}\0{message}" for message, timestamp in entries
+    )
+    digest = sha256(f"{session_id}\0{material}".encode()).hexdigest()
+    return f"{_to_utc(entries[0][1]).isoformat()}#{digest}"
 
 
 FlushCallback = Callable[[str, str, ProcessingLease], Awaitable[None]]

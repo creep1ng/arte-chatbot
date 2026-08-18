@@ -207,7 +207,9 @@ def test_chat_processes_owned_batch_from_stale_precount(
         token="concurrent-overflow",
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
     )
-    owned = OwnedBufferedMessage(message="first\nsecond", lease=lease)
+    owned = OwnedBufferedMessage(
+        message="first\nsecond", lease=lease, generation_id="generation"
+    )
     processed: list[str] = []
     released: list[str] = []
     completion = type("Completion", (), {"completed": True})()
@@ -388,6 +390,84 @@ async def test_two_due_buffer_pollers_run_one_processor(
     assert competing_poll.status == "pending"
     assert owner_result.status == "ready"
     assert processor_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_competing_pollers_cannot_consume_response_before_owner_release() -> None:
+    """Owner completion exposes one response without an intermediate not-found."""
+    from backend.app import message_buffer
+    from backend.app.auth import api_key_principal
+    from backend.app.dynamodb_state_repository import DynamoDBStateRepository
+    from backend.app.session import session_manager
+    from backend.main import get_buffer_result
+    from backend.tests.test_state_repository import FakeDynamoDBTable
+
+    repository = DynamoDBStateRepository(table=FakeDynamoDBTable())
+    session_id = "owned-poll-response"
+    principal = api_key_principal("lambda-test-key")
+    now = datetime.now(timezone.utc)
+    session_manager.set_state_repository(repository)
+    message_buffer.set_state_repository(repository)
+    repository.bind_owner(session_id, principal)
+    repository.append_buffer_message(session_id, "work")
+    lease = message_buffer.acquire_processing_lease(session_id, now=now, token="owner")
+    assert lease.lease is not None
+    assert repository.claim_buffer_messages(session_id, lease.lease.token)
+    repository.set_pending_chat_response(session_id, '"early"')
+
+    try:
+        competing = await asyncio.gather(
+            get_buffer_result(session_id, "lambda-test-key"),
+            get_buffer_result(session_id, "lambda-test-key"),
+        )
+        assert [result.status for result in competing] == ["pending", "pending"]
+        assert (
+            repository.get_buffer_state(session_id).pending_chat_response == '"early"'
+        )
+
+        completed = message_buffer.complete_processing(
+            session_id, lease.lease.token, '"ready"'
+        )
+        owner_result = await get_buffer_result(session_id, "lambda-test-key")
+        consumed = await get_buffer_result(session_id, "lambda-test-key")
+    finally:
+        session_manager.set_state_repository(None)
+        message_buffer.set_state_repository(None)
+
+    assert completed.completed
+    assert owner_result.status == "ready" and owner_result.result == '"ready"'
+    assert consumed.status == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_final_poll_recheck_consumes_response_published_between_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completion after the first consume cannot create a not-found window."""
+    from backend.app import message_buffer
+    from backend.app.auth import api_key_principal
+    from backend.app.session import session_manager
+    from backend.main import get_buffer_result
+
+    session_id = "late-poll-response"
+    session_manager.bind_session(session_id, api_key_principal("lambda-test-key"))
+    published = False
+
+    def publish_during_state_check(_: str) -> bool:
+        nonlocal published
+        if not published:
+            message_buffer.set_pending_chat_response(session_id, '"late"')
+            published = True
+        return False
+
+    monkeypatch.setattr(
+        "backend.main.has_processing_payload", publish_during_state_check
+    )
+
+    result = await get_buffer_result(session_id, "lambda-test-key")
+
+    assert result.status == "ready" and result.result == '"late"'
+    assert message_buffer.pop_pending_chat_response(session_id) is None
 
 
 @pytest.mark.asyncio
