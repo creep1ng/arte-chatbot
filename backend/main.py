@@ -1824,21 +1824,15 @@ async def chat_endpoint(
     # P4: Multi-message buffer — intercept before normal processing
     if settings.multi_message_buffer_enabled:
         current_count = get_buffer_count(session_id)
-
-        if request.is_final or current_count >= 4:
-            owned_message = await add_to_buffer(
-                session_id,
-                request.message,
-                max_messages=1 if request.is_final else 5,
-            )
-            if owned_message is None:
-                return JSONResponse(
-                    status_code=202,
-                    content=BufferingResponse(
-                        session_id=session_id,
-                        poll_url=f"/buffer-result/{session_id}",
-                    ).model_dump(),
-                )
+        should_flush = request.is_final or current_count >= 4
+        if not should_flush:
+            clear_pending_chat_response(session_id)
+        owned_message = await add_to_buffer(
+            session_id,
+            request.message,
+            max_messages=1 if request.is_final else 5,
+        )
+        if owned_message is not None:
             processing_lease = owned_message.lease
             if len(owned_message.message) > settings.max_chat_message_chars:
                 release_processing_lease(session_id, processing_lease.token)
@@ -1852,14 +1846,12 @@ async def chat_endpoint(
                 is_final=request.is_final,
             )
         else:
-            # Clear any stale pending response from a previous buffer window
-            clear_pending_chat_response(session_id)
-            await add_to_buffer(session_id, request.message)
-            schedule_flush(
-                session_id,
-                settings.buffer_window_seconds,
-                _on_buffer_window_expired,
-            )
+            if not should_flush:
+                schedule_flush(
+                    session_id,
+                    settings.buffer_window_seconds,
+                    _on_buffer_window_expired,
+                )
             return JSONResponse(
                 status_code=202,
                 content=BufferingResponse(
