@@ -97,6 +97,9 @@ class SessionManager:
         question: str,
         answer: str,
         source_documents: Optional[List[str]] = None,
+        *,
+        generation_id: Optional[str] = None,
+        lease_token: Optional[str] = None,
     ) -> None:
         """
         Añade un turno a la sesión.
@@ -122,6 +125,8 @@ class SessionManager:
                     timestamp=turn.timestamp,
                     source_documents=turn.source_documents,
                 ),
+                generation_id=generation_id,
+                lease_token=lease_token,
             )
             return
 
@@ -266,6 +271,9 @@ class SessionManager:
         input_tokens: int,
         output_tokens: int,
         total_tokens: int,
+        *,
+        generation_id: Optional[str] = None,
+        lease_token: Optional[str] = None,
     ) -> None:
         """Acumula el uso de tokens para una sesión.
 
@@ -285,6 +293,8 @@ class SessionManager:
                     output_tokens=output_tokens,
                     total_tokens=total_tokens,
                 ),
+                generation_id=generation_id,
+                lease_token=lease_token,
             )
             return
         with self._lock:

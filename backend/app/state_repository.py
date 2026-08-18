@@ -128,7 +128,14 @@ class ChatbotStateRepository(Protocol):
     def get_session(self, session_id: str, max_turns: int = 20) -> SessionState:
         """Return persisted session state with at most the latest turns."""
 
-    def append_turn(self, session_id: str, turn: ChatTurn) -> None:
+    def append_turn(
+        self,
+        session_id: str,
+        turn: ChatTurn,
+        *,
+        generation_id: Optional[str] = None,
+        lease_token: Optional[str] = None,
+    ) -> None:
         """Append one conversation turn."""
 
     def bind_owner(self, session_id: str, owner: str) -> None:
@@ -140,7 +147,14 @@ class ChatbotStateRepository(Protocol):
     def set_user_profile(self, session_id: str, profile: str) -> None:
         """Persist the user profile for a session."""
 
-    def add_token_usage(self, session_id: str, totals: TokenTotals) -> None:
+    def add_token_usage(
+        self,
+        session_id: str,
+        totals: TokenTotals,
+        *,
+        generation_id: Optional[str] = None,
+        lease_token: Optional[str] = None,
+    ) -> None:
         """Accumulate token usage for a session."""
 
     def get_token_totals(self, session_id: str) -> TokenTotals:

@@ -6,6 +6,7 @@ import time
 from typing import Any, Optional
 
 import boto3
+from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
 from backend.app.state_repository import (
@@ -48,6 +49,7 @@ class DynamoDBStateRepository:
         self._table = table or boto3.resource(
             "dynamodb", region_name=region_name
         ).Table(table_name)
+        self._table_name = getattr(self._table, "name", table_name)
         self._key_prefix = key_prefix.strip("#")
         self._session_ttl_seconds = session_ttl_seconds
         self._buffer_ttl_seconds = buffer_ttl_seconds
@@ -69,20 +71,51 @@ class DynamoDBStateRepository:
             token_totals=tokens,
         )
 
-    def append_turn(self, session_id: str, turn: ChatTurn) -> None:
+    def append_turn(
+        self,
+        session_id: str,
+        turn: ChatTurn,
+        *,
+        generation_id: Optional[str] = None,
+        lease_token: Optional[str] = None,
+    ) -> None:
         """Append a conversation turn as an immutable item."""
         timestamp = self._to_utc(turn.timestamp).isoformat()
-        self._table.put_item(
-            Item={
-                "PK": self._session_pk(session_id),
-                "SK": f"TURN#{timestamp}",
-                "question": turn.question,
-                "answer": turn.answer,
-                "timestamp": timestamp,
-                "source_documents": turn.source_documents,
-                "expires_at": self._ttl(self._session_ttl_seconds),
-            }
-        )
+        item = {
+            "PK": self._session_pk(session_id),
+            "SK": f"TURN#{generation_id or timestamp}",
+            "question": turn.question,
+            "answer": turn.answer,
+            "timestamp": timestamp,
+            "source_documents": turn.source_documents,
+            "expires_at": self._ttl(self._session_ttl_seconds),
+        }
+        if generation_id is None:
+            self._table.put_item(Item=item)
+            return
+        self._require_fence(generation_id, lease_token)
+        item["processing_generation"] = generation_id
+        try:
+            self._transact_write(
+                [
+                    self._lease_condition(session_id, lease_token),
+                    {
+                        "Put": {
+                            "TableName": self._table_name,
+                            "Item": item,
+                            "ConditionExpression": "attribute_not_exists(PK)",
+                        }
+                    },
+                ]
+            )
+        except ClientError as exc:
+            existing = self._get_item(item["PK"], item["SK"], consistent=True) or {}
+            if (
+                self._is_transaction_canceled(exc)
+                and existing.get("processing_generation") == generation_id
+            ):
+                return
+            raise
 
     def bind_owner(self, session_id: str, owner: str) -> None:
         """Conditionally bind a session owner."""
@@ -123,8 +156,58 @@ class DynamoDBStateRepository:
             },
         )
 
-    def add_token_usage(self, session_id: str, totals: TokenTotals) -> None:
+    def add_token_usage(
+        self,
+        session_id: str,
+        totals: TokenTotals,
+        *,
+        generation_id: Optional[str] = None,
+        lease_token: Optional[str] = None,
+    ) -> None:
         """Accumulate token counters atomically."""
+        if generation_id is not None:
+            self._require_fence(generation_id, lease_token)
+            pk = self._session_pk(session_id)
+            try:
+                self._transact_write(
+                    [
+                        self._lease_condition(session_id, lease_token),
+                        {
+                            "Update": {
+                                "TableName": self._table_name,
+                                "Key": {"PK": pk, "SK": "TOKENS"},
+                                "UpdateExpression": (
+                                    "SET expires_at = :ttl ADD input_tokens :input, "
+                                    "output_tokens :output, total_tokens :total, "
+                                    "#generations :generation_set"
+                                ),
+                                "ConditionExpression": (
+                                    "attribute_not_exists(#generations) OR "
+                                    "NOT contains(#generations, :generation)"
+                                ),
+                                "ExpressionAttributeNames": {
+                                    "#generations": "processing_generations"
+                                },
+                                "ExpressionAttributeValues": {
+                                    ":input": totals.input_tokens,
+                                    ":output": totals.output_tokens,
+                                    ":total": totals.total_tokens,
+                                    ":ttl": self._ttl(self._session_ttl_seconds),
+                                    ":generation": generation_id,
+                                    ":generation_set": {generation_id},
+                                },
+                            }
+                        },
+                    ]
+                )
+            except ClientError as exc:
+                item = self._get_item(pk, "TOKENS", consistent=True) or {}
+                if self._is_transaction_canceled(exc) and generation_id in item.get(
+                    "processing_generations", set()
+                ):
+                    return
+                raise
+            return
         self._table.update_item(
             Key={"PK": self._session_pk(session_id), "SK": "TOKENS"},
             UpdateExpression=(
@@ -523,6 +606,49 @@ class DynamoDBStateRepository:
             raise
         return ProcessingCompletionResult(completed=True)
 
+    def _lease_condition(
+        self, session_id: str, lease_token: Optional[str]
+    ) -> dict[str, Any]:
+        return {
+            "ConditionCheck": {
+                "TableName": self._table_name,
+                "Key": {"PK": self._session_pk(session_id), "SK": "BUFFER"},
+                "ConditionExpression": "#lease_token = :token",
+                "ExpressionAttributeNames": {"#lease_token": "lease_token"},
+                "ExpressionAttributeValues": {":token": lease_token},
+            }
+        }
+
+    def _transact_write(self, items: list[dict[str, Any]]) -> None:
+        transaction_client = getattr(self._table, "transaction_client", None)
+        if transaction_client is not None:
+            transaction_client.transact_write_items(TransactItems=items)
+            return
+        serializer = TypeSerializer()
+        serialized = []
+        for action in items:
+            operation, parameters = next(iter(action.items()))
+            request = dict(parameters)
+            for field in ("Key", "Item", "ExpressionAttributeValues"):
+                if field in request:
+                    request[field] = {
+                        key: serializer.serialize(value)
+                        for key, value in request[field].items()
+                    }
+            serialized.append({operation: request})
+        self._table.meta.client.transact_write_items(TransactItems=serialized)
+
+    @staticmethod
+    def _require_fence(generation_id: str, lease_token: Optional[str]) -> None:
+        if not generation_id or not lease_token:
+            raise ValueError("generation_id and lease_token must be provided together")
+
+    @staticmethod
+    def _is_transaction_canceled(exc: ClientError) -> bool:
+        return (
+            exc.response.get("Error", {}).get("Code") == "TransactionCanceledException"
+        )
+
     def _get_turns(self, session_id: str, max_turns: int) -> list[ChatTurn]:
         items: list[dict[str, Any]] = []
         exclusive_start_key: Optional[dict[str, Any]] = None
@@ -548,8 +674,13 @@ class DynamoDBStateRepository:
 
         return [self._turn_from_item(item) for item in reversed(items)]
 
-    def _get_item(self, pk: str, sk: str) -> dict[str, Any]:
-        response = self._table.get_item(Key={"PK": pk, "SK": sk})
+    def _get_item(
+        self, pk: str, sk: str, *, consistent: bool = False
+    ) -> dict[str, Any]:
+        response = self._table.get_item(
+            Key={"PK": pk, "SK": sk},
+            **({"ConsistentRead": True} if consistent else {}),
+        )
         return response.get("Item", {})
 
     def _session_pk(self, session_id: str) -> str:

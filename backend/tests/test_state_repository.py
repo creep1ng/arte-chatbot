@@ -27,12 +27,14 @@ class FakeDynamoDBTable:
     """Small in-memory DynamoDB Table fake for repository unit tests."""
 
     def __init__(self, query_page_size: int | None = None) -> None:
+        self.name = "test-table"
+        self.transaction_client = self
         self.items: dict[tuple[str, str], dict[str, Any]] = {}
         self.query_calls: list[dict[str, Any]] = []
         self.query_page_size = query_page_size
         self._lock = RLock()
 
-    def get_item(self, Key: dict[str, str]) -> dict[str, Any]:
+    def get_item(self, Key: dict[str, str], **_: Any) -> dict[str, Any]:
         with self._lock:
             item = self.items.get((Key["PK"], Key["SK"]))
             return {"Item": deepcopy(item)} if item else {}
@@ -40,6 +42,64 @@ class FakeDynamoDBTable:
     def put_item(self, Item: dict[str, Any]) -> None:
         with self._lock:
             self.items[(Item["PK"], Item["SK"])] = deepcopy(Item)
+
+    def transact_write_items(self, TransactItems: list[dict[str, Any]]) -> None:
+        if len(TransactItems) != 2 or "ConditionCheck" not in TransactItems[0]:
+            raise ValueError("Unsupported processing transaction")
+        condition = TransactItems[0]["ConditionCheck"]
+        if condition != {
+            "TableName": self.name,
+            "Key": {"PK": condition["Key"]["PK"], "SK": "BUFFER"},
+            "ConditionExpression": "#lease_token = :token",
+            "ExpressionAttributeNames": {"#lease_token": "lease_token"},
+            "ExpressionAttributeValues": {
+                ":token": condition["ExpressionAttributeValues"][":token"]
+            },
+        }:
+            raise ValueError("Unsupported lease transaction condition")
+        with self._lock:
+            buffer_key = condition["Key"]["PK"], "BUFFER"
+            token = condition["ExpressionAttributeValues"][":token"]
+            if self.items.get(buffer_key, {}).get("lease_token") != token:
+                self._transaction_failure()
+            operation, request = next(iter(TransactItems[1].items()))
+            if request["TableName"] != self.name:
+                raise ValueError("Unsupported transaction table")
+            key = request.get("Key") or {
+                field: request["Item"][field] for field in ("PK", "SK")
+            }
+            item_key = key["PK"], key["SK"]
+            if operation == "Put":
+                if request.get("ConditionExpression") != "attribute_not_exists(PK)":
+                    raise ValueError("Unsupported transactional put")
+                if item_key in self.items:
+                    self._transaction_failure()
+                self.items[item_key] = deepcopy(request["Item"])
+                return
+            if operation != "Update":
+                raise ValueError("Unsupported processing transaction operation")
+            values = request["ExpressionAttributeValues"]
+            generation = values[":generation"]
+            item = deepcopy(
+                self.items.get(item_key, {"PK": key["PK"], "SK": key["SK"]})
+            )
+            generations = set(item.get("processing_generations", set()))
+            if generation in generations:
+                self._transaction_failure()
+            for field in ("input_tokens", "output_tokens", "total_tokens"):
+                item[field] = int(item.get(field, 0)) + int(
+                    values[f":{field.removesuffix('_tokens')}"]
+                )
+            item["expires_at"] = values[":ttl"]
+            item["processing_generations"] = generations | values[":generation_set"]
+            self.items[item_key] = item
+
+    @staticmethod
+    def _transaction_failure() -> None:
+        raise ClientError(
+            {"Error": {"Code": "TransactionCanceledException"}},
+            "TransactWriteItems",
+        )
 
     def query(
         self,
@@ -1179,6 +1239,50 @@ def test_expired_orphan_response_is_consumed_and_fences_stale_owner() -> None:
     assert repository.pop_pending_chat_response_if_unowned("s1") is None
     assert not repository.complete_processing("s1", lease.token, '"stale"').completed
     assert repository.get_buffer_state("s1").processing_lease is None
+
+
+@pytest.mark.asyncio
+async def test_recovered_processing_side_effects_are_idempotent() -> None:
+    from backend.app import message_buffer
+
+    table = FakeDynamoDBTable()
+    repository = DynamoDBStateRepository(table=table)
+    message_buffer.set_state_repository(repository)
+    try:
+        await message_buffer.add_to_buffer("s1", "work")
+        owned = await message_buffer.acquire_and_flush_buffer("s1")
+        assert owned is not None
+        generation_id = owned.generation_id
+        turn = ChatTurn(
+            question="work",
+            answer="ready",
+            timestamp=datetime.now(timezone.utc),
+            source_documents=[],
+        )
+        owner_fence = {"generation_id": generation_id, "lease_token": owned.lease.token}
+        repository.append_turn("s1", turn, **owner_fence)
+
+        successor = ProcessingLease(
+            token="successor",
+            expires_at=owned.lease.expires_at + timedelta(minutes=1),
+        )
+        assert repository.try_acquire_processing_lease(
+            "s1", now=owned.lease.expires_at, lease=successor
+        ).acquired
+        assert message_buffer.get_processing_generation("s1") == generation_id
+        totals = TokenTotals(input_tokens=2, output_tokens=3, total_tokens=5)
+        with pytest.raises(ClientError, match="TransactionCanceledException"):
+            repository.add_token_usage("s1", totals, **owner_fence)
+
+        successor_fence = owner_fence | {"lease_token": successor.token}
+        repository.append_turn("s1", turn, **successor_fence)
+        for _ in range(2):
+            repository.add_token_usage("s1", totals, **successor_fence)
+        state = repository.get_session("s1")
+        assert len(state.turns) == 1
+        assert state.token_totals == totals
+    finally:
+        message_buffer.set_state_repository(None)
 
 
 def test_processing_lease_dtos_reject_incoherent_or_mutable_state() -> None:
