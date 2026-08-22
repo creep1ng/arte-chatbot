@@ -152,6 +152,11 @@ module "github_oidc" {
   github_repository = var.github_repository
   branch            = "main"
   role_name         = "${var.name_prefix}-github-deploy"
+  preview_role_name = var.github_preview_role_name
+
+  preview_resource_prefix      = "arte-chatbot-preview"
+  preview_catalog_bucket_names = [var.aws_bucket_name]
+  preview_kms_key_arns         = var.preview_kms_key_arns
 
   ecr_repository_arns = [
     module.backend_ecr.repository_arn,

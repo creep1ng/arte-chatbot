@@ -140,3 +140,31 @@ def test_pr_preview_wires_isolated_ephemeral_lambda_backend() -> None:
     assert (
         "PR preview Terraform state must use S3 backend configuration" not in findings
     )
+
+
+def test_github_oidc_separates_production_and_preview_authority() -> None:
+    """One provider must issue narrowly trusted, non-overlapping deploy roles."""
+    findings = _findings()
+
+    assert (
+        "GitHub OIDC must use one provider with separate main and pull_request role subjects"
+        not in findings
+    )
+    assert (
+        "production deploy role must not create pull-request preview infrastructure"
+        not in findings
+    )
+    assert (
+        "production foundation must expose reproducible preview role and boundary outputs"
+        not in findings
+    )
+
+
+def test_preview_boundary_excludes_production_secret_namespaces() -> None:
+    """The AWS permissions boundary, not PR Terraform, must enforce secret isolation."""
+    findings = _findings()
+
+    assert (
+        "preview Lambda role must have a foundation-managed boundary limited to preview secrets"
+        not in findings
+    )
