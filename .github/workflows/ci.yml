@@ -728,8 +728,19 @@ jobs:
     needs: [promote-lambda-production, verify-lambda-production]
     if: |
       always() && (
-        (failure() && github.ref == 'refs/heads/main' && vars.LAMBDA_CUTOVER_ENABLED == 'true') ||
-        (github.event_name == 'workflow_dispatch' && inputs.action == 'rollback-lambda')
+        (
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          vars.LAMBDA_CUTOVER_ENABLED == 'true' &&
+          needs.promote-lambda-production.result == 'success' &&
+          needs.verify-lambda-production.result == 'failure' &&
+          needs.promote-lambda-production.outputs.previous-version != ''
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.action == 'rollback-lambda' &&
+          inputs.rollback_target_version != ''
+        )
       )
     permissions:
       id-token: write
@@ -762,8 +773,8 @@ jobs:
       - name: Restore previous Lambda alias target
         run: |
           if [[ -z "${LAMBDA_ROLLBACK_TARGET_VERSION}" ]]; then
-            echo "No rollback target version was discovered. Provide workflow_dispatch rollback_target_version."
-            exit 1
+            echo "No rollback target version was discovered. Skipping rollback."
+            exit 0
           fi
           uv run python scripts/lambda_rollback.py rollback-alias \
             --aws-region "${AWS_REGION}" \

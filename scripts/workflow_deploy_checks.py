@@ -467,6 +467,36 @@ def _check_lambda_delivery(
             "lambda rollback job must restore a discovered previous alias version"
         )
 
+    if (
+        not rollback_job
+        or not _contains_all(
+            rollback_job,
+            [
+                "always()",
+                "needs.promote-lambda-production.result == 'success'",
+                "needs.verify-lambda-production.result == 'failure'",
+                "needs.promote-lambda-production.outputs.previous-version != ''",
+                "github.event_name == 'push'",
+                "inputs.rollback_target_version != ''",
+            ],
+        )
+        or "failure()" in rollback_job
+    ):
+        findings.append(
+            "lambda rollback must require successful promotion, failed verification, and a non-empty target"
+        )
+
+    if not rollback_job or not _contains_all(
+        rollback_job,
+        [
+            "No rollback target version was discovered. Skipping rollback.",
+            "exit 0",
+        ],
+    ):
+        findings.append(
+            "lambda rollback must skip safely when no target version exists"
+        )
+
     return findings
 
 
