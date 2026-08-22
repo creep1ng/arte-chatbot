@@ -108,89 +108,59 @@ data "aws_iam_policy_document" "deploy" {
     actions   = ["ecr:GetAuthorizationToken"]
     resources = ["*"]
   }
-
   statement {
     sid = "EcrPromotion"
     actions = [
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:BatchGetImage",
-      "ecr:CompleteLayerUpload",
-      "ecr:DescribeImages",
-      "ecr:DescribeRepositories",
-      "ecr:GetDownloadUrlForLayer",
-      "ecr:InitiateLayerUpload",
-      "ecr:PutImage",
-      "ecr:UploadLayerPart",
+      "ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload", "ecr:DescribeImages",
+      "ecr:DescribeRepositories", "ecr:GetDownloadUrlForLayer",
+      "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart",
     ]
     resources = var.ecr_repository_arns
   }
-
   dynamic "statement" {
     for_each = length(local.ssm_deploy_resources) > 0 ? [1] : []
-
     content {
-      sid = "SsmDeployCommand"
-      actions = [
-        "ssm:SendCommand",
-      ]
+      sid       = "SsmDeployCommand"
+      actions   = ["ssm:SendCommand"]
       resources = local.ssm_deploy_resources
     }
   }
-
   dynamic "statement" {
     for_each = length(local.ssm_deploy_resources) > 0 ? [1] : []
-
     content {
       sid = "SsmDeployStatusReads"
       actions = [
-        "ssm:GetCommandInvocation",
-        "ssm:DescribeInstanceInformation",
-        "ssm:ListCommandInvocations",
-        "ssm:ListCommands",
+        "ssm:GetCommandInvocation", "ssm:DescribeInstanceInformation",
+        "ssm:ListCommandInvocations", "ssm:ListCommands",
       ]
       resources = ["*"]
     }
   }
-
   dynamic "statement" {
     for_each = length(local.lambda_deploy_arns) > 0 ? [1] : []
-
     content {
       sid = "LambdaPackagePromotion"
       actions = [
-        "lambda:GetAlias",
-        "lambda:GetFunction",
-        "lambda:PublishVersion",
-        "lambda:UpdateAlias",
-        "lambda:UpdateFunctionCode",
+        "lambda:GetAlias", "lambda:GetFunction", "lambda:PublishVersion",
+        "lambda:UpdateAlias", "lambda:UpdateFunctionCode",
       ]
       resources = local.lambda_deploy_arns
     }
   }
-
   dynamic "statement" {
     for_each = length(var.state_table_arns) > 0 ? [1] : []
-
     content {
-      sid = "ReadSmokeStateTable"
-      actions = [
-        "dynamodb:DescribeTable",
-        "dynamodb:GetItem",
-        "dynamodb:Query",
-      ]
+      sid       = "ReadSmokeStateTable"
+      actions   = ["dynamodb:DescribeTable", "dynamodb:GetItem", "dynamodb:Query"]
       resources = var.state_table_arns
     }
   }
-
   dynamic "statement" {
     for_each = length(var.secret_arns) > 0 ? [1] : []
-
     content {
-      sid = "ReadDeploymentSecretMetadata"
-      actions = [
-        "secretsmanager:DescribeSecret",
-        "ssm:GetParameters",
-      ]
+      sid       = "ReadDeploymentSecretMetadata"
+      actions   = ["secretsmanager:DescribeSecret", "ssm:GetParameters"]
       resources = var.secret_arns
     }
   }
@@ -267,4 +237,119 @@ resource "aws_iam_role" "preview_lambda" {
 resource "aws_iam_role_policy_attachment" "preview_lambda_runtime" {
   role       = aws_iam_role.preview_lambda.name
   policy_arn = aws_iam_policy.preview_lambda_boundary.arn
+}
+
+data "aws_iam_policy_document" "preview_deploy" {
+  statement {
+    sid       = "ReadCallerIdentity"
+    actions   = ["sts:GetCallerIdentity"]
+    resources = ["*"]
+  }
+  statement {
+    sid       = "UsePreviewTerraformState"
+    actions   = ["s3:DeleteObject", "s3:GetObject", "s3:PutObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.preview_state_bucket_name}/${var.preview_state_key_prefix}/*"]
+  }
+  statement {
+    sid       = "ListPreviewTerraformState"
+    actions   = ["s3:GetBucketLocation", "s3:ListBucket"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.preview_state_bucket_name}"]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["${var.preview_state_key_prefix}/*"]
+    }
+  }
+  statement {
+    sid       = "ReadFoundationPreviewRole"
+    actions   = ["iam:GetRole"]
+    resources = [aws_iam_role.preview_lambda.arn]
+  }
+  statement {
+    sid       = "PassFoundationPreviewRoleToLambda"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.preview_lambda.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["lambda.amazonaws.com"]
+    }
+  }
+  statement {
+    sid = "ManagePreviewLambdaFunctions"
+    actions = [
+      "lambda:AddPermission", "lambda:CreateAlias", "lambda:CreateFunction",
+      "lambda:DeleteAlias", "lambda:DeleteFunction", "lambda:GetAlias",
+      "lambda:GetFunction", "lambda:GetFunctionCodeSigningConfig",
+      "lambda:GetPolicy", "lambda:ListAliases", "lambda:ListVersionsByFunction",
+      "lambda:PublishVersion", "lambda:RemovePermission", "lambda:TagResource",
+      "lambda:UntagResource", "lambda:UpdateAlias", "lambda:UpdateFunctionCode",
+      "lambda:UpdateFunctionConfiguration",
+    ]
+    resources = local.preview_lambda_arns
+  }
+  statement {
+    sid = "ManagePreviewDynamoDbTables"
+    actions = [
+      "dynamodb:CreateTable", "dynamodb:DeleteTable",
+      "dynamodb:DescribeContinuousBackups", "dynamodb:DescribeTable",
+      "dynamodb:DescribeTimeToLive", "dynamodb:GetItem",
+      "dynamodb:ListTagsOfResource", "dynamodb:Query",
+      "dynamodb:TagResource", "dynamodb:UntagResource",
+      "dynamodb:UpdateContinuousBackups", "dynamodb:UpdateTimeToLive",
+    ]
+    resources = local.preview_table_arns
+  }
+  statement {
+    sid       = "ReadPreviewLogGroups"
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["*"]
+  }
+  statement {
+    sid = "ManagePreviewLogGroups"
+    actions = [
+      "logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:ListTagsForResource",
+      "logs:PutRetentionPolicy", "logs:TagResource", "logs:UntagResource",
+    ]
+    resources = local.preview_log_arns
+  }
+  statement {
+    sid       = "CreateTaggedPreviewApis"
+    actions   = ["apigateway:POST"]
+    resources = ["arn:${data.aws_partition.current.partition}:apigateway:${data.aws_region.current.name}::/apis"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Environment"
+      values   = ["pr-preview"]
+    }
+  }
+  statement {
+    sid       = "ManageTaggedPreviewApis"
+    actions   = ["apigateway:DELETE", "apigateway:GET", "apigateway:PATCH", "apigateway:POST", "apigateway:PUT"]
+    resources = ["arn:${data.aws_partition.current.partition}:apigateway:${data.aws_region.current.name}::/apis/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = ["pr-preview"]
+    }
+  }
+  statement {
+    sid       = "ReadPreviewRuntimeSecrets"
+    actions   = ["secretsmanager:GetSecretValue", "ssm:GetParameter", "ssm:GetParameters"]
+    resources = concat(local.preview_ssm_secret_arns, local.preview_secrets_manager_arns)
+  }
+  dynamic "statement" {
+    for_each = length(var.preview_kms_key_arns) > 0 ? [1] : []
+    content {
+      sid       = "DecryptPreviewRuntimeSecrets"
+      actions   = ["kms:Decrypt"]
+      resources = var.preview_kms_key_arns
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "preview_deploy" {
+  name   = "${var.preview_role_name}-deploy"
+  role   = aws_iam_role.preview.id
+  policy = data.aws_iam_policy_document.preview_deploy.json
 }

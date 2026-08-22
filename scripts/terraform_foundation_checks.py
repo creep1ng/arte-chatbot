@@ -216,6 +216,7 @@ def _check_github_oidc_role_separation(
     """Require separate OIDC identities and an immutable preview runtime boundary."""
     findings: list[str] = []
     production_policy = _data_block(oidc_main, "aws_iam_policy_document", "deploy")
+    preview_policy = _data_block(oidc_main, "aws_iam_policy_document", "preview_deploy")
 
     if (
         oidc_main.count('resource "aws_iam_openid_connect_provider" "github"') != 1
@@ -260,6 +261,27 @@ def _check_github_oidc_role_separation(
     ):
         findings.append(
             "preview Lambda role must have a foundation-managed boundary limited to preview secrets"
+        )
+
+    if not _contains_all(
+        preview_policy,
+        [
+            "aws_iam_role.preview_lambda.arn",
+            'values   = ["lambda.amazonaws.com"]',
+            "${var.preview_state_key_prefix}/*",
+            "local.preview_lambda_arns",
+            "local.preview_table_arns",
+        ],
+    ) or any(
+        action in preview_policy
+        for action in [
+            "iam:CreateRole",
+            "iam:DeleteRolePermissionsBoundary",
+            "iam:PutRolePermissionsBoundary",
+        ]
+    ):
+        findings.append(
+            "preview deploy role must pass only the foundation runtime role and manage prefixed resources"
         )
 
     preview_role_variable = _variable_block(prod_variables, "github_preview_role_name")

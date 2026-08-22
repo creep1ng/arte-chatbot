@@ -155,6 +155,8 @@ module "github_oidc" {
   preview_role_name = var.github_preview_role_name
 
   preview_resource_prefix      = "arte-chatbot-preview"
+  preview_state_bucket_name    = var.preview_state_bucket_name
+  preview_state_key_prefix     = var.preview_state_key_prefix
   preview_catalog_bucket_names = [var.aws_bucket_name]
   preview_kms_key_arns         = var.preview_kms_key_arns
 
