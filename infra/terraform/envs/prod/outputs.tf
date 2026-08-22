@@ -42,6 +42,21 @@ output "backend_custom_domain" {
 }
 
 output "github_deploy_role_arn" {
-  description = "Optional GitHub Actions deploy role ARN."
+  description = "Optional GitHub Actions production deploy role ARN."
   value       = var.create_github_oidc_role ? module.github_oidc[0].role_arn : null
+}
+
+output "github_preview_deploy_role_arn" {
+  description = "Optional GitHub Actions PR preview deploy role ARN."
+  value       = var.create_github_oidc_role ? module.github_oidc[0].preview_role_arn : null
+}
+
+output "preview_lambda_permissions_boundary_arn" {
+  description = "Optional permissions boundary ARN required by PR preview Lambda execution roles."
+  value       = var.create_github_oidc_role ? module.github_oidc[0].preview_lambda_permissions_boundary_arn : null
+}
+
+output "preview_lambda_execution_role_arn" {
+  description = "Optional foundation-managed execution role ARN shared by PR preview Lambdas."
+  value       = var.create_github_oidc_role ? module.github_oidc[0].preview_lambda_execution_role_arn : null
 }

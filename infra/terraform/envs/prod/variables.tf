@@ -134,7 +134,21 @@ variable "github_repository" {
 }
 
 variable "create_github_oidc_role" {
-  description = "Create the GitHub Actions OIDC deployment role for main-branch production deploys."
+  description = "Create the shared GitHub OIDC provider plus separate production and PR preview deploy roles."
   type        = bool
   default     = false
+}
+
+variable "github_preview_role_name" {
+  description = "Name of the GitHub Actions OIDC role dedicated to pull-request previews."
+  type        = string
+  default     = "arte-chatbot-preview-github-deploy"
+}
+
+
+
+variable "preview_kms_key_arns" {
+  description = "Optional KMS keys used only for preview-scoped runtime secrets."
+  type        = list(string)
+  default     = []
 }

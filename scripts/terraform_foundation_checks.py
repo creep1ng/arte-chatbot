@@ -38,6 +38,13 @@ def check_foundation(project_root: Path) -> list[str]:
     pr_preview_variables = _read(project_root / PR_PREVIEW_ROOT / "variables.tf")
     pr_preview_outputs = _read(project_root / PR_PREVIEW_ROOT / "outputs.tf")
     pr_preview_providers = _read(project_root / PR_PREVIEW_ROOT / "providers.tf")
+    github_oidc_main = _read(project_root / MODULE_ROOT / "github_oidc" / "main.tf")
+    github_oidc_variables = _read(
+        project_root / MODULE_ROOT / "github_oidc" / "variables.tf"
+    )
+    github_oidc_outputs = _read(
+        project_root / MODULE_ROOT / "github_oidc" / "outputs.tf"
+    )
     admin_dockerfile = _read(project_root / "admin" / "Dockerfile")
     admin_nginx = _read(project_root / "admin" / "nginx.conf")
 
@@ -108,6 +115,16 @@ def check_foundation(project_root: Path) -> list[str]:
             pr_preview_variables,
             pr_preview_outputs,
             pr_preview_providers,
+        )
+    )
+    findings.extend(
+        _check_github_oidc_role_separation(
+            prod_main,
+            prod_variables,
+            prod_outputs,
+            github_oidc_main,
+            github_oidc_variables,
+            github_oidc_outputs,
         )
     )
 
@@ -184,6 +201,83 @@ def _check_pr_preview_lambda(
 
     if 'backend "s3" {}' not in pr_preview_providers:
         findings.append("PR preview Terraform state must use S3 backend configuration")
+
+    return findings
+
+
+def _check_github_oidc_role_separation(
+    prod_main: str,
+    prod_variables: str,
+    prod_outputs: str,
+    oidc_main: str,
+    oidc_variables: str,
+    oidc_outputs: str,
+) -> list[str]:
+    """Require separate OIDC identities and an immutable preview runtime boundary."""
+    findings: list[str] = []
+    production_policy = _data_block(oidc_main, "aws_iam_policy_document", "deploy")
+
+    if (
+        oidc_main.count('resource "aws_iam_openid_connect_provider" "github"') != 1
+        or "repo:${var.github_owner}/${var.github_repository}:ref:refs/heads/${var.branch}"
+        not in oidc_main
+        or "repo:${var.github_owner}/${var.github_repository}:pull_request"
+        not in oidc_main
+        or 'resource "aws_iam_role" "this"' not in oidc_main
+        or 'resource "aws_iam_role" "preview"' not in oidc_main
+    ):
+        findings.append(
+            "GitHub OIDC must use one provider with separate main and pull_request role subjects"
+        )
+
+    if any(
+        token in production_policy
+        for token in [
+            "apigateway:POST",
+            "dynamodb:CreateTable",
+            "iam:CreateRole",
+            "lambda:CreateFunction",
+        ]
+    ):
+        findings.append(
+            "production deploy role must not create pull-request preview infrastructure"
+        )
+
+    if not _contains_all(
+        oidc_main,
+        [
+            'resource "aws_iam_policy" "preview_lambda_boundary"',
+            'resource "aws_iam_role" "preview_lambda"',
+            "permissions_boundary = aws_iam_policy.preview_lambda_boundary.arn",
+            'resource "aws_iam_role_policy_attachment" "preview_lambda_runtime"',
+            "parameter/arte-chatbot/pr-preview/*",
+            "secret:/arte-chatbot/pr-preview/*",
+        ],
+    ) or any(
+        namespace
+        in _data_block(oidc_main, "aws_iam_policy_document", "preview_lambda_boundary")
+        for namespace in ["parameter/arte-chatbot/prod/", "secret:/arte-chatbot/prod/"]
+    ):
+        findings.append(
+            "preview Lambda role must have a foundation-managed boundary limited to preview secrets"
+        )
+
+    preview_role_variable = _variable_block(prod_variables, "github_preview_role_name")
+    if not _contains_all(
+        prod_main + prod_outputs + oidc_variables + oidc_outputs,
+        [
+            "preview_role_name = var.github_preview_role_name",
+            'output "github_preview_deploy_role_arn"',
+            'output "preview_lambda_permissions_boundary_arn"',
+            'output "preview_lambda_execution_role_arn"',
+        ],
+    ) or not re.search(
+        r'default\s*=\s*"arte-chatbot-preview-github-deploy"',
+        preview_role_variable,
+    ):
+        findings.append(
+            "production foundation must expose reproducible preview role and boundary outputs"
+        )
 
     return findings
 
@@ -348,6 +442,15 @@ def _variable_block(text: str, variable_name: str) -> str:
 def _module_block(text: str, module_name: str) -> str:
     pattern = re.compile(
         rf'module\s+"{re.escape(module_name)}"\s+{{(?P<body>.*?)\n}}', re.DOTALL
+    )
+    match = pattern.search(text)
+    return match.group(0) if match else ""
+
+
+def _data_block(text: str, data_type: str, data_name: str) -> str:
+    pattern = re.compile(
+        rf'data\s+"{re.escape(data_type)}"\s+"{re.escape(data_name)}"\s+{{(?P<body>.*?)(?=\ndata\s+"|\nresource\s+"|\Z)',
+        re.DOTALL,
     )
     match = pattern.search(text)
     return match.group(0) if match else ""
