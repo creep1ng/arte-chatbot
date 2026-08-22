@@ -1,6 +1,7 @@
 """Validation tests for the PR2 Terraform foundation work unit."""
 
 from pathlib import Path
+import shutil
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -13,6 +14,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _findings() -> list[str]:
     return check_foundation(ROOT)
+
+
+def _mutated_terraform_project(
+    tmp_path: Path, relative_path: Path, old: str, new: str
+) -> Path:
+    """Copy static-check inputs and mutate one Terraform contract."""
+    shutil.copytree(ROOT / "infra", tmp_path / "infra")
+    shutil.copytree(ROOT / "admin", tmp_path / "admin")
+    path = tmp_path / relative_path
+    content = path.read_text(encoding="utf-8")
+    assert old in content, f"mutation target is missing: {old}"
+    path.write_text(content.replace(old, new, 1), encoding="utf-8")
+    return tmp_path
 
 
 def test_prod_is_lambda_only_without_ec2_or_cloudflare_tunnel_wiring() -> None:
@@ -155,6 +169,10 @@ def test_github_oidc_separates_production_and_preview_authority() -> None:
         not in findings
     )
     assert (
+        "preview deploy role must pass only the foundation runtime role and manage prefixed resources"
+        not in findings
+    )
+    assert (
         "production foundation must expose reproducible preview role and boundary outputs"
         not in findings
     )
@@ -167,4 +185,36 @@ def test_preview_boundary_excludes_production_secret_namespaces() -> None:
     assert (
         "preview Lambda role must have a foundation-managed boundary limited to preview secrets"
         not in findings
+    )
+
+
+def test_oidc_check_rejects_preview_subject_widening(tmp_path: Path) -> None:
+    """A broad repository subject must fail the OIDC trust contract."""
+    project_root = _mutated_terraform_project(
+        tmp_path,
+        Path("infra/terraform/modules/github_oidc/main.tf"),
+        "repo:${var.github_owner}/${var.github_repository}:pull_request",
+        "repo:${var.github_owner}/${var.github_repository}:*",
+    )
+
+    assert (
+        "GitHub OIDC must use one provider with separate main and pull_request role subjects"
+        in check_foundation(project_root)
+    )
+
+
+def test_boundary_check_rejects_production_secret_namespace(
+    tmp_path: Path,
+) -> None:
+    """A production namespace accidentally admitted by the boundary must fail."""
+    project_root = _mutated_terraform_project(
+        tmp_path,
+        Path("infra/terraform/modules/github_oidc/main.tf"),
+        "parameter/arte-chatbot/pr-preview/*",
+        "parameter/arte-chatbot/prod/*",
+    )
+
+    assert (
+        "preview Lambda role must have a foundation-managed boundary limited to preview secrets"
+        in check_foundation(project_root)
     )

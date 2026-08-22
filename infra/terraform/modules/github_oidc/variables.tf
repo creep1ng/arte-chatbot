@@ -30,7 +30,16 @@ variable "preview_resource_prefix" {
   default     = "arte-chatbot-preview"
 }
 
+variable "preview_state_bucket_name" {
+  description = "S3 bucket containing isolated preview Terraform state."
+  type        = string
+}
 
+variable "preview_state_key_prefix" {
+  description = "S3 key prefix containing isolated preview Terraform states."
+  type        = string
+  default     = "lambda-previews"
+}
 
 variable "preview_catalog_bucket_names" {
   description = "S3 catalog buckets that preview Lambda runtimes may read."

@@ -170,6 +170,31 @@ The PR preview path creates one isolated Lambda/API Gateway/DynamoDB stack per s
 
 Preview resources are tagged with `Environment=pr-preview`, `PreviewId=pr-<number>`, `PullRequest=<number>`, `ExpiresAt`, and `CleanupAfter`. These tags are the orphan-resource guardrail if a workflow is cancelled before cleanup.
 
+### Provision preview AWS authority
+
+The production Terraform root owns one GitHub OIDC provider and creates two roles with non-overlapping trust subjects:
+
+| Role | GitHub `sub` | Authority |
+|---|---|---|
+| Production deploy | `repo:<owner>/arte-chatbot:ref:refs/heads/main` | Existing production promotion permissions only; it cannot create preview Lambda, DynamoDB, API Gateway, or IAM resources. |
+| Preview deploy | `repo:<owner>/arte-chatbot:pull_request` | Preview-prefixed infrastructure, isolated Terraform state, preview-scoped runtime secrets, and `iam:PassRole` for the single foundation-managed preview execution role. |
+
+Set `create_github_oidc_role=true` and apply `infra/terraform/envs/prod` from a trusted operator context. Then copy these outputs into GitHub configuration:
+
+1. `github_preview_deploy_role_arn` → secret `AWS_PREVIEW_DEPLOY_ROLE_ARN`.
+2. `preview_lambda_permissions_boundary_arn` → variable `LAMBDA_PREVIEW_PERMISSIONS_BOUNDARY_ARN`.
+3. `preview_lambda_execution_role_arn` → variable `LAMBDA_PREVIEW_EXECUTION_ROLE_ARN`.
+
+If `arte-chatbot-preview-github-deploy` already exists, import it before planning so Terraform adopts rather than recreates it:
+
+```bash
+terraform -chdir=infra/terraform/envs/prod import \
+  'module.github_oidc[0].aws_iam_role.preview' \
+  arte-chatbot-preview-github-deploy
+```
+
+The preview Lambda execution role and its boundary live in the trusted production foundation. Pull-request Terraform only receives their ARNs: it cannot modify either resource. The boundary permits preview-prefixed DynamoDB/log resources, catalog reads, and only SSM/Secrets Manager paths under `/arte-chatbot/pr-preview/`. This remains effective even if a pull request attempts to broaden its generated inline policy.
+
 Previews intentionally use direct API Gateway URLs first. DNS per PR is a later enhancement and is not required for this scope.
 
 ## Multi-message buffering on Lambda

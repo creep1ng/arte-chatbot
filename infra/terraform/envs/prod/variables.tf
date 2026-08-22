@@ -145,7 +145,17 @@ variable "github_preview_role_name" {
   default     = "arte-chatbot-preview-github-deploy"
 }
 
+variable "preview_state_bucket_name" {
+  description = "S3 bucket containing isolated pull-request preview Terraform state."
+  type        = string
+  default     = "arte-chatbot-terraform-state"
+}
 
+variable "preview_state_key_prefix" {
+  description = "S3 key prefix containing isolated pull-request preview Terraform states."
+  type        = string
+  default     = "lambda-previews"
+}
 
 variable "preview_kms_key_arns" {
   description = "Optional KMS keys used only for preview-scoped runtime secrets."
