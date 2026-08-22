@@ -25,7 +25,7 @@ output "published_version" {
 
 output "role_arn" {
   description = "Lambda execution role ARN."
-  value       = aws_iam_role.lambda.arn
+  value       = local.execution_role_arn
 }
 
 output "state_table_name" {

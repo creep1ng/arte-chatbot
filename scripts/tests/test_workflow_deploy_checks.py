@@ -47,6 +47,18 @@ def _mutated_project(tmp_path: Path, old: str, new: str) -> Path:
     return tmp_path
 
 
+def _mutated_checked_file(
+    tmp_path: Path, relative_path: Path, old: str, new: str
+) -> Path:
+    """Copy checked inputs and mutate one workflow file."""
+    project_root = _mutated_project(tmp_path, "name: CI", "name: CI")
+    path = project_root / relative_path
+    content = path.read_text(encoding="utf-8")
+    assert old in content, f"mutation target is missing: {old}"
+    path.write_text(content.replace(old, new, 1), encoding="utf-8")
+    return project_root
+
+
 def test_workflow_keeps_production_lambda_deploys_on_main_after_gates() -> None:
     """PRs must not deploy; production Lambda waits for package and cutover gates."""
     findings = _findings()
@@ -286,6 +298,41 @@ def test_lambda_pr_preview_deploys_smokes_comments_and_cleans_up() -> None:
     assert (
         "lambda PR preview cleanup must destroy Terraform state on PR close"
         not in findings
+    )
+    assert (
+        "lambda PR preview workflows must fail closed without the dedicated preview deploy role"
+        not in findings
+    )
+
+
+def test_lambda_preview_rejects_production_role_fallback(tmp_path: Path) -> None:
+    """Preview jobs must never fall back to the production deployment role."""
+    project_root = _mutated_project(
+        tmp_path,
+        "AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN }}",
+        "AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN || secrets.AWS_DEPLOY_ROLE_ARN }}",
+    )
+
+    assert (
+        "lambda PR preview workflows must fail closed without the dedicated preview deploy role"
+        in check_workflow_deploy(project_root)
+    )
+
+
+def test_lambda_preview_cleanup_rejects_production_role_fallback(
+    tmp_path: Path,
+) -> None:
+    """Cleanup must fail closed rather than assume the production role."""
+    project_root = _mutated_checked_file(
+        tmp_path,
+        Path(".github/workflows/lambda-preview-cleanup.yml"),
+        "AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN }}",
+        "AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN || secrets.AWS_DEPLOY_ROLE_ARN }}",
+    )
+
+    assert (
+        "lambda PR preview workflows must fail closed without the dedicated preview deploy role"
+        in check_workflow_deploy(project_root)
     )
 
 

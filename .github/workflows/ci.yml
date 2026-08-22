@@ -802,7 +802,7 @@ jobs:
       state-key-prefix: ${{ steps.preview.outputs.state-key-prefix }}
       expiration-at: ${{ steps.preview.outputs.expiration-at }}
     env:
-      AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN || secrets.AWS_DEPLOY_ROLE_ARN }}
+      AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN }}
       TF_PREVIEW_STATE_BUCKET: ${{ vars.TF_PREVIEW_STATE_BUCKET || 'arte-chatbot-terraform-state' }}
       TF_PREVIEW_STATE_PREFIX: ${{ vars.TF_PREVIEW_STATE_PREFIX || 'lambda-previews' }}
       TF_VAR_pr_number: ${{ github.event.pull_request.number }}
@@ -814,6 +814,8 @@ jobs:
       TF_VAR_backend_runtime_secret_arns: ${{ secrets.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON || '{}' }}
       TF_VAR_backend_runtime_environment_variables: ${{ vars.LAMBDA_PREVIEW_RUNTIME_ENV_JSON || '{}' }}
       TF_VAR_kms_key_arns: ${{ secrets.LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON || '[]' }}
+      TF_VAR_lambda_permissions_boundary_arn: ${{ vars.LAMBDA_PREVIEW_PERMISSIONS_BOUNDARY_ARN }}
+      TF_VAR_lambda_execution_role_arn: ${{ vars.LAMBDA_PREVIEW_EXECUTION_ROLE_ARN }}
       TF_VAR_allowed_cors_origins: ${{ vars.LAMBDA_PREVIEW_ALLOWED_CORS_ORIGINS || '*' }}
     steps:
       - name: Checkout code
@@ -836,6 +838,8 @@ jobs:
               "AWS_PREVIEW_DEPLOY_ROLE_ARN",
               "TF_PREVIEW_STATE_BUCKET",
               "TF_VAR_aws_bucket_name",
+              "TF_VAR_lambda_permissions_boundary_arn",
+              "TF_VAR_lambda_execution_role_arn",
           ]
           missing = [name for name in required if not os.environ.get(name)]
           if missing:
@@ -923,6 +927,8 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    env:
+      AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -938,10 +944,17 @@ jobs:
       - name: Install smoke dependencies
         run: uv sync --frozen --group dev
 
+      - name: Verify preview smoke configuration
+        run: |
+          if [[ -z "${AWS_PREVIEW_DEPLOY_ROLE_ARN:-}" ]]; then
+            echo "Missing required Lambda preview smoke configuration: AWS_PREVIEW_DEPLOY_ROLE_ARN"
+            exit 1
+          fi
+
       - name: Configure AWS credentials through OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN || secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_PREVIEW_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Resolve preview chat API key from runtime secret ARN

@@ -107,6 +107,10 @@ def test_lambda_backend_uses_role_credentials_without_vpc_or_static_keys() -> No
         not in findings
     )
     assert (
+        "lambda_backend must support a foundation-managed bounded execution role"
+        not in findings
+    )
+    assert (
         "lambda_backend runtime must be python3.12 for package compatibility"
         not in findings
     )

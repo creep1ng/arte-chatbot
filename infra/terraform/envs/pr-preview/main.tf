@@ -16,6 +16,10 @@ locals {
   }
 }
 
+data "aws_iam_role" "preview_lambda_execution" {
+  name = element(reverse(split("/", var.lambda_execution_role_arn)), 0)
+}
+
 resource "terraform_data" "preview_guard" {
   input = local.preview_id
 
@@ -28,6 +32,16 @@ resource "terraform_data" "preview_guard" {
     precondition {
       condition     = local.preview_id == "pr-${var.pr_number}"
       error_message = "PR preview ids must be derived from the pull request number."
+    }
+
+    precondition {
+      condition     = data.aws_iam_role.preview_lambda_execution.arn == var.lambda_execution_role_arn
+      error_message = "The configured preview Lambda execution role ARN does not resolve to the expected role."
+    }
+
+    precondition {
+      condition     = data.aws_iam_role.preview_lambda_execution.permissions_boundary == var.lambda_permissions_boundary_arn
+      error_message = "The preview Lambda execution role must retain the foundation-managed permissions boundary."
     }
   }
 }
@@ -67,8 +81,10 @@ module "lambda_backend" {
       GIT_SHA             = var.pr_sha
     },
   )
-  runtime_secret_arns = var.backend_runtime_secret_arns
-  kms_key_arns        = var.kms_key_arns
+  runtime_secret_arns      = var.backend_runtime_secret_arns
+  kms_key_arns             = var.kms_key_arns
+  permissions_boundary_arn = var.lambda_permissions_boundary_arn
+  execution_role_arn       = var.lambda_execution_role_arn
 
   tags = merge(local.common_tags, { Service = "lambda-backend" })
 
