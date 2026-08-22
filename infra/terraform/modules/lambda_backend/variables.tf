@@ -136,6 +136,28 @@ variable "kms_key_arns" {
   default     = []
 }
 
+variable "permissions_boundary_arn" {
+  description = "Optional IAM permissions boundary attached to the Lambda execution role. Preview environments must supply the foundation-managed preview boundary."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.permissions_boundary_arn == null || startswith(var.permissions_boundary_arn, "arn:")
+    error_message = "permissions_boundary_arn must be an AWS ARN when provided."
+  }
+}
+
+variable "execution_role_arn" {
+  description = "Optional pre-existing Lambda execution role ARN. When set, this module does not create or manage an IAM role or runtime policy."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.execution_role_arn == null || startswith(var.execution_role_arn, "arn:aws:iam::")
+    error_message = "execution_role_arn must be an IAM role ARN when provided."
+  }
+}
+
 variable "access_log_retention_days" {
   description = "CloudWatch log retention days for Lambda and API Gateway access logs."
   type        = number

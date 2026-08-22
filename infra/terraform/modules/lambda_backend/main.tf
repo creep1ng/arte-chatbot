@@ -46,6 +46,8 @@ locals {
     local.secret_reference_environment_variables,
     local.sanitized_runtime_environment_variables,
   )
+
+  execution_role_arn = var.execution_role_arn != null ? var.execution_role_arn : aws_iam_role.lambda[0].arn
 }
 
 data "aws_partition" "current" {}
@@ -105,9 +107,12 @@ data "aws_iam_policy_document" "assume_lambda" {
 }
 
 resource "aws_iam_role" "lambda" {
-  name               = var.name
-  assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
-  tags               = merge(var.tags, { Service = "lambda-backend" })
+  count = var.execution_role_arn == null ? 1 : 0
+
+  name                 = var.name
+  assume_role_policy   = data.aws_iam_policy_document.assume_lambda.json
+  permissions_boundary = var.permissions_boundary_arn
+  tags                 = merge(var.tags, { Service = "lambda-backend" })
 }
 
 data "aws_iam_policy_document" "lambda_runtime" {
@@ -179,14 +184,16 @@ data "aws_iam_policy_document" "lambda_runtime" {
 }
 
 resource "aws_iam_role_policy" "lambda_runtime" {
+  count = var.execution_role_arn == null ? 1 : 0
+
   name   = "${var.name}-runtime"
-  role   = aws_iam_role.lambda.id
+  role   = aws_iam_role.lambda[0].id
   policy = data.aws_iam_policy_document.lambda_runtime.json
 }
 
 resource "aws_lambda_function" "this" {
   function_name = var.name
-  role          = aws_iam_role.lambda.arn
+  role          = local.execution_role_arn
   handler       = var.handler
   runtime       = var.runtime
   filename      = var.lambda_package_path

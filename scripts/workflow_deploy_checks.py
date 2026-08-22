@@ -176,6 +176,28 @@ def _check_lambda_preview_delivery(
 ) -> list[str]:
     findings: list[str] = []
 
+    preview_workflows = "\n".join(
+        [preview_deploy_job, preview_smoke_job, preview_cleanup_workflow]
+    )
+    if (
+        "secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN ||" in preview_workflows
+        or "AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN }}"
+        not in preview_deploy_job
+        or "AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN }}"
+        not in preview_smoke_job
+        or "AWS_PREVIEW_DEPLOY_ROLE_ARN: ${{ secrets.AWS_PREVIEW_DEPLOY_ROLE_ARN }}"
+        not in preview_cleanup_workflow
+        or "Missing required Lambda preview deploy configuration"
+        not in preview_deploy_job
+        or "Missing required Lambda preview smoke configuration"
+        not in preview_smoke_job
+        or "Missing required Lambda preview cleanup configuration"
+        not in preview_cleanup_workflow
+    ):
+        findings.append(
+            "lambda PR preview workflows must fail closed without the dedicated preview deploy role"
+        )
+
     if not preview_deploy_job or not _contains_all(
         preview_deploy_job,
         [
@@ -195,6 +217,8 @@ def _check_lambda_preview_delivery(
             "TF_VAR_pr_number",
             "TF_VAR_backend_runtime_secret_arns: ${{ secrets.LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON || '{}' }}",
             "TF_VAR_kms_key_arns: ${{ secrets.LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON || '[]' }}",
+            "TF_VAR_lambda_permissions_boundary_arn: ${{ vars.LAMBDA_PREVIEW_PERMISSIONS_BOUNDARY_ARN }}",
+            "TF_VAR_lambda_execution_role_arn: ${{ vars.LAMBDA_PREVIEW_EXECUTION_ROLE_ARN }}",
         ],
     ):
         findings.append(

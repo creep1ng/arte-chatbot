@@ -61,15 +61,38 @@ variable "aws_bucket_name" {
 }
 
 variable "backend_runtime_secret_arns" {
-  description = "Preview app secret ARNs, such as OPENAI_API_KEY and CHAT_API_KEY. Prefer preview-scoped secrets; shared ARNs are allowed for temporary smoke validation."
+  description = "Preview app secret ARNs, such as OPENAI_API_KEY and CHAT_API_KEY. Every ARN must use the /arte-chatbot/pr-preview/ namespace enforced by the execution-role boundary."
   type        = map(string)
   default     = {}
 
   validation {
     condition = alltrue([
-      for arn in values(var.backend_runtime_secret_arns) : startswith(arn, "arn:")
+      for arn in values(var.backend_runtime_secret_arns) : (
+        startswith(arn, "arn:") &&
+        strcontains(lower(arn), "/arte-chatbot/pr-preview/")
+      )
     ])
-    error_message = "Preview secret refs must be AWS ARNs, not plaintext secret values."
+    error_message = "Preview secret refs must be AWS ARNs in the /arte-chatbot/pr-preview/ namespace."
+  }
+}
+
+variable "lambda_permissions_boundary_arn" {
+  description = "Foundation-managed permissions boundary ARN required on every preview Lambda execution role."
+  type        = string
+
+  validation {
+    condition     = startswith(var.lambda_permissions_boundary_arn, "arn:aws:iam::")
+    error_message = "lambda_permissions_boundary_arn must be an IAM policy ARN."
+  }
+}
+
+variable "lambda_execution_role_arn" {
+  description = "Foundation-managed execution role ARN shared by PR preview Lambdas."
+  type        = string
+
+  validation {
+    condition     = startswith(var.lambda_execution_role_arn, "arn:aws:iam::")
+    error_message = "lambda_execution_role_arn must be an IAM role ARN."
   }
 }
 

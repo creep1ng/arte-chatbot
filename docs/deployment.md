@@ -56,6 +56,8 @@ GitHub Variables are non-sensitive values used by `.github/workflows/ci.yml`.
 | `LAMBDA_STAGING_IAM_DENIED_DYNAMODB_TABLE_NAME` | GitHub Variable | `<denied-table-name>` | Resource expected to fail the IAM-denied staging probe. |
 | `LAMBDA_STAGING_SMOKE_CHAT_MESSAGE` | GitHub Variable | `Validación staging: ...` | Optional staging smoke prompt. |
 | `LAMBDA_PREVIEW_ENABLED` | GitHub Variable | `true` | Enables per-PR Lambda previews for same-repository PRs. |
+| `LAMBDA_PREVIEW_PERMISSIONS_BOUNDARY_ARN` | GitHub Variable | `arn:aws:iam::521170872319:policy/arte-chatbot-preview-lambda-boundary` | Foundation-managed permissions boundary that caps the shared preview Lambda runtime role. Preview deploy and cleanup fail closed when it is missing. |
+| `LAMBDA_PREVIEW_EXECUTION_ROLE_ARN` | GitHub Variable | `arn:aws:iam::521170872319:role/arte-chatbot-preview-lambda-runtime` | Foundation-managed Lambda execution role. The preview deploy role may pass only this role to Lambda. |
 | `TF_PREVIEW_STATE_BUCKET` | GitHub Variable | `arte-chatbot-terraform-state` | S3 bucket used by the preview Terraform backend. Defaults to this value in workflows. |
 | `TF_PREVIEW_STATE_PREFIX` | GitHub Variable | `lambda-previews` | S3 key prefix for per-PR Terraform state, producing keys like `lambda-previews/pr-220/terraform.tfstate`. |
 | `LAMBDA_PREVIEW_RUNTIME_ENV_JSON` | GitHub Variable | `{"LOG_LEVEL":"INFO"}` | Optional non-sensitive preview runtime environment variables. |
@@ -73,8 +75,8 @@ GitHub Secrets are sensitive values used by workflow jobs. They are not read by 
 |---|---|---|---|
 | `AWS_CI_ROLE_ARN` | GitHub Secret | `arn:aws:iam::521170872319:role/<ci-role>` | OIDC role used by CI jobs that need AWS access. |
 | `AWS_DEPLOY_ROLE_ARN` | GitHub Secret | `arn:aws:iam::521170872319:role/<deploy-role>` | OIDC role used by staging/prod Lambda deploy jobs. |
-| `AWS_PREVIEW_DEPLOY_ROLE_ARN` | GitHub Secret | `arn:aws:iam::521170872319:role/<preview-deploy-role>` | OIDC role used to apply/destroy per-PR preview Terraform. Falls back to `AWS_DEPLOY_ROLE_ARN` if omitted. |
-| `LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON` | GitHub Secret | `{"OPENAI_API_KEY":"arn:...","CHAT_API_KEY":"arn:..."}` | SSM/Secrets Manager ARNs injected into preview Lambda as secret refs. The preview smoke job resolves the same `CHAT_API_KEY` ARN through AWS CLI, masks the value, and uses it for `/chat` and evaluation. Preview-scoped ARNs are preferred, but shared runtime ARNs are allowed while bootstrapping previews. |
+| `AWS_PREVIEW_DEPLOY_ROLE_ARN` | GitHub Secret | `arn:aws:iam::521170872319:role/arte-chatbot-preview-github-deploy` | Dedicated OIDC role used to apply/destroy per-PR preview Terraform and run preview smoke checks. It is required; preview workflows never fall back to `AWS_DEPLOY_ROLE_ARN`. |
+| `LAMBDA_PREVIEW_RUNTIME_SECRET_ARNS_JSON` | GitHub Secret | `{"OPENAI_API_KEY":"arn:...:parameter/arte-chatbot/pr-preview/OPENAI_API_KEY","CHAT_API_KEY":"arn:...:secret:/arte-chatbot/pr-preview/CHAT_API_KEY-..."}` | Preview-only SSM/Secrets Manager ARNs injected as secret refs. Both Terraform validation and the foundation-managed AWS boundary restrict access to `/arte-chatbot/pr-preview/`; production runtime secret ARNs are rejected and cannot be read by the preview Lambda role. |
 | `LAMBDA_PREVIEW_KMS_KEY_ARNS_JSON` | GitHub Secret | `["arn:aws:kms:..."]` | Optional KMS keys needed to decrypt preview runtime secret refs. Use `[]` or omit it when no custom KMS key is needed. |
 | `OPENAI_API_KEY` | GitHub Secret | `<openai-api-key>` | CI/evaluation plaintext credential. Lambda production runtime should use AWS SSM/Secrets Manager instead. |
 | `CHAT_API_KEY` | GitHub Secret | `<chat-api-key>` | Plaintext API key used by production smoke checks. Do not put the Secrets Manager ARN here. |

@@ -157,6 +157,8 @@ def _check_pr_preview_lambda(
             'SECRET_NAMESPACE    = "/arte-chatbot/pr-preview/${local.preview_id}/"',
             "CLEANUP_AFTER",
             "PULL_REQUEST_NUMBER",
+            "permissions_boundary_arn = var.lambda_permissions_boundary_arn",
+            "execution_role_arn       = var.lambda_execution_role_arn",
         ],
     ):
         findings.append(
@@ -176,7 +178,7 @@ def _check_pr_preview_lambda(
             'variable "pr_sha"',
             'variable "expiration_at"',
             'default     = "arte-chatbot-preview"',
-            "Preview secret refs must be AWS ARNs, not plaintext secret values.",
+            "Preview secret refs must be AWS ARNs in the /arte-chatbot/pr-preview/ namespace.",
             "default     = 259200",
         ],
     ):
@@ -359,6 +361,19 @@ def _check_lambda_backend_module(
     ):
         findings.append(
             "lambda_backend runtime_secret_arns must reject plaintext secret values"
+        )
+
+    if not _contains_all(
+        lambda_main + lambda_variables,
+        [
+            'variable "execution_role_arn"',
+            "var.execution_role_arn == null ? 1 : 0",
+            "var.execution_role_arn != null ? var.execution_role_arn",
+            "permissions_boundary = var.permissions_boundary_arn",
+        ],
+    ):
+        findings.append(
+            "lambda_backend must support a foundation-managed bounded execution role"
         )
 
     if 'default     = "python3.12"' not in _variable_block(lambda_variables, "runtime"):
