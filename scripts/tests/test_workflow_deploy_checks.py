@@ -14,6 +14,13 @@ from workflow_deploy_checks import check_workflow_deploy
 ROOT = Path(__file__).resolve().parents[2]
 DETERMINISTIC_GATE_FINDING = "deterministic test job must run all Python test roots offline with fake credentials"
 LAMBDA_GATE_FINDING = "lambda package job must depend on the deterministic test gate"
+ROLLBACK_GUARD_FINDING = (
+    "lambda rollback must require successful promotion, failed verification, and a "
+    "non-empty target"
+)
+ROLLBACK_TARGET_FINDING = (
+    "lambda rollback must skip safely when no target version exists"
+)
 
 
 def _findings() -> list[str]:
@@ -297,3 +304,56 @@ def test_lambda_production_cutover_is_lambda_only_and_promotes_same_package() ->
         "lambda rollback job must restore a discovered previous alias version"
         not in findings
     )
+
+
+def test_lambda_rollback_requires_completed_production_promotion_and_failed_smoke(
+) -> None:
+    """Pre-production failures must not trigger a production alias rollback."""
+    findings = _findings()
+
+    assert ROLLBACK_GUARD_FINDING not in findings
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (
+            "needs.promote-lambda-production.result == 'success'",
+            "failure()",
+        ),
+        (
+            "needs.verify-lambda-production.result == 'failure'",
+            "needs.verify-lambda-production.result == 'skipped'",
+        ),
+        (
+            "needs.promote-lambda-production.outputs.previous-version != ''",
+            "needs.promote-lambda-production.outputs.previous-version == ''",
+        ),
+        (
+            "inputs.rollback_target_version != ''",
+            "inputs.rollback_target_version == ''",
+        ),
+    ],
+)
+def test_lambda_rollback_rejects_broader_activation_conditions(
+    tmp_path: Path, old: str, new: str
+) -> None:
+    """Rollback activation must remain bound to promotion, smoke, and target state."""
+    project_root = _mutated_project(tmp_path, old, new)
+
+    assert ROLLBACK_GUARD_FINDING in check_workflow_deploy(project_root)
+
+
+def test_lambda_rollback_without_target_does_not_fail_the_workflow(
+    tmp_path: Path,
+) -> None:
+    """A missing manual or unexpected rollback target must be a safe no-op."""
+    project_root = _mutated_project(
+        tmp_path,
+        'echo "No rollback target version was discovered. Skipping rollback."\n'
+        "            exit 0",
+        'echo "No rollback target version was discovered. Skipping rollback."\n'
+        "            exit 1",
+    )
+
+    assert ROLLBACK_TARGET_FINDING in check_workflow_deploy(project_root)
