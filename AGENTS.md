@@ -33,6 +33,8 @@ docker compose exec -it backend bash
 curl http://localhost:8000/health
 ```
 
+> **Cuidado**: `make clean` ejecuta `docker compose down -v --remove-orphans` (borra volúmenes); no usarlo en limpiezas automáticas de worktrees.
+
 ## Code Style & Conventions
 
 ### General
@@ -44,6 +46,7 @@ curl http://localhost:8000/health
 ### Python
 - **Imports**: Organizar en tres bloques separados por líneas en blanco: (1) stdlib, (2)第三方, (3) local/app imports. Dentro de cada bloque, orden alfabético.
 - **Formatting**: 88 caracteres por línea (Black default). Indentación con 4 espacios.
+- **Lint/format**: CI ejecuta `uv run ruff check backend/ rag/` **y** `uv run ruff format --check backend/ rag/`; `ruff check` no valida formato, correr ambos antes de push.
 - **Naming**:
   - `snake_case` para funciones, métodos, variables y argumentos
   - `PascalCase` para clases y tipos
@@ -102,6 +105,9 @@ graph TD
 - **Organización**: Tests en carpetas `tests/` dentro de cada módulo (`backend/tests/`, `rag/tests/`).
 - **Cobertura**: Cada feature nueva debe incluir tests unitarios. Features con componentes externos requieren tests de integración.
 - **CI**: GitHub Actions ejecuta linting, tests con pytest y health checks en cada PR.
+  - `pull_request` solo dispara para PRs con base `main`/`develop`. Los PRs apilados contra ramas feature solo corren el evento `push` y omiten el deploy/smoke de preview; su verde no valida el preview.
+- **Sesiones en tests de endpoints** (`/chat`, buffer): no inventar `session_id`. `bind_or_validate_session()` (`backend/app/security.py`) responde 403 a IDs no emitidos ni vinculados por el backend; usar la sesión devuelta por una primera llamada o vincular el principal (`session_manager.bind_session`).
+- **Dependency overrides**: nunca `app.dependency_overrides.clear()` ni mutar el dict global; usar `monkeypatch.setattr(app, "dependency_overrides", {...})` para aislar overrides por test (si no, la suite depende del orden).
 
 ### Comandos de Testing
 
@@ -134,6 +140,7 @@ docker compose exec backend pytest backend/tests/test_api.py::test_health_check
 
 - **Manejo de Secretos**: Ninguna llave de API (OpenAI, Anthropic, AWS, etc.) debe ser subida al repositorio. Usar `.env` (ya en `.gitignore`).
 - **Credenciales AWS**: Gestionar exclusivamente via variables de entorno. No hardcodear nunca.
+- **Logs del flujo LLM/File Input**: no interpolar excepciones del proveedor ni usar `logger.exception`; usar `logger.error` con metadatos estructurales (modelo, operación, `error_type`) y propagar con `raise ... from None` (salvo `APITimeoutError`, que se conserva como causa tipada).
 
 ## Extensibility Hooks
 
