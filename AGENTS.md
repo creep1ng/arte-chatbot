@@ -70,7 +70,7 @@ Todas las fichas técnicas se almacenan en **Amazon S3**. Esta decisión garanti
 
 **Estructura del bucket:**
 ```
-arte-chatbot-data/
+arte-chatbot-fichas-tecnicas/
 ├── raw/
 │   ├── paneles/
 │   ├── inversores/
@@ -83,7 +83,11 @@ arte-chatbot-data/
 **Variables de entorno requeridas:**
 - `AWS_ACCESS_KEY_ID` — Identificador de clave de acceso AWS
 - `AWS_SECRET_ACCESS_KEY` — Clave de acceso secreta AWS
-- `AWS_BUCKET_NAME` — Nombre del bucket (`arte-chatbot-data`)
+- `AWS_BUCKET_NAME` — Nombre del bucket (`arte-chatbot-fichas-tecnicas`)
+
+### Despliegue
+
+En producción el backend corre en **AWS Lambda detrás de API Gateway HTTP API**, con estado durable (sesiones, rate limits, buffer) en **DynamoDB** (`STATE_BACKEND=dynamodb`). La ruta EC2 + Docker Compose/Cloudflare Tunnel fue retirada; `docker-compose.yml` solo se usa para desarrollo local. Ver [ADR-009](docs/adr/009.md) y [docs/deployment.md](docs/deployment.md).
 
 ### Flujo de Datos con File Inputs
 
@@ -153,4 +157,6 @@ docker compose exec backend pytest backend/tests/test_api.py::test_health_check
 - [ADR-001: Arquitectura inicial y orquestación de servicios](docs/adr/001.md)
 - [ADR-002: Infraestructura de datos con S3](docs/adr/002.md)
 - [ADR-003: File Inputs como método de retrieval](docs/adr/003.md)
+- [ADR-009: Despliegue serverless del backend en Lambda](docs/adr/009.md)
+- [Guía de despliegue en Lambda](docs/deployment.md)
 - [Plantilla de ADR](docs/adr/template.md)
