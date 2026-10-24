@@ -63,6 +63,8 @@ GitHub Variables are non-sensitive values used by `.github/workflows/ci.yml`.
 | `LAMBDA_PREVIEW_IAM_DENIED_DYNAMODB_TABLE_NAME` | GitHub Variable | `<denied-table-name>` | Optional resource expected to fail the IAM-denied preview probe. |
 | `LAMBDA_PREVIEW_SMOKE_CHAT_MESSAGE` | GitHub Variable | `Validación preview PR: ...` | Optional preview smoke prompt. |
 
+`LAMBDA_PREVIEW_SMOKE_CHAT_MESSAGE`, when set, overrides the fallback prompt in `ci.yml`. Keep it pointed at a small datasheet (the fallback uses the LONGi 605W panel): large PDFs can exceed the 25 s preview Lambda timeout (`lambda_timeout_seconds`) and make the preview smoke flaky.
+
 `PROD_BACKEND_RUNTIME_ENV_JSON` is **not used by the current workflow**. Runtime environment values are applied by Terraform through `.env.deploy`, not by GitHub promotion jobs.
 
 ### GitHub Repository Secrets
